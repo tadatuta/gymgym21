@@ -1,0 +1,63 @@
+services:
+  proxy:
+    image: nginx:1.27-alpine
+    depends_on:
+      client:
+        condition: service_started
+      server:
+        condition: service_started
+    ports:
+      - "${APP_PORT:-8080}:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+
+  client:
+    build:
+      context: .
+      dockerfile: apps/client/Dockerfile
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_SSL: ${DATABASE_SSL:-false}
+      STORAGE_DIR: /data/storage
+      APP_BASE_URL: ${APP_BASE_URL}
+      AUTH_BASE_URL: ${AUTH_BASE_URL}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      PORT: ${PORT:-8788}
+      HOST: ${HOST:-0.0.0.0}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      JSON_BODY_LIMIT: ${JSON_BODY_LIMIT:-10mb}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      PASSKEY_RP_ID: ${PASSKEY_RP_ID}
+      PASSKEY_RP_NAME: ${PASSKEY_RP_NAME}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-global}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/var/secrets/google-application-credentials.json}
+    volumes:
+      - ${STORAGE_HOST_DIR:-./data/storage}:/data/storage
+      - ./secrets:/var/secrets:ro
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-gym21}
+      POSTGRES_USER: ${POSTGRES_USER:-gym21}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gym21}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

@@ -1,0 +1,20 @@
+{
+  "name": "gym21",
+  "private": true,
+  "workspaces": [
+    "apps/client",
+    "apps/server"
+  ],
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test --workspace @gym21/server",
+    "dev:client": "npm run dev --workspace @gym21/client",
+    "dev:server": "npm run dev --workspace @gym21/server",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down"
+  }
+}

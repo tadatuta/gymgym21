@@ -1,0 +1,35 @@
+{
+  "name": "@gym21/server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/server.js",
+    "dev": "node --watch src/server.ts",
+    "test": "npm run build && node --test test/*.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.0.9",
+    "@types/pg": "^8.20.0",
+    "rimraf": "^6.1.2",
+    "supertest": "^7.2.2",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@better-auth/kysely-adapter": "^1.5.6",
+    "@better-auth/passkey": "^1.5.6",
+    "@google/genai": "^1.40.0",
+    "better-auth": "^1.5.6",
+    "express": "^5.2.1",
+    "kysely": "^0.28.14",
+    "marked": "^17.0.1",
+    "pg": "^8.20.0",
+    "zod": "^4.3.6"
+  }
+}
