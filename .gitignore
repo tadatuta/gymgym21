@@ -8,7 +8,6 @@ dist
 apps/*/node_modules
 apps/*/dist
 apps/*/.env
-storage
 data/storage
 tmp
 secrets/google-application-credentials.json
