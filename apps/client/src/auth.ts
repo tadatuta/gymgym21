@@ -44,6 +44,7 @@ function resolveUrl(baseUrl: string, path = ''): string {
 
 const AUTH_BASE_URL = ensureAbsoluteUrl(import.meta.env.VITE_AUTH_BASE_URL || DEFAULT_AUTH_BASE_URL);
 const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL || deriveApiBaseUrl(AUTH_BASE_URL));
+export const TELEGRAM_BOT_NAME = import.meta.env.VITE_TELEGRAM_BOT_NAME || 'gymgym21bot';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const WEBAPP = (window as any).Telegram?.WebApp;

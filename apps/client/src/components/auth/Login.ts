@@ -13,6 +13,7 @@ import {
   signInWithEmail,
   signInWithPasskey,
   signInWithTelegram,
+  TELEGRAM_BOT_NAME,
 } from '../../auth';
 
 declare global {
@@ -178,7 +179,7 @@ function mountTelegramWidget(container: HTMLElement, onLoginSuccess: () => void)
   const script = document.createElement('script');
   script.src = 'https://telegram.org/js/telegram-widget.js?22';
   script.async = true;
-  script.setAttribute('data-telegram-login', 'gymgym21bot');
+  script.setAttribute('data-telegram-login', TELEGRAM_BOT_NAME);
   script.setAttribute('data-size', 'large');
   script.setAttribute('data-radius', '12');
   script.setAttribute('data-onauth', 'onTelegramAuthBetter(user)');

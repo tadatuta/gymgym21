@@ -25,6 +25,7 @@ import {
   restoreSession,
   serializeTelegramLoginData,
   signOut,
+  TELEGRAM_BOT_NAME,
 } from './auth';
 import { renderLogin } from './components/auth/Login';
 import { registerSW } from 'virtual:pwa-register';
@@ -1517,7 +1518,7 @@ function bindProfileSettingsEvents() {
     const script = document.createElement('script');
     script.src = 'https://telegram.org/js/telegram-widget.js?22';
     script.async = true;
-    script.setAttribute('data-telegram-login', 'gymgym21bot');
+    script.setAttribute('data-telegram-login', TELEGRAM_BOT_NAME);
     script.setAttribute('data-size', 'large');
     script.setAttribute('data-radius', '12');
     script.setAttribute('data-onauth', 'onTelegramLinkBetter(user)');
@@ -1861,7 +1862,7 @@ function shareWorkout(dateStr: string) {
 
   if (WEBAPP?.openTelegramLink) {
     // Use Telegram share URL
-    const shareUrl = `https://t.me/share/url?url=${encodeURIComponent('https://t.me/gymgym21bot')}&text=${encodeURIComponent(text)}`;
+    const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(`https://t.me/${TELEGRAM_BOT_NAME}`)}&text=${encodeURIComponent(text)}`;
     WEBAPP.openTelegramLink(shareUrl);
   } else {
     // Fallback: copy to clipboard
