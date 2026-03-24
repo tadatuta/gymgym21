@@ -1124,7 +1124,8 @@ function renderProfileSettingsPage() {
     <div class="page-content profile-page">
       <h1 class="title">Профиль</h1>
       
-      <div class="profile-header">
+      <div class="profile-header" style="position: relative;">
+        <button class="button button_secondary" id="sign-out-btn-header" style="position: absolute; top: 0; right: 0; padding: 6px 12px; font-size: 14px;">Выйти</button>
         <div class="profile-avatar">
           ${renderSafeAvatarMarkup(displayName, profile?.photoUrl)}
         </div>
@@ -2067,6 +2068,15 @@ function bindPageEvents() {
   // stats type select handled in bindPageEvents stats block below
 
   if (currentPage === 'profile-settings') {
+    document.getElementById('sign-out-btn-header')?.addEventListener('click', async () => {
+      try {
+        await signOut();
+        location.reload();
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : 'Не удалось выйти');
+      }
+    });
+
     // Tab switching - use partial update instead of full render
     const tabs = document.querySelectorAll('.profile-tab');
     tabs.forEach(tab => {
