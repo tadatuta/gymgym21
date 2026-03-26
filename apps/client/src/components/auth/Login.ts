@@ -4,8 +4,6 @@ import {
   completeMigration,
   getCurrentSession,
   getMigrationStatus,
-  getTelegramInitData,
-  isTelegramMiniApp,
   openBrowserHandoff,
   registerWithEmail,
   restoreSession,
@@ -80,15 +78,9 @@ function renderAuthForm(mode: Exclude<LoginMode, 'complete'>, error?: string) {
 
       <div style="padding:16px; border-radius:18px; background:linear-gradient(180deg, #f8fbff, #eef6ff); border:1px solid rgba(0, 98, 255, 0.12);">
         <div style="font-weight:600; margin-bottom:10px;">Telegram</div>
-        <div style="font-size:14px; color:#555; margin-bottom:12px;">${isTelegramMiniApp()
-          ? 'В Mini App вход через Telegram произойдёт автоматически.'
-          : 'Можно войти текущим Telegram-аккаунтом и привязать существующие данные.'}</div>
+        <div style="font-size:14px; color:#555; margin-bottom:12px;">Можно войти текущим Telegram-аккаунтом и привязать существующие данные.</div>
         <div id="telegram-login-container"></div>
       </div>
-
-      ${isTelegramMiniApp() ? `
-        <button id="browser-handoff-btn" class="button button_secondary" type="button">Открыть браузер для Passkey</button>
-      ` : ''}
     </div>
   `;
 }
@@ -161,10 +153,6 @@ async function handleTelegramAuth(container: HTMLElement, initData: string, onLo
 }
 
 function mountTelegramWidget(container: HTMLElement, onLoginSuccess: () => void) {
-  if (isTelegramMiniApp()) {
-    return;
-  }
-
   const mountNode = container.querySelector('#telegram-login-container');
   if (!mountNode) return;
 
@@ -198,19 +186,7 @@ export async function renderLogin(container: HTMLElement, onLoginSuccess: () => 
     }
   }
 
-  if (isTelegramMiniApp()) {
-    const initData = getTelegramInitData();
-    if (initData) {
-      try {
-        await handleTelegramAuth(container, initData, onLoginSuccess);
-        return;
-      } catch (telegramError) {
-        renderShell(container, renderAuthForm('sign-in', telegramError instanceof Error ? telegramError.message : String(telegramError)));
-      }
-    }
-  } else {
-    renderShell(container, renderAuthForm('sign-in', error));
-  }
+  renderShell(container, renderAuthForm('sign-in', error));
 
   let currentMode: Exclude<LoginMode, 'complete'> = 'sign-in';
 
@@ -231,9 +207,6 @@ export async function renderLogin(container: HTMLElement, onLoginSuccess: () => 
       await rerenderMode('sign-up');
     });
 
-    container.querySelector('#browser-handoff-btn')?.addEventListener('click', () => {
-      openBrowserHandoff();
-    });
 
     container.querySelector('#passkey-sign-in-btn')?.addEventListener('click', async () => {
       if (!canUsePasskeyInCurrentContext()) {

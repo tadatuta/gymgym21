@@ -15,17 +15,7 @@ export interface TelegramUser {
 export function parseTelegramInitData(initData: string): { user?: TelegramUser } {
     const urlParams = new URLSearchParams(initData);
 
-    // 1. Try TMA format (user object is a JSON string)
-    const userStr = urlParams.get('user');
-    if (userStr) {
-        try {
-            return { user: JSON.parse(userStr) };
-        } catch (e) {
-            // Ignore parse error, try other format
-        }
-    }
-
-    // 2. Try Login Widget format (flat fields)
+    // Try Login Widget format (flat fields)
     if (urlParams.has('id')) {
         const id = parseInt(urlParams.get('id') || '0', 10);
         if (id) {
@@ -68,18 +58,7 @@ export function validateTelegramInitData(initData: string): boolean {
         .map(([key, value]) => `${key}=${value}`)
         .join('\n');
 
-    // 2. Try TMA method (HMAC-SHA256 with "WebAppData" as key)
-    const secretKeyTma = createHmac('sha256', 'WebAppData')
-        .update(config.TELEGRAM_BOT_TOKEN)
-        .digest();
-
-    const calculatedHashTma = createHmac('sha256', secretKeyTma)
-        .update(dataCheckString)
-        .digest('hex');
-
-    if (calculatedHashTma === hash) return true;
-
-    // 3. Try Login Widget method (SHA256 of token as secret)
+    // Verify Login Widget method (SHA256 of token as secret)
     const secretKeyWidget = createHash('sha256')
         .update(config.TELEGRAM_BOT_TOKEN)
         .digest();

@@ -5,8 +5,7 @@ import { authorizedApiFetch, clearAuthState, getCurrentUser, hasAuthToken, resol
 
 const STORAGE_KEY = 'gym_twa_data'; // Keeping for migration check
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const WEBAPP = (window as any).Telegram?.WebApp;
+
 
 const defaultData: AppData = {
     workoutTypes: [
@@ -446,14 +445,12 @@ export class StorageService {
         if (profile?.telegramUsername) {
             return profile.telegramUsername;
         }
-        const userId = profile?.telegramUserId || WEBAPP?.initDataUnsafe?.user?.id;
+        const userId = profile?.telegramUserId;
         return userId ? `id_${userId}` : '';
     }
 
     async updateProfileSettings(settings: Partial<UserProfile>): Promise<void> {
-        const telegramUser = WEBAPP?.initDataUnsafe?.user;
         const authUser = getCurrentUser();
-        const userId = telegramUser?.id;
 
         // Check DB directly or cache?
         // Let's check cache for existence, but update DB
@@ -465,25 +462,16 @@ export class StorageService {
                 isPublic: false,
                 showFullHistory: false,
                 username: authUser?.username ?? undefined,
-                telegramUserId: userId,
-                telegramUsername: telegramUser?.username,
-                photoUrl: telegramUser?.photo_url || authUser?.image || undefined,
+                telegramUserId: undefined,
+                telegramUsername: undefined,
+                photoUrl: authUser?.image || undefined,
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
                 friends: []
             } as UserProfile;
         } else {
-            if (telegramUser?.photo_url) {
-                profile.photoUrl = telegramUser.photo_url;
-            } else if (authUser?.image) {
+            if (authUser?.image) {
                 profile.photoUrl = authUser.image;
-            }
-            if (userId && !profile.telegramUserId) {
-                profile.telegramUserId = userId;
-            }
-            // Update username if it changed
-            if (telegramUser?.username !== undefined && profile.telegramUsername !== telegramUser.username) {
-                profile.telegramUsername = telegramUser.username;
             }
             if (authUser?.username) {
                 profile.username = authUser.username;

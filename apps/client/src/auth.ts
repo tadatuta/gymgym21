@@ -46,8 +46,7 @@ const AUTH_BASE_URL = ensureAbsoluteUrl(import.meta.env.VITE_AUTH_BASE_URL || DE
 const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL || deriveApiBaseUrl(AUTH_BASE_URL));
 export const TELEGRAM_BOT_NAME = import.meta.env.VITE_TELEGRAM_BOT_NAME || 'gymgym21bot';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const WEBAPP = (window as any).Telegram?.WebApp;
+
 
 export interface TelegramLoginData {
   id: number;
@@ -238,16 +237,8 @@ export function serializeTelegramLoginData(user: TelegramLoginData): string {
   return params.toString();
 }
 
-export function getTelegramInitData(): string | null {
-  return WEBAPP?.initData || null;
-}
-
-export function isTelegramMiniApp(): boolean {
-  return Boolean(getTelegramInitData());
-}
-
 export function canUsePasskeyInCurrentContext(): boolean {
-  return !isTelegramMiniApp() && 'PublicKeyCredential' in window;
+  return 'PublicKeyCredential' in window;
 }
 
 export function openBrowserHandoff() {

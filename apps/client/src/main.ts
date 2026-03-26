@@ -1,4 +1,4 @@
-import './telegram-mock';
+
 import './components/typeahead/typeahead.css';
 import { renderTypeahead, bindTypeahead, registerTypeaheadItems, getTypeaheadValue } from './components/typeahead/Typeahead';
 import './styles/base.css';
@@ -18,8 +18,6 @@ import {
   canUsePasskeyInCurrentContext,
   getCurrentUser,
   getMigrationStatus,
-  getTelegramInitData,
-  isTelegramMiniApp,
   linkTelegramAccount,
   openBrowserHandoff,
   restoreSession,
@@ -44,14 +42,7 @@ const getProfileLink = (identifier: string) => {
 // Register Service Worker
 registerSW({ immediate: true });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const WEBAPP = (window as any).Telegram?.WebApp;
 
-
-if (WEBAPP) {
-  WEBAPP.ready();
-  WEBAPP.expand();
-}
 
 type Page = 'main' | 'stats' | 'settings' | 'profile-settings' | 'public-profile';
 let currentPage: Page = 'main';
@@ -205,7 +196,7 @@ window.addEventListener('online', () => {
 window.addEventListener('offline', () => updateSyncStatusUI());
 
 function getPreferredDisplayName(profileDisplayName?: string) {
-  return profileDisplayName || getCurrentUser()?.name || WEBAPP?.initDataUnsafe?.user?.first_name || '';
+  return profileDisplayName || getCurrentUser()?.name || '';
 }
 
 function renderPage() {
@@ -1092,9 +1083,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
           <button class="button button_secondary" id="add-passkey-btn">${canUsePasskeyInCurrentContext() ? 'Добавить Passkey' : 'Открыть браузер для Passkey'}</button>
           ${authStatus?.hasTelegram
             ? '<div style="padding:12px 14px; border-radius:14px; background:var(--surface-color-alt); color:var(--text-color-secondary);">Telegram уже привязан к этому аккаунту.</div>'
-            : isTelegramMiniApp()
-              ? '<button class="button button_secondary" id="link-telegram-btn">Привязать текущий Telegram</button>'
-              : '<div id="link-telegram-widget" style="display:flex; justify-content:center;"></div>'}
+            : '<div id="link-telegram-widget" style="display:flex; justify-content:center;"></div>'}
           <button class="button button_secondary" id="sign-out-btn">Выйти</button>
         </div>
       </div>
@@ -1456,14 +1445,9 @@ function bindProfileSettingsEvents() {
     const identifier = storage.getProfileIdentifier();
     if (identifier) {
       const profileUrl = getProfileLink(identifier);
-      if (WEBAPP?.openTelegramLink) {
-        const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(profileUrl)}&text=${encodeURIComponent('Мой профиль тренировок 💪')}`;
-        WEBAPP.openTelegramLink(shareUrl);
-      } else {
-        navigator.clipboard.writeText(profileUrl).then(() => {
-          showToast('Ссылка скопирована');
-        });
-      }
+      navigator.clipboard.writeText(profileUrl).then(() => {
+        showToast('Ссылка скопирована');
+      });
     }
   });
 
@@ -1483,23 +1467,7 @@ function bindProfileSettingsEvents() {
     }
   });
 
-  document.getElementById('link-telegram-btn')?.addEventListener('click', async () => {
-    const initData = getTelegramInitData();
-    if (!initData) {
-      showToast('Откройте приложение в Telegram, чтобы привязать аккаунт');
-      return;
-    }
 
-    try {
-      await linkTelegramAccount(initData);
-      authStatus = await getMigrationStatus();
-      await storage.sync();
-      updateProfileTabContent();
-      showToast('Telegram привязан');
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Не удалось привязать Telegram');
-    }
-  });
 
   const linkTelegramWidget = document.getElementById('link-telegram-widget');
   if (linkTelegramWidget) {
@@ -1861,16 +1829,9 @@ function shareWorkout(dateStr: string) {
   const text = formatWorkoutForShare(dateStr);
   if (!text) return;
 
-  if (WEBAPP?.openTelegramLink) {
-    // Use Telegram share URL
-    const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(`https://t.me/${TELEGRAM_BOT_NAME}`)}&text=${encodeURIComponent(text)}`;
-    WEBAPP.openTelegramLink(shareUrl);
-  } else {
-    // Fallback: copy to clipboard
-    navigator.clipboard.writeText(text).then(() => {
-      alert('Текст скопирован в буфер обмена');
-    });
-  }
+  navigator.clipboard.writeText(text).then(() => {
+    alert('Текст скопирован в буфер обмена');
+  });
 }
 
 function bindPageEvents() {
@@ -2196,14 +2157,9 @@ function bindPageEvents() {
       const identifier = storage.getProfileIdentifier();
       if (identifier) {
         const profileUrl = getProfileLink(identifier);
-        if (WEBAPP?.openTelegramLink) {
-          const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(profileUrl)}&text=${encodeURIComponent('Мой профиль тренировок 💪')}`;
-          WEBAPP.openTelegramLink(shareUrl);
-        } else {
-          navigator.clipboard.writeText(profileUrl).then(() => {
-            showToast('Ссылка скопирована');
-          });
-        }
+        navigator.clipboard.writeText(profileUrl).then(() => {
+          showToast('Ссылка скопирована');
+        });
       }
     });
 
@@ -2366,7 +2322,7 @@ async function initApp() {
 
   // Check for profile deep link from startapp parameter
   const currentParams = new URLSearchParams(window.location.search);
-  const startApp = currentParams.get('startapp') || WEBAPP?.initDataUnsafe?.start_param;
+  const startApp = currentParams.get('startapp');
 
   if (startApp && startApp.startsWith('profile_')) {
     const identifier = startApp.replace('profile_', '');
