@@ -1,4 +1,4 @@
-import { AppData, WorkoutType, WorkoutSet, UserProfile, PublicProfileData, WorkoutSession } from '../types';
+import { AppData, PublicProfileData, SyncEntityType, UserProfile, WorkoutSession, WorkoutSet, WorkoutType } from '../types';
 import { SyncService } from '../services/sync';
 import { db } from '../db';
 import { authorizedApiFetch, clearAuthState, getCurrentUser, hasAuthToken, resolveApiUrl } from '../auth';
@@ -19,20 +19,43 @@ const defaultData: AppData = {
 
 export type SyncStatus = 'idle' | 'saving' | 'success' | 'error';
 
+interface StorageServiceOptions {
+    autoInit?: boolean;
+    syncDebounceMs?: number;
+}
+
 export class StorageService {
     private onUpdateCallback?: () => void;
     private onSyncStatusChangeCallback?: (status: SyncStatus) => void;
     private onUnauthorizedCallback?: () => void;
     private status: SyncStatus = 'idle';
+    private readonly syncDebounceMs: number;
+    private syncTimer: ReturnType<typeof setTimeout> | undefined;
+    private syncInFlight = false;
+    private syncQueued = false;
+    private readonly handleOnline = () => {
+        void this.sync();
+    };
+    private readonly handleVisibilityChange = () => {
+        if (document.visibilityState === 'visible') {
+            this.scheduleSync(0);
+        }
+    };
 
-    constructor() {
-        this.init();
+    constructor(options: StorageServiceOptions = {}) {
+        this.syncDebounceMs = options.syncDebounceMs ?? 1500;
+        this.attachSyncTriggers();
+
+        if (options.autoInit ?? true) {
+            void this.init();
+        }
     }
 
     async init() {
         await this.migrateFromLocalStorage();
-        // Initial Sync (fire and forget)
-        this.sync().catch(console.error);
+        await SyncService.bootstrapDirtyState();
+        await this.reloadCache();
+        this.scheduleSync(0);
     }
 
     private async migrateFromLocalStorage() {
@@ -113,17 +136,57 @@ export class StorageService {
         }
     }
 
+    private attachSyncTriggers() {
+        if (typeof window === 'undefined') {
+            return;
+        }
+
+        window.addEventListener('online', this.handleOnline);
+        document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    }
+
+    scheduleSync(delay = this.syncDebounceMs) {
+        if (!hasAuthToken()) {
+            this.setStatus('idle');
+            return;
+        }
+
+        if (this.syncTimer) {
+            clearTimeout(this.syncTimer);
+        }
+
+        this.syncTimer = setTimeout(() => {
+            this.syncTimer = undefined;
+            void this.sync();
+        }, delay);
+    }
+
     async sync() {
         if (!hasAuthToken()) {
             this.setStatus('idle');
             return;
         }
 
+        if (this.syncTimer) {
+            clearTimeout(this.syncTimer);
+            this.syncTimer = undefined;
+        }
+
+        if (this.syncInFlight) {
+            this.syncQueued = true;
+            return;
+        }
+
         try {
+            this.syncInFlight = true;
             this.setStatus('saving');
-            await SyncService.sync();
+            const result = await SyncService.sync();
             this.setStatus('success');
-            this.onUpdateCallback?.();
+            await this.reloadCache();
+
+            if (result.conflicts > 0) {
+                console.warn(`Sync resolved ${result.conflicts} conflict(s) using server versions.`);
+            }
         } catch (e: unknown) {
             console.error('Sync failed', e);
             const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
@@ -138,6 +201,21 @@ export class StorageService {
             } else {
                 this.setStatus('idle'); // Offline is fine, just idle
             }
+        } finally {
+            this.syncInFlight = false;
+            if (this.syncQueued) {
+                this.syncQueued = false;
+                this.scheduleSync(0);
+            }
+        }
+    }
+
+    private async markDirtyChanges(changes: Array<{ entityType: SyncEntityType; entityId: string }>, options: { schedule?: boolean } = {}) {
+        await SyncService.markDirtyMany(changes);
+        await this.reloadCache();
+
+        if (options.schedule ?? true) {
+            this.scheduleSync();
         }
     }
 
@@ -209,8 +287,7 @@ export class StorageService {
             updatedAt: new Date().toISOString()
         };
         await db.workoutTypes.put(newType);
-        await this.reloadCache();
-        this.sync().catch(() => { });
+        await this.markDirtyChanges([{ entityType: 'workoutTypes', entityId: newType.id }]);
         return newType;
     }
 
@@ -220,8 +297,7 @@ export class StorageService {
             type.isDeleted = true;
             type.updatedAt = new Date().toISOString();
             await db.workoutTypes.put(type);
-            await this.reloadCache();
-            this.sync().catch(() => { });
+            await this.markDirtyChanges([{ entityType: 'workoutTypes', entityId: type.id }]);
         }
     }
 
@@ -232,8 +308,7 @@ export class StorageService {
             if (category) type.category = category;
             type.updatedAt = new Date().toISOString();
             await db.workoutTypes.put(type);
-            await this.reloadCache();
-            this.sync().catch(() => { });
+            await this.markDirtyChanges([{ entityType: 'workoutTypes', entityId: type.id }]);
         }
     }
 
@@ -254,8 +329,7 @@ export class StorageService {
         };
 
         await db.workouts.put(newWorkout);
-        await this.reloadCache();
-        this.sync().catch(() => { });
+        await this.markDirtyChanges([{ entityType: 'workouts', entityId: newWorkout.id }]);
         return newWorkout;
     }
 
@@ -266,8 +340,7 @@ export class StorageService {
             active.pauseIntervals.push({ start: new Date().toISOString() });
             active.updatedAt = new Date().toISOString();
             await db.workouts.put(active);
-            await this.reloadCache();
-            this.sync().catch(() => { });
+            await this.markDirtyChanges([{ entityType: 'workouts', entityId: active.id }]);
         }
     }
 
@@ -281,8 +354,7 @@ export class StorageService {
             }
             active.updatedAt = new Date().toISOString();
             await db.workouts.put(active);
-            await this.reloadCache();
-            this.sync().catch(() => { });
+            await this.markDirtyChanges([{ entityType: 'workouts', entityId: active.id }]);
         }
     }
 
@@ -297,8 +369,7 @@ export class StorageService {
             }
             active.updatedAt = new Date().toISOString();
             await db.workouts.put(active);
-            await this.reloadCache();
-            this.sync().catch(() => { });
+            await this.markDirtyChanges([{ entityType: 'workouts', entityId: active.id }]);
         }
     }
 
@@ -310,8 +381,7 @@ export class StorageService {
             if (updates.endTime) workout.endTime = updates.endTime;
             workout.updatedAt = new Date().toISOString();
             await db.workouts.put(workout);
-            await this.reloadCache();
-            this.sync().catch(() => { });
+            await this.markDirtyChanges([{ entityType: 'workouts', entityId: workout.id }]);
         }
     }
 
@@ -408,8 +478,10 @@ export class StorageService {
 
         await db.logs.put(newLog);
         await this.updateImplicitWorkoutBounds(workoutId);
-        await this.reloadCache();
-        this.sync().catch(() => { });
+        await this.markDirtyChanges([
+            { entityType: 'logs', entityId: newLog.id },
+            { entityType: 'workouts', entityId: workoutId }
+        ]);
         return newLog;
     }
 
@@ -424,8 +496,10 @@ export class StorageService {
             if (workoutId) {
                 await this.updateImplicitWorkoutBounds(workoutId);
             }
-            await this.reloadCache();
-            this.sync().catch(() => { });
+            await this.markDirtyChanges([
+                { entityType: 'logs', entityId: log.id },
+                ...(workoutId ? [{ entityType: 'workouts' as const, entityId: workoutId }] : [])
+            ]);
         }
     }
 
@@ -433,8 +507,7 @@ export class StorageService {
         // updatedLog comes from UI, likely doesn't have new updatedAt yet.
         const toSave = { ...updatedLog, updatedAt: new Date().toISOString() };
         await db.logs.put(toSave);
-        await this.reloadCache();
-        this.sync().catch(() => { });
+        await this.markDirtyChanges([{ entityType: 'logs', entityId: toSave.id }]);
     }
 
     getProfileIdentifier(): string {
@@ -480,8 +553,7 @@ export class StorageService {
 
         const merged = { ...profile, ...settings, updatedAt: new Date().toISOString() };
         await db.profile.put(merged);
-        await this.reloadCache();
-        this.sync().catch(() => { });
+        await this.markDirtyChanges([{ entityType: 'profile', entityId: merged.id }]);
     }
 
     async addFriend(friend: { identifier: string; displayName: string; photoUrl?: string }): Promise<void> {
@@ -528,8 +600,7 @@ export class StorageService {
 
         if (updates.length > 0) {
             await db.workoutTypes.bulkPut(updates);
-            await this.reloadCache();
-            this.sync().catch(() => { });
+            await this.markDirtyChanges(updates.map((type) => ({ entityType: 'workoutTypes' as const, entityId: type.id })));
         }
     }
 
@@ -575,11 +646,13 @@ export class StorageService {
             throw new Error('Invalid data format');
         }
 
-        await db.transaction('rw', db.workouts, db.logs, db.workoutTypes, db.profile, async () => {
+        await db.transaction('rw', [db.workouts, db.logs, db.workoutTypes, db.profile, db.dirtyEntities, db.syncState], async () => {
             await db.workouts.clear();
             await db.logs.clear();
             await db.workoutTypes.clear();
             await db.profile.clear();
+            await db.dirtyEntities.clear();
+            await db.syncState.clear();
 
             if (data.workouts?.length) await db.workouts.bulkAdd(data.workouts);
             if (data.logs?.length) await db.logs.bulkAdd(data.logs);
@@ -587,14 +660,16 @@ export class StorageService {
             if (data.profile) await db.profile.put({ ...data.profile, id: 'me' }); // ensure id
         });
 
+        await SyncService.markAllEntitiesDirty();
         await this.reloadCache();
-        this.sync().catch(() => { });
+        this.scheduleSync(0);
     }
 }
 
-export const storage = new StorageService();
-// Trigger initial load
-storage.reloadCache().then(() => {
-    // maybe notify listeners?
-    // Storage initialized
-});
+const shouldAutoInitStorage = import.meta.env.MODE !== 'test';
+
+export const storage = new StorageService({ autoInit: shouldAutoInitStorage });
+
+if (shouldAutoInitStorage) {
+    void storage.reloadCache();
+}

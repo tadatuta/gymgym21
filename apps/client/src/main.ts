@@ -264,7 +264,6 @@ function updateSyncStatusUI() {
 
 // Listen to network status
 window.addEventListener('online', () => {
-  storage.sync();
   updateSyncStatusUI();
 });
 window.addEventListener('offline', () => updateSyncStatusUI());

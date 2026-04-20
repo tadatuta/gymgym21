@@ -1,11 +1,13 @@
 import Dexie, { Table } from 'dexie';
-import { WorkoutSession, WorkoutSet, WorkoutType, UserProfile } from './types';
+import { DirtyEntityRecord, SyncStateRecord, WorkoutSession, WorkoutSet, WorkoutType, UserProfile } from './types';
 
 export class GymDatabase extends Dexie {
     workouts!: Table<WorkoutSession>;
     logs!: Table<WorkoutSet>;
     workoutTypes!: Table<WorkoutType>;
     profile!: Table<UserProfile>;
+    dirtyEntities!: Table<DirtyEntityRecord>;
+    syncState!: Table<SyncStateRecord>;
 
     constructor() {
         super('GymDatabase');
@@ -14,6 +16,14 @@ export class GymDatabase extends Dexie {
             logs: 'id, workoutId, workoutTypeId, date, updatedAt, isDeleted',
             workoutTypes: 'id, updatedAt, isDeleted',
             profile: 'id, updatedAt, isDeleted' // Profile usually has one entry, we can use a constant ID 'me'
+        });
+        this.version(2).stores({
+            workouts: 'id, status, startTime, updatedAt, version, serverUpdatedAt, isDeleted',
+            logs: 'id, workoutId, workoutTypeId, date, updatedAt, version, serverUpdatedAt, isDeleted',
+            workoutTypes: 'id, updatedAt, version, serverUpdatedAt, isDeleted',
+            profile: 'id, updatedAt, version, serverUpdatedAt, isDeleted',
+            dirtyEntities: '&key, entityType, queuedAt',
+            syncState: '&key'
         });
     }
 }

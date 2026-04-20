@@ -22,6 +22,8 @@ export interface StorageWorkoutType {
   order?: number;
   updatedAt?: string;
   isDeleted?: boolean;
+  version?: number;
+  serverUpdatedAt?: string;
 }
 
 export interface StorageLogEntry {
@@ -35,6 +37,8 @@ export interface StorageLogEntry {
   workoutId?: string;
   updatedAt?: string;
   isDeleted?: boolean;
+  version?: number;
+  serverUpdatedAt?: string;
 }
 
 export interface StorageWorkout {
@@ -47,6 +51,8 @@ export interface StorageWorkout {
   pauseIntervals: StoragePauseInterval[];
   updatedAt?: string;
   isDeleted?: boolean;
+  version?: number;
+  serverUpdatedAt?: string;
 }
 
 export interface StorageFriend {
@@ -74,14 +80,47 @@ export interface StorageProfile {
   weight?: number;
   additionalInfo?: string;
   friends?: StorageFriend[];
+  version?: number;
+  serverUpdatedAt?: string;
 }
 
 export interface StorageData {
+  revision?: number;
   workoutTypes?: StorageWorkoutType[];
   logs?: StorageLogEntry[];
   workouts?: StorageWorkout[];
   profile?: StorageProfile;
   [key: string]: unknown;
+}
+
+export type SyncEntityType = 'workoutTypes' | 'logs' | 'workouts' | 'profile';
+
+export interface SyncConflict {
+  entityType: SyncEntityType;
+  entityId: string;
+  reason: 'stale-version';
+  serverVersion: number;
+}
+
+export interface StorageSyncRequest {
+  baseRevision: number;
+  changes: {
+    workoutTypes?: StorageWorkoutType[];
+    logs?: StorageLogEntry[];
+    workouts?: StorageWorkout[];
+    profile?: StorageProfile;
+  };
+}
+
+export interface StorageSyncResponse {
+  revision: number;
+  changes: {
+    workoutTypes?: StorageWorkoutType[];
+    logs?: StorageLogEntry[];
+    workouts?: StorageWorkout[];
+    profile?: StorageProfile;
+  };
+  conflicts: SyncConflict[];
 }
 
 export interface PublicProfileData {

@@ -1,8 +1,12 @@
 export type WorkoutStatus = 'active' | 'paused' | 'finished';
 
+export type SyncEntityType = 'workoutTypes' | 'logs' | 'workouts' | 'profile';
+
 export interface SyncItem {
     updatedAt: string; // ISO
     isDeleted?: boolean;
+    version?: number;
+    serverUpdatedAt?: string;
 }
 
 export interface WorkoutSession extends SyncItem {
@@ -85,4 +89,42 @@ export interface AppData {
     logs: WorkoutSet[];
     workouts: WorkoutSession[];
     profile?: UserProfile;
+}
+
+export interface DirtyEntityRecord {
+    key: string;
+    entityType: SyncEntityType;
+    entityId: string;
+    queuedAt: string;
+}
+
+export interface SyncStateRecord {
+    key: string;
+    revision: number;
+    updatedAt: string;
+}
+
+export interface SyncConflict {
+    entityType: SyncEntityType;
+    entityId: string;
+    reason: 'stale-version';
+    serverVersion: number;
+}
+
+export interface SyncDelta {
+    workoutTypes?: WorkoutType[];
+    logs?: WorkoutSet[];
+    workouts?: WorkoutSession[];
+    profile?: UserProfile;
+}
+
+export interface SyncRequest {
+    baseRevision: number;
+    changes: SyncDelta;
+}
+
+export interface SyncResponse {
+    revision: number;
+    changes: SyncDelta;
+    conflicts: SyncConflict[];
 }

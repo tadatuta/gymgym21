@@ -389,3 +389,200 @@ test('PUT /api/me/storage rejects invalid display names', async () => {
   assert.equal(response.status, 400);
   assert.equal(response.body.error, 'Display name too long');
 });
+
+test('POST /api/me/storage/sync writes only delta records and returns revision metadata', async () => {
+  const app = createTestApp({
+    resolveRequestContext: async () => ({
+      kind: 'telegram-legacy',
+      storageKey: 'sync-user',
+      telegramUser: {
+        id: 1001,
+        first_name: 'Sync',
+      },
+    }),
+  });
+
+  const response = await request(app)
+    .post('/api/me/storage/sync')
+    .send({
+      baseRevision: 0,
+      changes: {
+        workoutTypes: [
+          {
+            id: 'rower',
+            name: 'Rower',
+            category: 'time',
+            updatedAt: '2026-03-20T10:00:00.000Z',
+          },
+        ],
+      },
+    });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.revision, 1);
+  assert.equal(response.body.conflicts.length, 0);
+  assert.equal(response.body.changes.workoutTypes.length, 1);
+  assert.equal(response.body.changes.workoutTypes[0].version, 1);
+
+  const stored = await Storage.read('sync-user');
+  assert.equal(stored.revision, 1);
+  assert.equal(stored.workoutTypes[0].serverUpdatedAt !== undefined, true);
+});
+
+test('POST /api/me/storage/sync rejects stale concurrent edits and returns the authoritative entity', async () => {
+  const app = createTestApp({
+    resolveRequestContext: async () => ({
+      kind: 'telegram-legacy',
+      storageKey: 'concurrent-user',
+      telegramUser: {
+        id: 1002,
+        first_name: 'Concurrent',
+      },
+    }),
+  });
+
+  const initial = await request(app)
+    .post('/api/me/storage/sync')
+    .send({
+      baseRevision: 0,
+      changes: {
+        workoutTypes: [
+          {
+            id: 'bench',
+            name: 'Bench Press',
+            updatedAt: '2026-03-20T10:00:00.000Z',
+          },
+        ],
+      },
+    });
+
+  assert.equal(initial.status, 200);
+  const initialType = initial.body.changes.workoutTypes[0];
+
+  const accepted = await request(app)
+    .post('/api/me/storage/sync')
+    .send({
+      baseRevision: initial.body.revision,
+      changes: {
+        workoutTypes: [
+          {
+            ...initialType,
+            name: 'Bench Press (Client A)',
+            updatedAt: '2026-03-20T10:05:00.000Z',
+          },
+        ],
+      },
+    });
+
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.body.conflicts.length, 0);
+  const acceptedType = accepted.body.changes.workoutTypes[0];
+
+  const stale = await request(app)
+    .post('/api/me/storage/sync')
+    .send({
+      baseRevision: initial.body.revision,
+      changes: {
+        workoutTypes: [
+          {
+            ...initialType,
+            name: 'Bench Press (Client B)',
+            updatedAt: '2026-03-20T10:06:00.000Z',
+          },
+        ],
+      },
+    });
+
+  assert.equal(stale.status, 200);
+  assert.equal(stale.body.conflicts.length, 1);
+  assert.equal(stale.body.conflicts[0].reason, 'stale-version');
+  assert.equal(stale.body.changes.workoutTypes[0].name, 'Bench Press (Client A)');
+  assert.equal(stale.body.changes.workoutTypes[0].version, acceptedType.version);
+});
+
+test('POST /api/me/storage/sync propagates soft deletions and keeps large histories incremental', async () => {
+  const app = createTestApp({
+    resolveRequestContext: async () => ({
+      kind: 'telegram-legacy',
+      storageKey: 'deletion-user',
+      telegramUser: {
+        id: 1003,
+        first_name: 'Delete',
+      },
+    }),
+  });
+
+  const logs = Array.from({ length: 250 }, (_, index) => ({
+    id: `log-${index}`,
+    workoutTypeId: 'run',
+    duration: 30,
+    workoutId: 'workout-1',
+    date: `2026-03-22T10:${String(index % 60).padStart(2, '0')}:00.000Z`,
+    updatedAt: '2026-03-22T10:00:00.000Z',
+  }));
+
+  const initial = await request(app)
+    .put('/api/me/storage')
+    .send({
+      workoutTypes: [
+        {
+          id: 'run',
+          name: 'Run',
+          category: 'time',
+          updatedAt: '2026-03-22T10:00:00.000Z',
+        },
+      ],
+      workouts: [
+        {
+          id: 'workout-1',
+          startTime: '2026-03-22T10:00:00.000Z',
+          endTime: '2026-03-22T11:00:00.000Z',
+          status: 'finished',
+          isManual: true,
+          pauseIntervals: [],
+          updatedAt: '2026-03-22T11:00:00.000Z',
+        },
+      ],
+      logs,
+      profile: {
+        id: 'me',
+        isPublic: false,
+        createdAt: '2026-03-22T10:00:00.000Z',
+        displayName: 'Deletion User',
+      },
+    });
+
+  assert.equal(initial.status, 200);
+
+  const stored = await Storage.read('deletion-user');
+  const targetLog = stored.logs.find((entry) => entry.id === 'log-1');
+
+  const deletion = await request(app)
+    .post('/api/me/storage/sync')
+    .send({
+      baseRevision: stored.revision,
+      changes: {
+        logs: [
+          {
+            ...targetLog,
+            isDeleted: true,
+            updatedAt: '2026-03-22T12:00:00.000Z',
+          },
+        ],
+      },
+    });
+
+  assert.equal(deletion.status, 200);
+  assert.equal(deletion.body.changes.logs.length, 1);
+  assert.equal(deletion.body.changes.logs[0].isDeleted, true);
+
+  const noOp = await request(app)
+    .post('/api/me/storage/sync')
+    .send({
+      baseRevision: deletion.body.revision,
+      changes: {},
+    });
+
+  assert.equal(noOp.status, 200);
+  assert.deepEqual(noOp.body.changes, {});
+});
