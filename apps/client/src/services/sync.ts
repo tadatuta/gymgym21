@@ -17,7 +17,6 @@ import {
 
 const SYNC_REVISION_KEY = 'sync-revision';
 const PROFILE_ID = 'me';
-const ARRAY_ENTITY_TYPES = ['workoutTypes', 'logs', 'workouts'] as const;
 
 type SyncEntityMap = {
   workoutTypes: WorkoutType;
@@ -26,7 +25,7 @@ type SyncEntityMap = {
   profile: UserProfile;
 };
 
-type ArrayEntityType = (typeof ARRAY_ENTITY_TYPES)[number];
+type ArrayEntityType = 'workoutTypes' | 'logs' | 'workouts';
 
 export interface SyncExecutionResult {
   revision: number;

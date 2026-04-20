@@ -33,11 +33,17 @@ import { renderProfileStats } from './components/profile/ProfileStats';
 import { ProfileStats } from './types';
 import { escapeAttribute, escapeHtml, renderSafeAvatarMarkup, replaceAvatarContent, sanitizeUrl } from './utils/safe-html';
 import { replaceMarkdownContent } from './utils/safe-markdown';
+import {
+  type AppRoute,
+  type InternalRouteName,
+  buildUrl,
+  createInternalRoute,
+  isSameRoute,
+  resolveRoute,
+} from './router';
 
 const getProfileLink = (identifier: string) => {
-  const url = new URL(window.location.pathname, window.location.origin);
-  url.searchParams.set('startapp', `profile_${identifier}`);
-  return url.toString();
+  return new URL(buildUrl({ name: 'public-profile', identifier }), window.location.origin).toString();
 };
 
 type AiRecommendationType = 'general' | 'plan';
@@ -117,14 +123,11 @@ function updateAiResult(type: AiRecommendationType, result: string) {
 // Register Service Worker
 registerSW({ immediate: true });
 
-
-
-type Page = 'main' | 'stats' | 'settings' | 'profile-settings' | 'public-profile';
-let currentPage: Page = 'main';
+let currentRoute: AppRoute = resolveRoute(window.location).route;
 let selectedStatType = 'all';
 let editingLogId: string | null = null;
-let viewingProfileIdentifier: string | null = null;
 let loadedPublicProfile: PublicProfileData | null = null;
+let loadedPublicProfileIdentifier: string | null = null;
 let profileLoadFailed = false;
 let lastAddedLogId: string | null = null;
 let editingTypeId: string | null = null;
@@ -138,10 +141,101 @@ let aiLoadingState: 'idle' | 'general' | 'plan' = 'idle';
 // Workout UI state
 let isStartingWorkout = false;
 let editingWorkoutId: string | null = null;
+let publicProfileRequestId = 0;
 
-function navigate(page: Page) {
-  currentPage = page;
+function getCurrentPage() {
+  return currentRoute.name;
+}
+
+function clearPublicProfileState() {
+  loadedPublicProfile = null;
+  loadedPublicProfileIdentifier = null;
+  profileLoadFailed = false;
+}
+
+function shouldReloadPublicProfile(route: AppRoute) {
+  return (
+    route.name === 'public-profile' && (
+      loadedPublicProfileIdentifier !== route.identifier ||
+      loadedPublicProfile === null ||
+      profileLoadFailed
+    )
+  );
+}
+
+async function loadPublicProfile(identifier: string) {
+  const requestId = ++publicProfileRequestId;
+  loadedPublicProfile = null;
+  loadedPublicProfileIdentifier = identifier;
+  profileLoadFailed = false;
   render();
+
+  const profile = await storage.getPublicProfile(identifier);
+  if (requestId !== publicProfileRequestId) {
+    return;
+  }
+
+  if (currentRoute.name !== 'public-profile' || currentRoute.identifier !== identifier) {
+    return;
+  }
+
+  loadedPublicProfile = profile;
+  profileLoadFailed = !profile;
+  render();
+}
+
+async function applyRoute(route: AppRoute, options: { replace?: boolean; syncHistory?: boolean } = {}) {
+  const { replace = false, syncHistory = true } = options;
+  const previousRoute = currentRoute;
+  const routeChanged = !isSameRoute(previousRoute, route);
+  currentRoute = route;
+
+  if (syncHistory) {
+    const nextUrl = buildUrl(route);
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (currentUrl !== nextUrl) {
+      window.history[replace ? 'replaceState' : 'pushState'](null, '', nextUrl);
+    }
+  }
+
+  if (route.name === 'public-profile') {
+    if (shouldReloadPublicProfile(route)) {
+      await loadPublicProfile(route.identifier);
+      return;
+    }
+
+    render();
+    return;
+  }
+
+  if (previousRoute.name === 'public-profile' || routeChanged) {
+    publicProfileRequestId += 1;
+    clearPublicProfileState();
+  }
+
+  render();
+}
+
+function navigate(route: AppRoute, options?: { replace?: boolean }) {
+  void applyRoute(route, { replace: options?.replace, syncHistory: true });
+}
+
+function bindRouteLinks(root: ParentNode = document) {
+  root.querySelectorAll<HTMLElement>('[data-route-kind="public-profile"]').forEach((link) => {
+    link.addEventListener('click', (event) => {
+      if (event instanceof MouseEvent && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) {
+        return;
+      }
+
+      const identifier = link.getAttribute('data-profile-identifier');
+      if (!identifier) {
+        return;
+      }
+
+      event.preventDefault();
+      navigate({ name: 'public-profile', identifier });
+    });
+  });
 }
 
 // Toast notification
@@ -168,6 +262,8 @@ function render() {
   if (!getCurrentUser()) {
     return;
   }
+
+  const currentPage = getCurrentPage();
 
   app.innerHTML = `
     <main class="content">
@@ -197,8 +293,8 @@ function render() {
   // Bind events
   app.querySelectorAll('.navigation__item').forEach(item => {
     item.addEventListener('click', () => {
-      const page = item.getAttribute('data-page') as Page;
-      navigate(page);
+      const page = item.getAttribute('data-page') as InternalRouteName;
+      navigate(createInternalRoute(page));
     });
   });
 
@@ -273,7 +369,7 @@ function getPreferredDisplayName(profileDisplayName?: string) {
 }
 
 function renderPage() {
-  switch (currentPage) {
+  switch (currentRoute.name) {
     case 'main':
       return renderMainPage();
     case 'stats':
@@ -962,7 +1058,13 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
           <div class="settings-section-title">Друзья (${profile.friends.length})</div>
           <div class="friends-list">
               ${profile.friends.map((f) => `
-                  <a href="${escapeAttribute(getProfileLink(f.identifier))}" class="friend-item" style="display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border-color); cursor: pointer; text-decoration: none; color: inherit;">
+                  <a
+                    href="${escapeAttribute(getProfileLink(f.identifier))}"
+                    class="friend-item"
+                    data-route-kind="public-profile"
+                    data-profile-identifier="${escapeAttribute(f.identifier)}"
+                    style="display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border-color); cursor: pointer; text-decoration: none; color: inherit;"
+                  >
                       <div class="friend-avatar" style="width: 40px; height: 40px; border-radius: 50%; background: var(--surface-color-alt); display: flex; align-items: center; justify-content: center; overflow: hidden;">
                           ${renderSafeAvatarMarkup(f.displayName, f.photoUrl, 'style="width: 100%; height: 100%; object-fit: cover;"')}
                       </div>
@@ -1623,8 +1725,7 @@ function bindProfileSettingsEvents() {
 }
 
 function renderPublicProfilePage() {
-
-  if (!viewingProfileIdentifier) {
+  if (currentRoute.name !== 'public-profile') {
     return `
       <div class="page-content">
         <div class="profile-not-found">
@@ -1898,6 +1999,9 @@ function shareWorkout(dateStr: string) {
 }
 
 function bindPageEvents() {
+  const currentPage = getCurrentPage();
+  bindRouteLinks();
+
   if (currentPage === 'main') {
     // Workout controls events - use partial update
     bindWorkoutControlEvents();
@@ -2172,7 +2276,7 @@ function updateSyncStatus(status: SyncStatus) {
 }
 
 storage.onUpdate(() => {
-  switch (currentPage) {
+  switch (currentRoute.name) {
     case 'main':
       render();
       break;
@@ -2217,28 +2321,20 @@ async function initApp() {
   }
 
   storage.scheduleSync(0);
-
-  // Check for profile deep link from startapp parameter
-  const currentParams = new URLSearchParams(window.location.search);
-  const startApp = currentParams.get('startapp');
-
-  if (startApp && startApp.startsWith('profile_')) {
-    const identifier = startApp.replace('profile_', '');
-    viewingProfileIdentifier = identifier;
-    currentPage = 'public-profile';
-    profileLoadFailed = false;
-    render();
-
-    // Load the public profile
-    loadedPublicProfile = await storage.getPublicProfile(identifier);
-    if (!loadedPublicProfile) {
-      profileLoadFailed = true;
-    }
-    render();
-  } else {
-    render();
-  }
+  const initialRoute = resolveRoute(window.location);
+  await applyRoute(initialRoute.route, {
+    replace: initialRoute.shouldReplace,
+    syncHistory: initialRoute.shouldReplace,
+  });
   // Note: storage.init() is called automatically in StorageService constructor
 }
+
+window.addEventListener('popstate', () => {
+  const resolvedRoute = resolveRoute(window.location);
+  void applyRoute(resolvedRoute.route, {
+    replace: resolvedRoute.shouldReplace,
+    syncHistory: resolvedRoute.shouldReplace,
+  });
+});
 
 initApp();
