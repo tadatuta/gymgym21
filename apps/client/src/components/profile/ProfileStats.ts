@@ -1,4 +1,5 @@
 import { ProfileStats } from '../../types';
+import { escapeHtml } from '../../utils/safe-html';
 import { renderHeatmap } from '../stats/Heatmap';
 
 export function renderProfileStats(stats: ProfileStats, logDates?: Set<string>): string {
@@ -25,7 +26,7 @@ export function renderProfileStats(stats: ProfileStats, logDates?: Set<string>):
         </div>
         ${stats.favoriteExercise ? `
           <div class="stat-card">
-            <div class="stat-value" style="font-size: 1rem;">${stats.favoriteExercise}</div>
+            <div class="stat-value" style="font-size: 1rem;">${escapeHtml(stats.favoriteExercise)}</div>
             <div class="stat-label">Любимое упражнение</div>
           </div>
         ` : ''}

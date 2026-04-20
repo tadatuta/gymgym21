@@ -6,6 +6,11 @@ function getBaseUrl(): string {
     return 'https://localhost/';
 }
 
+/**
+ * Never interpolate raw user-controlled strings into HTML templates.
+ * Use `escapeHtml` for element text, `escapeAttribute` for attributes,
+ * and `sanitizeUrl` before writing URLs into `href`/`src`.
+ */
 export function escapeHtml(value: string | number | null | undefined): string {
     const input = value == null ? '' : String(value);
 
@@ -18,6 +23,14 @@ export function escapeHtml(value: string | number | null | undefined): string {
 }
 
 export const escapeAttribute = escapeHtml;
+
+export function renderOption(
+    value: string | number | null | undefined,
+    label: string | number | null | undefined,
+    selected = false,
+): string {
+    return `<option value="${escapeAttribute(value)}"${selected ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+}
 
 export function sanitizeUrl(value: string | null | undefined, baseUrl = getBaseUrl()): string | null {
     if (!value) {

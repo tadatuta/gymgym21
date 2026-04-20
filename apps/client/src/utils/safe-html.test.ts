@@ -2,30 +2,43 @@ import { describe, expect, it } from 'vitest';
 import {
     escapeAttribute,
     escapeHtml,
+    renderOption,
     replaceAvatarContent,
     sanitizeUrl,
 } from './safe-html';
 
 describe('safe-html helpers', () => {
-    it('escapes profile-controlled HTML text', () => {
+    it('renders exercise names in select options as inert text', () => {
         const payload = '<img src=x onerror="alert(1)">';
-
-        const markup = `<div class="name">${escapeHtml(payload)}</div>`;
+        const markup = `<select>${renderOption('exercise-id', payload, true)}</select>`;
         const container = document.createElement('div');
         container.innerHTML = markup;
 
         expect(container.querySelector('img')).toBeNull();
-        expect(container.querySelector('.name')?.textContent).toBe(payload);
+        expect(container.querySelector('option')?.textContent).toBe(payload);
+        expect(container.querySelector('option')?.selected).toBe(true);
+    });
+
+    it('renders workout names in headers as inert text', () => {
+        const payload = '<svg onload=alert(1)>';
+
+        const markup = `<div class="workout-name">${escapeHtml(payload)}</div>`;
+        const container = document.createElement('div');
+        container.innerHTML = markup;
+
+        expect(container.querySelector('svg')).toBeNull();
+        expect(container.querySelector('.workout-name')?.textContent).toBe(payload);
     });
 
     it('escapes quotes in attribute values', () => {
-        const payload = '" autofocus onfocus="alert(1)';
+        const payload = '"><img src=x onerror=alert(1)></textarea>';
 
         const markup = `<input value="${escapeAttribute(payload)}">`;
         const container = document.createElement('div');
         container.innerHTML = markup;
 
         const input = container.querySelector('input');
+        expect(container.querySelector('img')).toBeNull();
         expect(input?.getAttribute('value')).toBe(payload);
         expect(markup).toContain('&quot;');
     });

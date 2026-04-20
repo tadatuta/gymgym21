@@ -31,7 +31,7 @@ import Sortable from 'sortablejs';
 import { downloadFile, generateMarkdown } from './utils/export';
 import { renderProfileStats } from './components/profile/ProfileStats';
 import { ProfileStats } from './types';
-import { escapeAttribute, escapeHtml, renderSafeAvatarMarkup, replaceAvatarContent, sanitizeUrl } from './utils/safe-html';
+import { escapeAttribute, escapeHtml, renderOption, renderSafeAvatarMarkup, replaceAvatarContent, sanitizeUrl } from './utils/safe-html';
 import { replaceMarkdownContent } from './utils/safe-markdown';
 import {
   type AppRoute,
@@ -401,7 +401,7 @@ function renderWorkoutControls() {
             </span>
             <span class="workout-timer">00:00</span>
           </div>
-          ${activeWorkout.name ? `<span class="workout-name">${activeWorkout.name}</span>` : ''}
+          ${activeWorkout.name ? `<span class="workout-name">${escapeHtml(activeWorkout.name)}</span>` : ''}
         </div>
         <div class="workout-controls__actions">
           ${isPaused
@@ -518,8 +518,11 @@ function renderMainPage() {
   const logs = storage.getLogs();
   const lastLog = logs[logs.length - 1];
   const lastTypeId = lastLog?.workoutTypeId;
-
   const editingLog = editingLogId ? logs.find(l => l.id === editingLogId) : null;
+  const selectedWorkoutTypeId = editingLogId
+    ? editingLog?.workoutTypeId
+    : lastTypeId;
+  const duplicateWorkoutTypeName = escapeHtml(types.find(t => t.id === lastLog?.workoutTypeId)?.name || '');
   const { label } = getWeekRange(currentWeekOffset);
 
   return `
@@ -532,13 +535,17 @@ function renderMainPage() {
           ${types.length > 10
       ? renderTypeahead({
         items: types.map(t => ({ id: t.id, name: t.name })),
-        selectedId: editingLogId ? editingLog?.workoutTypeId : lastTypeId,
+        selectedId: selectedWorkoutTypeId,
         name: 'typeId',
         inputId: 'workout-type-select',
         placeholder: 'Начните вводить название...'
       })
       : `<select class="select" name="typeId" id="workout-type-select" required>
-                ${types.map(t => `<option value="${t.id}" ${(editingLogId ? (editingLog && t.id === editingLog.workoutTypeId) : (t.id === lastTypeId)) ? 'selected' : ''}>${t.name}</option>`).join('')}
+                ${types.map(t => renderOption(
+                  t.id,
+                  t.name,
+                  t.id === selectedWorkoutTypeId,
+                )).join('')}
               </select>`
     }
         </div>
@@ -584,7 +591,7 @@ function renderMainPage() {
 
         <button class="button" type="submit">${editingLogId ? 'Сохранить изменения' : 'Зафиксировать'}</button>
         ${editingLogId ? `<button class="button button_secondary" type="button" id="cancel-edit-btn" style="margin-top: 12px;">Отмена</button>` : ''}
-        ${!editingLogId && lastLog ? `<button class="button button_secondary" type="button" id="duplicate-last-btn" style="margin-top: 12px;">Повторить: ${types.find(t => t.id === lastLog.workoutTypeId)?.name} ${lastLog.weight !== undefined ? `${lastLog.weight}кг × ${lastLog.reps}` : `${lastLog.duration || 0} мин${lastLog.durationSeconds ? ` ${lastLog.durationSeconds} сек` : ''}`}</button>` : ''}
+        ${!editingLogId && lastLog ? `<button class="button button_secondary" type="button" id="duplicate-last-btn" style="margin-top: 12px;">Повторить: ${duplicateWorkoutTypeName} ${lastLog.weight !== undefined ? `${lastLog.weight}кг × ${lastLog.reps}` : `${lastLog.duration || 0} мин${lastLog.durationSeconds ? ` ${lastLog.durationSeconds} сек` : ''}`}</button>` : ''}
 
       </form>
       <div class="recent-logs">
@@ -804,7 +811,7 @@ function renderWorkoutEditForm(workout: WorkoutSession): string {
       <form id="workout-edit-form">
         <div class="form-group">
           <label class="label">Название</label>
-          <input class="input" type="text" name="workoutName" placeholder="Название (опционально)" value="${workout.name || ''}">
+          <input class="input" type="text" name="workoutName" placeholder="Название (опционально)" value="${escapeAttribute(workout.name || '')}">
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -866,10 +873,10 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
 
     html += `<div class="log-day">`;
     html += `<div class="log-day__header">
-      <span>${dateLabel}${showNameInHeader ? ` • ${singleWorkout.name}` : ''}${singleWorkout ? ` • ${singleWorkoutDuration} мин` : ''}</span>
+      <span>${dateLabel}${showNameInHeader ? ` • ${escapeHtml(singleWorkout.name || '')}` : ''}${singleWorkout ? ` • ${singleWorkoutDuration} мин` : ''}</span>
       <div class="log-day__header-actions">
-        ${isEditable && singleWorkout ? `<button class="workout-header__edit" data-workout-id="${singleWorkout.id}" title="Редактировать тренировку">✏️</button>` : ''}
-        ${isEditable ? `<button class="share-btn" data-date="${dayDateStr}" title="Поделиться">📤</button>` : ''}
+        ${isEditable && singleWorkout ? `<button class="workout-header__edit" data-workout-id="${escapeAttribute(singleWorkout.id)}" title="Редактировать тренировку">✏️</button>` : ''}
+        ${isEditable ? `<button class="share-btn" data-date="${escapeAttribute(dayDateStr)}" title="Поделиться">📤</button>` : ''}
       </div>
     </div>`;
 
@@ -889,10 +896,10 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
         const duration = workout ? Math.round(storage.getWorkoutDuration(workout)) : 0;
 
         html += `<h3 class="workout-subheader">
-                <span>${workout?.name || 'Тренировка'}</span>
+                <span>${escapeHtml(workout?.name || 'Тренировка')}</span>
                 <div class="workout-subheader__actions">
                   <span class="workout-subheader__time">${duration} мин</span>
-                  ${isEditable && workout ? `<button class="workout-header__edit" data-workout-id="${workout.id}" title="Редактировать тренировку">✏️</button>` : ''}
+                  ${isEditable && workout ? `<button class="workout-header__edit" data-workout-id="${escapeAttribute(workout.id)}" title="Редактировать тренировку">✏️</button>` : ''}
                 </div>
             </h3>`;
 
@@ -915,10 +922,10 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
         const type = types.find(t => t.id === typeId);
         html += `
             <div class="log-exercise">
-              <div class="log-exercise__name" data-type-id="${type?.id || ''}" style="cursor: pointer;">${type?.name || 'Удалено'}</div>
+              <div class="log-exercise__name" data-type-id="${escapeAttribute(type?.id || '')}" style="cursor: pointer;">${escapeHtml(type?.name || 'Удалено')}</div>
               <div class="log-exercise__sets">
                 ${sets.map(set => `
-                  <div class="log-set ${set.id === editingLogId ? 'log-set_active-edit' : ''} ${set.id === lastAddedLogId ? 'log-set_new' : ''}" data-id="${set.id}" style="cursor: pointer;">
+                  <div class="log-set ${set.id === editingLogId ? 'log-set_active-edit' : ''} ${set.id === lastAddedLogId ? 'log-set_new' : ''}" data-id="${escapeAttribute(set.id)}" style="cursor: pointer;">
                     <div class="log-set__info">
                       ${set.weight !== undefined && set.reps !== undefined ? `
                         <span class="log-set__weight">${set.weight} кг</span>
@@ -930,8 +937,8 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
                     </div>
                     ${isEditable ? `
                     <div class="log-set__actions">
-                      <button class="log-set__edit" data-id="${set.id}">✏️</button>
-                      <button class="log-set__delete" data-id="${set.id}">×</button>
+                      <button class="log-set__edit" data-id="${escapeAttribute(set.id)}">✏️</button>
+                      <button class="log-set__delete" data-id="${escapeAttribute(set.id)}">×</button>
                     </div>
                     ` : ''}
                   </div>
@@ -957,10 +964,10 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
         const type = types.find(t => t.id === typeId);
         html += `
             <div class="log-exercise">
-              <div class="log-exercise__name" data-type-id="${type?.id || ''}" style="cursor: pointer;">${type?.name || 'Удалено'}</div>
+              <div class="log-exercise__name" data-type-id="${escapeAttribute(type?.id || '')}" style="cursor: pointer;">${escapeHtml(type?.name || 'Удалено')}</div>
               <div class="log-exercise__sets">
                 ${sets.map(set => `
-                  <div class="log-set ${set.id === editingLogId ? 'log-set_active-edit' : ''} ${set.id === lastAddedLogId ? 'log-set_new' : ''}" data-id="${set.id}" style="cursor: pointer;">
+                  <div class="log-set ${set.id === editingLogId ? 'log-set_active-edit' : ''} ${set.id === lastAddedLogId ? 'log-set_new' : ''}" data-id="${escapeAttribute(set.id)}" style="cursor: pointer;">
                     <div class="log-set__info">
                       ${set.weight !== undefined && set.reps !== undefined ? `
                         <span class="log-set__weight">${set.weight} кг</span>
@@ -972,8 +979,8 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
                     </div>
                     ${isEditable ? `
                     <div class="log-set__actions">
-                      <button class="log-set__edit" data-id="${set.id}">✏️</button>
-                      <button class="log-set__delete" data-id="${set.id}">×</button>
+                      <button class="log-set__edit" data-id="${escapeAttribute(set.id)}">✏️</button>
+                      <button class="log-set__delete" data-id="${escapeAttribute(set.id)}">×</button>
                     </div>
                     ` : ''}
                   </div>
@@ -1001,7 +1008,7 @@ function renderSettingsPage() {
         <h2 class="subtitle">${editingTypeId ? 'Редактирование типа' : 'Добавить тип тренировки'}</h2>
         <form class="add-type-form" id="add-type-form" style="margin-bottom: 24px;">
           <div style="display: flex; gap: 8px; flex-direction: column;">
-            <input class="input" type="text" id="new-type-name" placeholder="Название (напр. Жим гантелей)" required value="${editingType ? editingType.name : ''}">
+            <input class="input" type="text" id="new-type-name" placeholder="Название (напр. Жим гантелей)" required value="${escapeAttribute(editingType ? editingType.name : '')}">
             
             <div class="category-switch" style="display: flex; gap: 12px; margin-bottom: 8px;">
                 <label style="display: flex; align-items: center; gap: 4px;">
@@ -1022,12 +1029,12 @@ function renderSettingsPage() {
         <h2 class="subtitle">Типы тренировок</h2>
         <div class="type-list" id="workout-type-list">
           ${types.map(t => `
-            <div class="type-item" data-id="${t.id}">
+            <div class="type-item" data-id="${escapeAttribute(t.id)}">
               <span class="drag-handle" style="cursor: grab; margin-right: 12px; opacity: 0.5;">⋮⋮</span>
-              <span style="flex-grow: 1;">${t.name}</span>
+              <span style="flex-grow: 1;">${escapeHtml(t.name)}</span>
               <div style="display: flex; gap: 8px;">
-                <button class="type-item__edit icon-btn" data-id="${t.id}" title="Редактировать">✏️</button>
-                <button class="type-item__delete icon-btn" data-id="${t.id}" title="Удалить">×</button>
+                <button class="type-item__edit icon-btn" data-id="${escapeAttribute(t.id)}" title="Редактировать">✏️</button>
+                <button class="type-item__delete icon-btn" data-id="${escapeAttribute(t.id)}" title="Удалить">×</button>
               </div>
             </div>
           `).join('')}
@@ -1249,8 +1256,8 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
       <div class="settings-section">
         <div class="settings-section-title">Аккаунт</div>
         <div style="display:flex; flex-direction:column; gap:10px;">
-          <div><strong>Email:</strong> ${getCurrentUser()?.email || '—'}</div>
-          <div><strong>Username:</strong> ${getCurrentUser()?.username || authStatus?.suggestedUsername || 'не задан'}</div>
+          <div><strong>Email:</strong> ${escapeHtml(getCurrentUser()?.email || '—')}</div>
+          <div><strong>Username:</strong> ${escapeHtml(getCurrentUser()?.username || authStatus?.suggestedUsername || 'не задан')}</div>
           <div><strong>Telegram:</strong> ${authStatus?.hasTelegram ? 'подключен' : 'не подключен'}</div>
           <div><strong>Passkey:</strong> ${authStatus?.hasPasskey ? 'добавлен' : 'не добавлен'}</div>
         </div>
@@ -1903,7 +1910,7 @@ function renderStatsPage() {
             <label class="label">Упражнение</label>
             <select class="select" id="stat-type-select">
                 <option value="all">Все упражнения (Объем)</option>
-                ${types.map(t => `<option value="${t.id}" ${selectedStatType === t.id ? 'selected' : ''}>${t.name}</option>`).join('')}
+                ${types.map(t => renderOption(t.id, t.name, selectedStatType === t.id)).join('')}
             </select>
         </div>
     `;

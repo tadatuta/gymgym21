@@ -1,3 +1,5 @@
+import { escapeAttribute, escapeHtml } from '../../utils/safe-html';
+
 export interface TypeaheadItem {
     id: string;
     name: string;
@@ -61,10 +63,6 @@ function highlightMatches(text: string, indices: number[]): string {
     return result;
 }
 
-function escapeHtml(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 /**
  * Renders the typeahead HTML string.
  */
@@ -80,15 +78,15 @@ export function renderTypeahead(options: TypeaheadOptions): string {
         type="text"
         class="typeahead__input"
         autocomplete="off"
-        value="${escapeHtml(displayInitial)}"
-        placeholder="${escapeHtml(placeholder || 'Поиск...')}"
+        value="${escapeAttribute(displayInitial)}"
+        placeholder="${escapeAttribute(placeholder || 'Поиск...')}"
         data-typeahead-input
       >
       <input
         type="hidden"
-        name="${escapeHtml(name)}"
-        ${inputId ? `id="${escapeHtml(inputId)}"` : ''}
-        value="${escapeHtml(hiddenValue)}"
+        name="${escapeAttribute(name)}"
+        ${inputId ? `id="${escapeAttribute(inputId)}"` : ''}
+        value="${escapeAttribute(hiddenValue)}"
         data-typeahead-value
         required
       >
@@ -151,7 +149,7 @@ export function bindTypeahead(container: Element | Document = document): void {
                 const label = f.indices.length > 0
                     ? highlightMatches(f.item.name, f.indices)
                     : escapeHtml(f.item.name);
-                return `<div class="typeahead__option ${i === activeIndex ? 'typeahead__option_active' : ''}" data-typeahead-option-index="${i}" data-id="${escapeHtml(f.item.id)}">${label}</div>`;
+                return `<div class="typeahead__option ${i === activeIndex ? 'typeahead__option_active' : ''}" data-typeahead-option-index="${i}" data-id="${escapeAttribute(f.item.id)}">${label}</div>`;
             }).join('');
         }
     }

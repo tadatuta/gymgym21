@@ -13,6 +13,7 @@ import {
   signInWithTelegram,
   TELEGRAM_BOT_NAME,
 } from '../../auth';
+import { escapeAttribute, escapeHtml } from '../../utils/safe-html';
 
 declare global {
   interface Window {
@@ -33,7 +34,7 @@ function renderShell(container: HTMLElement, content: string, note?: string) {
             <div style="color:#666; margin-top:4px;">Авторизация через Better Auth</div>
           </div>
         </div>
-        ${note ? `<div style="margin-bottom:16px; padding:12px 14px; border-radius:14px; background:#f5f5f5; color:#333;">${note}</div>` : ''}
+        ${note ? `<div style="margin-bottom:16px; padding:12px 14px; border-radius:14px; background:#f5f5f5; color:#333;">${escapeHtml(note)}</div>` : ''}
         ${content}
       </div>
     </div>
@@ -43,7 +44,7 @@ function renderShell(container: HTMLElement, content: string, note?: string) {
 function renderStatus(message: string) {
   return `
     <div style="padding:18px; border-radius:18px; background:#f5f5f5; text-align:center;">
-      <div style="font-size:15px; color:#444;">${message}</div>
+      <div style="font-size:15px; color:#444;">${escapeHtml(message)}</div>
     </div>
   `;
 }
@@ -58,7 +59,7 @@ function renderAuthForm(mode: Exclude<LoginMode, 'complete'>, error?: string) {
         <button id="auth-mode-sign-up" class="button ${isSignUp ? '' : 'button_secondary'}" style="flex:1;">Регистрация</button>
       </div>
 
-      ${error ? `<div style="padding:12px 14px; border-radius:14px; background:#fff1f1; color:#9d1c1c;">${error}</div>` : ''}
+      ${error ? `<div style="padding:12px 14px; border-radius:14px; background:#fff1f1; color:#9d1c1c;">${escapeHtml(error)}</div>` : ''}
 
       <form id="email-auth-form" style="display:flex; flex-direction:column; gap:12px;">
         <input class="input" type="email" name="email" placeholder="Email" required>
@@ -94,9 +95,9 @@ function renderCompletionForm(prefill: { email?: string; username?: string | nul
       </div>
 
       <form id="migration-complete-form" style="display:flex; flex-direction:column; gap:12px;">
-        <input class="input" type="email" name="email" placeholder="Email" required value="${prefill.email || ''}">
-        <input class="input" type="text" name="name" placeholder="Имя" value="${prefill.name || ''}">
-        <input class="input" type="text" name="username" placeholder="Username" required pattern="[A-Za-z0-9_]{5,32}" value="${prefill.username || ''}">
+        <input class="input" type="email" name="email" placeholder="Email" required value="${escapeAttribute(prefill.email || '')}">
+        <input class="input" type="text" name="name" placeholder="Имя" value="${escapeAttribute(prefill.name || '')}">
+        <input class="input" type="text" name="username" placeholder="Username" required pattern="[A-Za-z0-9_]{5,32}" value="${escapeAttribute(prefill.username || '')}">
         <input class="input" type="password" name="password" placeholder="Новый пароль" required minlength="8">
         <button class="button" type="submit">Завершить миграцию</button>
       </form>
@@ -108,7 +109,7 @@ async function showCompletionForm(container: HTMLElement, onLoginSuccess: () => 
   const status = await getMigrationStatus();
   renderShell(
     container,
-    `${error ? `<div style="margin-bottom:14px; padding:12px 14px; border-radius:14px; background:#fff1f1; color:#9d1c1c;">${error}</div>` : ''}
+    `${error ? `<div style="margin-bottom:14px; padding:12px 14px; border-radius:14px; background:#fff1f1; color:#9d1c1c;">${escapeHtml(error)}</div>` : ''}
      ${renderCompletionForm({
        email: status.emailIsPlaceholder ? '' : status.user.email,
        username: status.user.username || status.suggestedUsername || '',
