@@ -1767,13 +1767,6 @@ function renderPublicProfilePage() {
   const safeFriendIdentifier = escapeAttribute(profile.identifier);
   const safeFriendName = escapeAttribute(profile.displayName);
   const safeFriendPhoto = escapeAttribute(sanitizeUrl(profile.photoUrl) ?? '');
-  // Filter out deleted items
-  if (profile.logs) {
-    profile.logs = profile.logs.filter(l => !l.isDeleted);
-  }
-  if (profile.workoutTypes) {
-    profile.workoutTypes = profile.workoutTypes.filter(t => !t.isDeleted);
-  }
   return `
     <div class="page-content profile-page">
       <div class="profile-header">
@@ -1801,19 +1794,8 @@ function renderPublicProfilePage() {
       </div>
 
       ${(function () {
-      let calculatedVolume = 0;
-      if (profile.logs) {
-        calculatedVolume = profile.logs.reduce((acc, l) => acc + ((l.weight || 0) * (l.reps || 0)), 0);
-      }
-      const totalVolume = Math.max(profile.stats.totalVolume, calculatedVolume);
-
-      const stats: ProfileStats = {
-        ...profile.stats,
-        totalVolume
-      };
-
       const logDates = profile.logs ? new Set(profile.logs.map(l => l.date.split('T')[0])) : new Set<string>();
-      return renderProfileStats(stats, logDates);
+      return renderProfileStats(profile.stats, logDates);
     })()}
 
       ${profile.recentActivity.length > 0 ? `

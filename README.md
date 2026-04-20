@@ -40,6 +40,10 @@ npm run test
 npm run build
 ```
 
+## Client HTML Safety
+
+- Пользовательские строки нельзя вставлять в HTML-шаблоны напрямую: для текста используйте `escapeHtml`, для атрибутов `escapeAttribute`, для ссылок и изображений сначала `sanitizeUrl`.
+
 ## Docker Deploy
 
 1. Создать `.env` на основе `.env.example`.

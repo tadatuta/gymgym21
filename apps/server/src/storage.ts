@@ -231,22 +231,24 @@ export class Storage {
   static buildPublicProfile(data: StorageData, fallbackIdentifier: string): PublicProfileData | null {
     if (!data.profile?.isPublic) return null;
 
-    const logs = data.logs || [];
     const workoutTypes = data.workoutTypes || [];
+    const activeWorkoutTypes = workoutTypes.filter((entry) => !entry.isDeleted);
+    const activeWorkoutTypeIds = new Set(activeWorkoutTypes.map((entry) => entry.id));
+    const activeLogs = (data.logs || []).filter((entry) => !entry.isDeleted && activeWorkoutTypeIds.has(entry.workoutTypeId));
 
-    const totalVolume = logs.reduce((acc, entry) => acc + ((entry.weight || 0) * (entry.reps || 0)), 0);
-    const uniqueDays = new Set(logs.map((entry) => entry.date.split('T')[0]));
+    const totalVolume = activeLogs.reduce((acc, entry) => acc + ((entry.weight || 0) * (entry.reps || 0)), 0);
+    const uniqueDays = new Set(activeLogs.map((entry) => entry.date.split('T')[0]));
 
     const exerciseCounts: Record<string, number> = {};
-    logs.forEach((entry) => {
+    activeLogs.forEach((entry) => {
       exerciseCounts[entry.workoutTypeId] = (exerciseCounts[entry.workoutTypeId] || 0) + 1;
     });
 
     const favoriteTypeId = Object.entries(exerciseCounts)
       .sort(([, left], [, right]) => right - left)[0]?.[0];
-    const favoriteExercise = workoutTypes.find((entry) => entry.id === favoriteTypeId)?.name;
+    const favoriteExercise = activeWorkoutTypes.find((entry) => entry.id === favoriteTypeId)?.name;
 
-    const sortedLogs = [...logs].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
+    const sortedLogs = [...activeLogs].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
     const lastWorkoutDate = sortedLogs[0]?.date;
 
     const recentDays: Record<string, number> = {};
@@ -272,8 +274,7 @@ export class Storage {
       recentActivity,
       ...(data.profile.showFullHistory
         ? {
-            logs: logs
-              .filter((entry) => !entry.isDeleted)
+            logs: activeLogs
               .map(({ id, workoutTypeId, reps, weight, duration, durationSeconds, date, workoutId }) => ({
                 id,
                 workoutTypeId,
@@ -284,8 +285,7 @@ export class Storage {
                 date,
                 workoutId,
               })),
-            workoutTypes: workoutTypes
-              .filter((entry) => !entry.isDeleted)
+            workoutTypes: activeWorkoutTypes
               .map(({ id, name, category }) => ({ id, name, category })),
           }
         : {}),

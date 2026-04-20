@@ -146,6 +146,90 @@ test('GET /api/profiles/:identifier returns a public profile', async () => {
   assert.equal(response.body.workoutTypes[0].category, 'time');
 });
 
+test('GET /api/profiles/:identifier excludes deleted logs from public stats and activity', async () => {
+  await Storage.write('12345', {
+    profile: {
+      id: 'me',
+      isPublic: true,
+      showFullHistory: true,
+      createdAt: new Date().toISOString(),
+      displayName: 'Demo User',
+      telegramUsername: 'demo_user',
+    },
+    logs: [
+      {
+        id: 'log-active',
+        workoutTypeId: 'squat',
+        reps: 5,
+        weight: 100,
+        date: '2026-03-20T10:00:00.000Z',
+      },
+      {
+        id: 'log-deleted',
+        workoutTypeId: 'squat',
+        reps: 10,
+        weight: 200,
+        date: '2026-03-21T10:00:00.000Z',
+        isDeleted: true,
+      },
+    ],
+    workoutTypes: [{ id: 'squat', name: 'Squat' }],
+  });
+
+  const app = createTestApp();
+  const response = await request(app).get('/api/profiles/demo_user');
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.stats.totalVolume, 500);
+  assert.equal(response.body.stats.totalWorkouts, 1);
+  assert.equal(response.body.stats.lastWorkoutDate, '2026-03-20T10:00:00.000Z');
+  assert.deepEqual(response.body.recentActivity, [{ date: '2026-03-20', exerciseCount: 1 }]);
+  assert.deepEqual(response.body.logs.map((entry) => entry.id), ['log-active']);
+});
+
+test('GET /api/profiles/:identifier excludes logs for deleted workout types from public history', async () => {
+  await Storage.write('12345', {
+    profile: {
+      id: 'me',
+      isPublic: true,
+      showFullHistory: true,
+      createdAt: new Date().toISOString(),
+      displayName: 'Demo User',
+      telegramUsername: 'demo_user',
+    },
+    logs: [
+      {
+        id: 'log-active',
+        workoutTypeId: 'squat',
+        reps: 5,
+        weight: 100,
+        date: '2026-03-20T10:00:00.000Z',
+      },
+      {
+        id: 'log-hidden-type',
+        workoutTypeId: 'bench',
+        reps: 10,
+        weight: 120,
+        date: '2026-03-21T10:00:00.000Z',
+      },
+    ],
+    workoutTypes: [
+      { id: 'squat', name: 'Squat' },
+      { id: 'bench', name: 'Bench Press', isDeleted: true },
+    ],
+  });
+
+  const app = createTestApp();
+  const response = await request(app).get('/api/profiles/demo_user');
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.stats.totalVolume, 500);
+  assert.equal(response.body.stats.favoriteExercise, 'Squat');
+  assert.equal(response.body.stats.lastWorkoutDate, '2026-03-20T10:00:00.000Z');
+  assert.deepEqual(response.body.logs.map((entry) => entry.id), ['log-active']);
+  assert.deepEqual(response.body.workoutTypes, [{ id: 'squat', name: 'Squat' }]);
+});
+
 test('Telegram legacy auth can write and read storage data', async () => {
   const telegramUser = {
     id: 777,
