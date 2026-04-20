@@ -2,45 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SyncService } from '../services/sync';
 import { StorageService } from './storage';
 
+vi.mock('../auth', () => ({
+    authorizedApiFetch: vi.fn(),
+    clearAuthState: vi.fn(),
+    getCurrentUser: vi.fn(() => null),
+    hasActiveSession: vi.fn(() => true),
+    resolveApiUrl: vi.fn((path = '') => path)
+}));
+
 describe('StorageService sync scheduling', () => {
-    const createLocalStorageMock = () => {
-        let state: Record<string, string> = {};
-
-        return {
-            getItem: (key: string) => state[key] ?? null,
-            setItem: (key: string, value: string) => {
-                state[key] = String(value);
-            },
-            removeItem: (key: string) => {
-                delete state[key];
-            },
-            clear: () => {
-                state = {};
-            }
-        };
-    };
-
     beforeEach(() => {
         vi.useFakeTimers();
         vi.restoreAllMocks();
-
-        const localStorageMock = createLocalStorageMock();
-        Object.defineProperty(globalThis, 'localStorage', {
-            configurable: true,
-            value: localStorageMock
-        });
-        Object.defineProperty(window, 'localStorage', {
-            configurable: true,
-            value: localStorageMock
-        });
-
-        localStorageMock.setItem('gym_auth_token', 'test-token');
     });
 
     afterEach(() => {
         vi.runOnlyPendingTimers();
         vi.useRealTimers();
-        globalThis.localStorage.clear();
     });
 
     it('batches repeated scheduleSync calls into one sync execution', async () => {

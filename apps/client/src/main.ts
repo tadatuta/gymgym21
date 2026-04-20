@@ -2216,6 +2216,8 @@ async function initApp() {
     return;
   }
 
+  storage.scheduleSync(0);
+
   // Check for profile deep link from startapp parameter
   const currentParams = new URLSearchParams(window.location.search);
   const startApp = currentParams.get('startapp');

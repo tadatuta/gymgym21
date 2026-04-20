@@ -1,7 +1,7 @@
 import { AppData, PublicProfileData, SyncEntityType, UserProfile, WorkoutSession, WorkoutSet, WorkoutType } from '../types';
 import { SyncService } from '../services/sync';
 import { db } from '../db';
-import { authorizedApiFetch, clearAuthState, getCurrentUser, hasAuthToken, resolveApiUrl } from '../auth';
+import { authorizedApiFetch, clearAuthState, getCurrentUser, hasActiveSession, resolveApiUrl } from '../auth';
 
 const STORAGE_KEY = 'gym_twa_data'; // Keeping for migration check
 
@@ -146,7 +146,7 @@ export class StorageService {
     }
 
     scheduleSync(delay = this.syncDebounceMs) {
-        if (!hasAuthToken()) {
+        if (!hasActiveSession()) {
             this.setStatus('idle');
             return;
         }
@@ -162,7 +162,7 @@ export class StorageService {
     }
 
     async sync() {
-        if (!hasAuthToken()) {
+        if (!hasActiveSession()) {
             this.setStatus('idle');
             return;
         }
@@ -615,7 +615,7 @@ export class StorageService {
     }
 
     async getAIRecommendation(type: 'general' | 'plan', options?: { period?: 'day' | 'week', allowNewExercises?: boolean }): Promise<string> {
-        if (!hasAuthToken()) throw new Error('Unauthorized');
+        if (!hasActiveSession()) throw new Error('Unauthorized');
 
         const response = await authorizedApiFetch('/me/ai/recommendations', {
             method: 'POST',
@@ -626,6 +626,10 @@ export class StorageService {
         });
 
         if (!response.ok) {
+            if (response.status === 401) {
+                clearAuthState();
+                throw new Error('Unauthorized');
+            }
             throw new Error('AI Generation Failed');
         }
 

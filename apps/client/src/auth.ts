@@ -1,8 +1,8 @@
 import { passkeyClient } from '@better-auth/passkey/client';
 import { createAuthClient } from 'better-auth/client';
 
-const AUTH_TOKEN_KEY = 'gym_auth_token';
 const DEFAULT_AUTH_BASE_URL = '/api/auth';
+const LEGACY_AUTH_TOKEN_KEY = 'gym_auth_token';
 
 function normalizeBaseUrl(value: string): string {
   if (value === '/') {
@@ -95,7 +95,6 @@ export interface MigrationStatus {
 
 interface AuthMutationResponse {
   user: AuthUser;
-  token?: string;
   needsCompletion?: boolean;
   storageKey?: string;
   completed?: boolean;
@@ -107,28 +106,24 @@ const authClient = createAuthClient({
   plugins: [passkeyClient()],
   fetchOptions: {
     credentials: 'include',
-    auth: {
-      type: 'Bearer',
-      token: () => getAuthToken() || undefined,
-    },
-    onSuccess(context) {
-      captureAuthToken(context.response);
-    },
-    onResponse(context) {
-      captureAuthToken(context.response);
-      return context.response;
-    },
   },
 });
 
 let currentSession: AuthSession | null = null;
 
-function captureAuthToken(response: Response) {
-  const token = response.headers.get('set-auth-token');
-  if (token) {
-    localStorage.setItem(AUTH_TOKEN_KEY, token);
+function purgeLegacyAuthToken() {
+  if (typeof localStorage === 'undefined') {
+    return;
+  }
+
+  try {
+    localStorage.removeItem(LEGACY_AUTH_TOKEN_KEY);
+  } catch {
+    // Ignore storage access issues and continue with cookie-backed auth.
   }
 }
+
+purgeLegacyAuthToken();
 
 function toErrorMessage(message: unknown, fallback: string): string {
   if (typeof message === 'string' && message.length > 0) {
@@ -153,18 +148,11 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
     headers.set('Content-Type', 'application/json');
   }
 
-  const token = getAuthToken();
-  if (token && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
-
   const response = await fetch(resolveUrl(AUTH_BASE_URL, path), {
     ...init,
     headers,
     credentials: 'include',
   });
-
-  captureAuthToken(response);
 
   if (response.status === 401) {
     clearAuthState();
@@ -190,12 +178,8 @@ export function getAuthBaseUrl(): string {
   return AUTH_BASE_URL;
 }
 
-export function getAuthToken(): string | null {
-  return localStorage.getItem(AUTH_TOKEN_KEY);
-}
-
-export function hasAuthToken(): boolean {
-  return Boolean(getAuthToken());
+export function hasActiveSession(): boolean {
+  return Boolean(currentSession?.session && currentSession.user);
 }
 
 export function getCurrentSession(): AuthSession | null {
@@ -207,11 +191,13 @@ export function getCurrentUser(): AuthUser | null {
 }
 
 export function clearAuthState() {
-  localStorage.removeItem(AUTH_TOKEN_KEY);
+  purgeLegacyAuthToken();
   currentSession = null;
 }
 
 export async function restoreSession(): Promise<AuthSession | null> {
+  purgeLegacyAuthToken();
+
   const result = await authClient.getSession({
     query: {
       disableRefresh: true,
@@ -353,16 +339,15 @@ export async function checkUsernameAvailability(username: string): Promise<boole
 }
 
 export async function authorizedApiFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  const token = getAuthToken();
-
-  if (token && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
-
-  return fetch(resolveApiUrl(path), {
+  const response = await fetch(resolveApiUrl(path), {
     ...init,
-    headers,
+    headers: new Headers(init.headers),
     credentials: 'include',
   });
+
+  if (response.status === 401) {
+    clearAuthState();
+  }
+
+  return response;
 }

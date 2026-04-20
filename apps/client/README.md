@@ -39,7 +39,7 @@
 *   **PWA**: `vite-plugin-pwa` (Service Worker, Manifest)
 *   **База данных (Client)**: `Dexie.js` (IndexedDB wrapper) для надежного локального хранения.
 *   **Backend**: Express API в монорепозитории `gym21`, разворачиваемый рядом с Postgres и reverse proxy.
-*   **Auth**: Better Auth + Telegram Auth (InitData для TMA, Login Widget для Web).
+*   **Auth**: Better Auth + Telegram Auth (InitData для TMA, Login Widget для Web). В браузере источник истины для сессии — secure cookies; bearer token не сохраняется в `localStorage`.
 
 ## 🚀 Установка и запуск
 

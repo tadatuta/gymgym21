@@ -756,7 +756,6 @@ function telegramPlugin() {
         }, !rememberMe);
 
         return ctx.json({
-          token: session.token,
           user: parseUserOutput(ctx.context.options, refreshedUser),
           storageKey,
           needsCompletion: needsCompletion(refreshedUser, accounts),
@@ -895,7 +894,6 @@ function telegramPlugin() {
         }, !rememberMe);
 
         return ctx.json({
-          token: session.token,
           user: parseUserOutput(ctx.context.options, user),
           needsCompletion: false,
         });
