@@ -32,12 +32,87 @@ import { downloadFile, generateMarkdown } from './utils/export';
 import { renderProfileStats } from './components/profile/ProfileStats';
 import { ProfileStats } from './types';
 import { escapeAttribute, escapeHtml, renderSafeAvatarMarkup, replaceAvatarContent, sanitizeUrl } from './utils/safe-html';
+import { replaceMarkdownContent } from './utils/safe-markdown';
 
 const getProfileLink = (identifier: string) => {
   const url = new URL(window.location.pathname, window.location.origin);
   url.searchParams.set('startapp', `profile_${identifier}`);
   return url.toString();
 };
+
+type AiRecommendationType = 'general' | 'plan';
+type AiResultsState = Record<AiRecommendationType, string | null>;
+
+const AI_RESULTS_STORAGE_KEY = 'gym_ai_results';
+const AI_RESULTS_CACHE_VERSION = 2;
+
+function createEmptyAiResults(): AiResultsState {
+  return { general: null, plan: null };
+}
+
+function normalizeAiResultValue(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function readAiResultsCache(): AiResultsState {
+  const savedValue = localStorage.getItem(AI_RESULTS_STORAGE_KEY);
+  if (!savedValue) {
+    return createEmptyAiResults();
+  }
+
+  try {
+    const parsed = JSON.parse(savedValue);
+    if (parsed?.version === AI_RESULTS_CACHE_VERSION && parsed.results) {
+      return {
+        general: normalizeAiResultValue(parsed.results.general),
+        plan: normalizeAiResultValue(parsed.results.plan),
+      };
+    }
+  } catch {
+    // Treat malformed or legacy payloads as stale and clear them.
+  }
+
+  localStorage.removeItem(AI_RESULTS_STORAGE_KEY);
+  return createEmptyAiResults();
+}
+
+function persistAiResultsCache(results: AiResultsState) {
+  localStorage.setItem(AI_RESULTS_STORAGE_KEY, JSON.stringify({
+    version: AI_RESULTS_CACHE_VERSION,
+    results,
+  }));
+}
+
+function getAiResultContainerId(type: AiRecommendationType) {
+  return type === 'general' ? 'ai-general-result' : 'ai-plan-result';
+}
+
+function renderAiResult(type: AiRecommendationType) {
+  const container = document.getElementById(getAiResultContainerId(type));
+  if (!container) {
+    return;
+  }
+
+  const body = container.querySelector('.markdown-body');
+  if (!body) {
+    return;
+  }
+
+  const markdown = aiResults[type];
+  container.style.display = markdown ? '' : 'none';
+  replaceMarkdownContent(body, markdown);
+}
+
+function renderAiResults() {
+  renderAiResult('general');
+  renderAiResult('plan');
+}
+
+function updateAiResult(type: AiRecommendationType, result: string) {
+  aiResults[type] = result;
+  persistAiResultsCache(aiResults);
+  renderAiResult(type);
+}
 
 // Register Service Worker
 registerSW({ immediate: true });
@@ -57,8 +132,7 @@ let currentStatsTab: 'overview' | 'progress' = 'overview';
 let currentProfileTab: 'ai' | 'public' | 'data' = 'ai';
 let isFilterEnabled = false;
 let authStatus: MigrationStatus | null = null;
-const savedAiResults = localStorage.getItem('gym_ai_results');
-const aiResults: { general: string | null; plan: string | null } = savedAiResults ? JSON.parse(savedAiResults) : { general: null, plan: null };
+const aiResults = readAiResultsCache();
 let aiLoadingState: 'idle' | 'general' | 'plan' = 'idle';
 
 // Workout UI state
@@ -998,7 +1072,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
                 </button>
 
                 <div id="ai-general-result" class="ai-result" style="margin-top: 24px; background: var(--surface-color-alt); padding: 16px; border-radius: 12px; ${aiResults.general ? '' : 'display: none;'}">
-                    <div class="markdown-body" style="font-family: inherit;">${aiResults.general || ''}</div>
+                    <div class="markdown-body" style="font-family: inherit;"></div>
                 </div>
 
                 <div class="ai-plan-section">
@@ -1024,7 +1098,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
                     </button>
 
                     <div id="ai-plan-result" class="ai-result" style="margin-top: 12px; background: var(--surface-color-alt); padding: 16px; border-radius: 12px; ${aiResults.plan ? '' : 'display: none;'}">
-                        <div class="markdown-body" style="font-family: inherit;">${aiResults.plan || ''}</div>
+                        <div class="markdown-body" style="font-family: inherit;"></div>
                     </div>
                 </div>
             </div>
@@ -1340,6 +1414,8 @@ function bindWorkoutControlEvents() {
 
 // Bind events specific to profile settings tabs
 function bindProfileSettingsEvents() {
+  renderAiResults();
+
   const saveBtn = document.getElementById('save-profile-btn');
   saveBtn?.addEventListener('click', async () => {
     const publicToggle = document.getElementById('profile-public-toggle') as HTMLInputElement;
@@ -1383,18 +1459,6 @@ function bindProfileSettingsEvents() {
     if (aiPlanBtn) {
       aiPlanBtn.disabled = state !== 'idle';
       aiPlanBtn.textContent = state === 'plan' ? 'Генерация...' : '📅 Создать план';
-    }
-  };
-
-  const updateAiResult = (type: 'general' | 'plan', result: string) => {
-    aiResults[type] = result;
-    localStorage.setItem('gym_ai_results', JSON.stringify(aiResults));
-    const containerId = type === 'general' ? 'ai-general-result' : 'ai-plan-result';
-    const container = document.getElementById(containerId);
-    if (container) {
-      container.style.display = '';
-      const body = container.querySelector('.markdown-body');
-      if (body) body.innerHTML = result;
     }
   };
 
@@ -2049,174 +2113,7 @@ function bindPageEvents() {
         }
       });
     });
-
-    const saveBtn = document.getElementById('save-profile-btn');
-    saveBtn?.addEventListener('click', async () => {
-      // Gather fields from all tabs (only those currently present in DOM will be found)
-      const publicToggle = document.getElementById('profile-public-toggle') as HTMLInputElement;
-      const historyToggle = document.getElementById('profile-history-toggle') as HTMLInputElement;
-      const nameInput = document.getElementById('profile-display-name') as HTMLInputElement;
-
-      const genderInput = document.getElementById('profile-gender') as HTMLSelectElement;
-      const birthDateInput = document.getElementById('profile-birthdate') as HTMLInputElement;
-      const heightInput = document.getElementById('profile-height') as HTMLInputElement;
-      const weightInput = document.getElementById('profile-weight') as HTMLInputElement;
-      const additionalInfoInput = document.getElementById('profile-additional-info') as HTMLTextAreaElement;
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const updates: any = {};
-
-      if (publicToggle) updates.isPublic = publicToggle.checked;
-      if (historyToggle) updates.showFullHistory = historyToggle.checked;
-      if (nameInput) updates.displayName = nameInput.value;
-
-      if (genderInput) updates.gender = genderInput.value || undefined;
-      if (birthDateInput) updates.birthDate = birthDateInput.value;
-      if (heightInput) updates.height = heightInput.value ? Number(heightInput.value) : undefined;
-      if (weightInput) updates.weight = weightInput.value ? Number(weightInput.value) : undefined;
-      if (additionalInfoInput) updates.additionalInfo = additionalInfoInput.value;
-
-      await storage.updateProfileSettings(updates);
-      showToast('Профиль сохранен');
-      // No re-render needed - data is already saved
-    });
-
-    // AI Buttons - update DOM directly to avoid full re-render
-    const aiGeneralBtn = document.getElementById('ai-general-btn') as HTMLButtonElement | null;
-    const aiPlanBtn = document.getElementById('ai-plan-btn') as HTMLButtonElement | null;
-
-    const setAiButtonsLoading = (state: 'idle' | 'general' | 'plan') => {
-      aiLoadingState = state;
-      if (aiGeneralBtn) {
-        aiGeneralBtn.disabled = state !== 'idle';
-        aiGeneralBtn.textContent = state === 'general' ? 'Анализ...' : '✨ Общий анализ';
-      }
-      if (aiPlanBtn) {
-        aiPlanBtn.disabled = state !== 'idle';
-        aiPlanBtn.textContent = state === 'plan' ? 'Генерация...' : '📅 Создать план';
-      }
-    };
-
-    const updateAiResult = (type: 'general' | 'plan', result: string) => {
-      aiResults[type] = result;
-      localStorage.setItem('gym_ai_results', JSON.stringify(aiResults));
-      const containerId = type === 'general' ? 'ai-general-result' : 'ai-plan-result';
-      const container = document.getElementById(containerId);
-      if (container) {
-        container.style.display = '';
-        const body = container.querySelector('.markdown-body');
-        if (body) body.innerHTML = result;
-      }
-    };
-
-    if (aiGeneralBtn) {
-      aiGeneralBtn.addEventListener('click', async () => {
-        setAiButtonsLoading('general');
-        try {
-          const result = await storage.getAIRecommendation('general');
-          updateAiResult('general', result);
-        } catch (e) {
-          showToast('Ошибка: ' + (e instanceof Error ? e.message : String(e)));
-        } finally {
-          setAiButtonsLoading('idle');
-        }
-      });
-    }
-
-    if (aiPlanBtn) {
-      aiPlanBtn.addEventListener('click', async () => {
-        const period = (document.getElementById('ai-plan-period') as HTMLSelectElement).value as 'day' | 'week';
-        const allowNew = (document.getElementById('ai-allow-new') as HTMLInputElement).checked;
-
-        setAiButtonsLoading('plan');
-        try {
-          const result = await storage.getAIRecommendation('plan', { period, allowNewExercises: allowNew });
-          updateAiResult('plan', result);
-        } catch (e) {
-          showToast('Ошибка: ' + (e instanceof Error ? e.message : String(e)));
-        } finally {
-          setAiButtonsLoading('idle');
-        }
-      });
-    }
-
-    const copyBtn = document.getElementById('copy-profile-link');
-    copyBtn?.addEventListener('click', () => {
-      const identifier = storage.getProfileIdentifier();
-      if (identifier) {
-        const profileUrl = getProfileLink(identifier);
-        navigator.clipboard.writeText(profileUrl).then(() => {
-          showToast('Ссылка скопирована');
-        });
-      }
-    });
-
-    const shareBtn = document.getElementById('share-profile-link');
-    /*eslint no-empty: "error"*/
-    shareBtn?.addEventListener('click', () => {
-      const identifier = storage.getProfileIdentifier();
-      if (identifier) {
-        const profileUrl = getProfileLink(identifier);
-        navigator.clipboard.writeText(profileUrl).then(() => {
-          showToast('Ссылка скопирована');
-        });
-      }
-    });
-
-    // Export/Import Logic
-    document.getElementById('export-json-btn')?.addEventListener('click', async () => {
-      try {
-        const data = await storage.exportData();
-        const filename = `gym_backup_${new Date().toISOString().split('T')[0]}.json`;
-        downloadFile(JSON.stringify(data, null, 2), filename, 'application/json');
-        showToast('Экспорт выполнен');
-      } catch (e) {
-        console.error(e);
-        showToast('Ошибка экспорта');
-      }
-    });
-
-    document.getElementById('export-md-btn')?.addEventListener('click', async () => {
-      try {
-        const data = await storage.exportData();
-        const markdown = generateMarkdown(data);
-        const filename = `gym_history_${new Date().toISOString().split('T')[0]}.md`;
-        downloadFile(markdown, filename, 'text/markdown');
-        showToast('Экспорт выполнен');
-      } catch (e) {
-        console.error(e);
-        showToast('Ошибка экспорта');
-      }
-    });
-
-    document.getElementById('import-json-btn')?.addEventListener('click', () => {
-      document.getElementById('import-file-input')?.click();
-    });
-
-    document.getElementById('import-file-input')?.addEventListener('change', (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        try {
-          const json = event.target?.result as string;
-          const data = JSON.parse(json);
-
-          if (confirm('Внимание! Все текущие данные будут заменены данными из файла. Продолжить?')) {
-            await storage.importData(data);
-            showToast('Данные успешно импортированы');
-            setTimeout(() => location.reload(), 1000);
-          }
-        } catch (err) {
-          console.error(err);
-          showToast('Ошибка импорта: Неверный формат файла');
-        }
-      };
-      reader.readAsText(file);
-      // Clear input so same file can be selected again if needed
-      (e.target as HTMLInputElement).value = '';
-    });
+    bindProfileSettingsEvents();
   }
 
   if (currentPage === 'stats') {

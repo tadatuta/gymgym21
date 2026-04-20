@@ -28,6 +28,8 @@
     "@types/sortablejs": "^1.15.9",
     "better-auth": "^1.5.6",
     "dexie": "^4.3.0",
+    "dompurify": "^3.4.0",
+    "marked": "^17.0.5",
     "sortablejs": "^1.15.6",
     "vite-plugin-pwa": "^1.2.0",
     "zod": "^4.3.6"

@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { marked } from 'marked';
 import { z } from 'zod';
 import type { AppDependencies } from '../app-types.js';
 import { prepareStorageDataForWrite } from '../../services/storage-data.js';
@@ -39,7 +38,8 @@ export function createMeRouter(dependencies: AppDependencies): Router {
     });
 
     res.json({
-      recommendation: await marked(recommendation),
+      format: 'markdown',
+      recommendation,
     });
   });
 

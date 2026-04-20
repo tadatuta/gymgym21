@@ -251,7 +251,7 @@ test('better-auth context enriches saved profile with canonical username and ima
   assert.equal(stored.profile?.photoUrl, 'https://example.com/avatar.png');
 });
 
-test('POST /api/me/ai/recommendations uses stored workout data and returns HTML', async () => {
+test('POST /api/me/ai/recommendations uses stored workout data and returns markdown', async () => {
   await Storage.write('ai-user', {
     profile: {
       id: 'me',
@@ -292,7 +292,8 @@ test('POST /api/me/ai/recommendations uses stored workout data and returns HTML'
     .send({ type: 'plan', options: { period: 'week' } });
 
   assert.equal(response.status, 200);
-  assert.match(response.body.recommendation, /<h1[^>]*>Weekly plan<\/h1>/);
+  assert.equal(response.body.format, 'markdown');
+  assert.equal(response.body.recommendation, '# Weekly plan');
   assert.equal(capturedRequest.type, 'plan');
   assert.equal(capturedRequest.profile.displayName, 'AI User');
   assert.equal(capturedRequest.logs.length, 1);

@@ -559,6 +559,10 @@ export class StorageService {
         }
 
         const data = await response.json();
+        if (data?.format !== 'markdown' || typeof data?.recommendation !== 'string') {
+            throw new Error('Invalid AI response');
+        }
+
         return data.recommendation;
     }
 
