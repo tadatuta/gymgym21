@@ -12,9 +12,13 @@
     "build": "npm run build --workspaces",
     "typecheck": "npm run typecheck --workspaces",
     "test": "npm run test --workspace @gym21/server",
+    "dev": "concurrently \"npm:dev:client\" \"npm:dev:server\"",
     "dev:client": "npm run dev --workspace @gym21/client",
     "dev:server": "npm run dev --workspace @gym21/server",
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }

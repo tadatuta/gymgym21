@@ -20,7 +20,7 @@ import {
   normalizeUsername,
 } from './auth-meta.js';
 import { Storage, type StorageData } from './storage.js';
-import { parseTelegramInitData, type TelegramUser, validateTelegramInitData } from './telegram.js';
+import { extractTelegramUser, parseTelegramInitData, type TelegramUser, validateTelegramInitData } from './telegram.js';
 
 const TELEGRAM_PROVIDER_ID = 'telegram';
 
@@ -263,7 +263,7 @@ function parseTelegramUserOrThrow(initData: string): TelegramUser {
   if (!validateTelegramInitData(initData)) {
     throw APIError.fromStatus('UNAUTHORIZED', { message: 'Невалидные данные Telegram' });
   }
-  const { user } = parseTelegramInitData(initData);
+  const user = extractTelegramUser(initData);
   if (!user?.id) {
     throw APIError.fromStatus('BAD_REQUEST', { message: 'Не удалось определить пользователя Telegram' });
   }
