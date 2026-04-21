@@ -544,7 +544,7 @@ function renderMainPage() {
               </select>`
     }
         </div>
-        
+
         <div id="strength-inputs" style="display: none;">
             <div class="form-row">
               <div class="form-group">
@@ -998,17 +998,16 @@ function renderSettingsPage() {
 
   return `
     <div class="page-content">
-      <h1 class="title">Настройки</h1>
       <div class="settings-section">
         <h2 class="subtitle">${editingTypeId ? 'Редактирование типа' : 'Добавить тип тренировки'}</h2>
         <form class="add-type-form" id="add-type-form" style="margin-bottom: 24px;">
           <div style="display: flex; gap: 8px; flex-direction: column;">
             <input class="input" type="text" id="new-type-name" placeholder="Название (напр. Жим гантелей)" required value="${escapeAttribute(editingType ? editingType.name : '')}">
-            
+
             <div class="category-switch" style="display: flex; gap: 12px; margin-bottom: 8px;">
                 <label style="display: flex; align-items: center; gap: 4px;">
                     <input type="radio" name="new-type-category" value="strength" ${!editingType || editingType.category !== 'time' ? 'checked' : ''}>
-                    Силовое
+                    Силовая
                 </label>
                 <label style="display: flex; align-items: center; gap: 4px;">
                     <input type="radio" name="new-type-category" value="time" ${editingType && editingType.category === 'time' ? 'checked' : ''}>
@@ -1168,7 +1167,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
     return `
       <div class="settings-section">
             <div class="settings-section-title">AI Рекомендации</div>
-            
+
             <div class="ai-controls" style="display: flex; flex-direction: column; gap: 12px;">
                 <button class="button" id="ai-general-btn" ${aiLoadingState !== 'idle' ? 'disabled' : ''}>
                     ${aiLoadingState === 'general' ? 'Анализ...' : '✨ Общий анализ'}
@@ -1186,7 +1185,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
                             <option value="week">На неделю</option>
                         </select>
                     </div>
-                      
+
                     <div class="toggle-row toggle-row--clean" style="margin-top: 12px;">
                       <div class="toggle-label">
                           <span class="toggle-label-text">Рекомендовать новые упражнения</span>
@@ -1210,7 +1209,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
         <div class="settings-section">
             <div class="settings-section-title">Личные данные (Приватно)</div>
             <p class="hint" style="margin-bottom: 12px; font-size: 0.9em;">Эти данные используются только для персонализации советов от AI и не видны другим пользователям.</p>
-            
+
             <div class="form-row">
               <div class="form-group">
                   <label class="label">Пол</label>
@@ -1261,7 +1260,6 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
           ${authStatus?.hasTelegram
             ? '<div style="padding:12px 14px; border-radius:14px; background:var(--surface-color-alt); color:var(--text-color-secondary);">Telegram уже привязан к этому аккаунту.</div>'
             : '<div id="link-telegram-widget" style="display:flex; justify-content:center;"></div>'}
-          <button class="button button_secondary" id="sign-out-btn">Выйти</button>
         </div>
       </div>
 
@@ -1288,15 +1286,13 @@ function renderProfileSettingsPage() {
 
   return `
     <div class="page-content profile-page">
-      <h1 class="title">Профиль</h1>
-      
       <div class="profile-header" style="position: relative;">
-        <button class="button button_secondary" id="sign-out-btn-header" style="position: absolute; top: 0; right: 0; padding: 6px 12px; font-size: 14px;">Выйти</button>
         <div class="profile-avatar">
           ${renderSafeAvatarMarkup(displayName, profile?.photoUrl)}
         </div>
         <div class="profile-name">${safeDisplayName}</div>
         <div class="profile-subtitle">${isPublic ? 'Публичный профиль' : 'Приватный профиль'}</div>
+        <button class="button button_secondary" id="sign-out-btn">Выйти</button>
       </div>
 
       <div class="stats-tabs">
@@ -1662,15 +1658,6 @@ function bindProfileSettingsEvents() {
     linkTelegramWidget.appendChild(script);
   }
 
-  document.getElementById('sign-out-btn')?.addEventListener('click', async () => {
-    try {
-      await signOut();
-      location.reload();
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Не удалось выйти');
-    }
-  });
-
   // Export/Import Logic
   document.getElementById('export-json-btn')?.addEventListener('click', async () => {
     try {
@@ -1825,7 +1812,6 @@ function renderStatsPage() {
   if (logs.length === 0) {
     return `
       <div class="page-content">
-        <h1 class="title">Статистика</h1>
         <p class="hint">Недостаточно данных для статистики</p>
       </div>
     `;
@@ -1838,7 +1824,6 @@ function renderStatsPage() {
 
   let html = `
     <div class="page-content">
-      <h1 class="title">Статистика</h1>
       <div class="stats-tabs">
         <button class="stats-tab ${currentStatsTab === 'overview' ? 'active' : ''}" data-tab="overview">Обзор</button>
         <button class="stats-tab ${currentStatsTab === 'progress' ? 'active' : ''}" data-tab="progress">Прогресс</button>
@@ -1912,7 +1897,7 @@ function renderStatsPage() {
                     ${render1RMChart(oneRepMaxData)}
                 </div>
             </div>
-            
+
             <div class="charts-section" style="margin-top: 24px;">
                 <h2 class="subtitle">Объем нагрузки</h2>
                  <div class="chart-container">
@@ -2180,7 +2165,7 @@ function bindPageEvents() {
   // stats type select handled in bindPageEvents stats block below
 
   if (currentPage === 'profile-settings') {
-    document.getElementById('sign-out-btn-header')?.addEventListener('click', async () => {
+    document.getElementById('sign-out-btn')?.addEventListener('click', async () => {
       try {
         await signOut();
         location.reload();
