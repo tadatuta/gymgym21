@@ -31,6 +31,65 @@ describe('router', () => {
     expect(resolved.shouldReplace).toBe(true);
   });
 
+  it('falls back safely when the pathname contains malformed percent-encoding', () => {
+    const resolved = resolveRoute({
+      pathname: '/profile/%E0%A4%A',
+      search: '',
+    });
+
+    expect(resolved.route).toEqual({ name: 'main' });
+    expect(resolved.canonicalUrl).toBe('/');
+    expect(resolved.shouldReplace).toBe(true);
+  });
+
+  it('falls back safely when telegram startapp contains malformed percent-encoding', () => {
+    const resolved = resolveRoute({
+      pathname: '/',
+      search: '?startapp=profile_%E0%A4%A',
+    });
+
+    expect(resolved.route).toEqual({ name: 'main' });
+    expect(resolved.canonicalUrl).toBe('/');
+    expect(resolved.shouldReplace).toBe(true);
+  });
+
+  it('ignores empty public profile identifiers after normalization', () => {
+    expect(parseRoute({ pathname: '/profile/%40', search: '' })).toEqual({ name: 'main' });
+
+    const resolved = resolveRoute({
+      pathname: '/',
+      search: '?startapp=profile_%40',
+    });
+
+    expect(resolved.route).toEqual({ name: 'main' });
+    expect(resolved.canonicalUrl).toBe('/');
+    expect(resolved.shouldReplace).toBe(true);
+  });
+
+  it('strips unexpected query params when canonicalizing known routes', () => {
+    expect(
+      resolveRoute({
+        pathname: '/profile/alex',
+        search: '?utm_source=telegram',
+      }),
+    ).toEqual({
+      route: { name: 'public-profile', identifier: 'alex' },
+      canonicalUrl: '/profile/alex',
+      shouldReplace: true,
+    });
+
+    expect(
+      resolveRoute({
+        pathname: '/',
+        search: '?page=stats&utm_source=telegram',
+      }),
+    ).toEqual({
+      route: { name: 'stats' },
+      canonicalUrl: '/?page=stats',
+      shouldReplace: true,
+    });
+  });
+
   it('builds canonical urls for every route', () => {
     expect(buildUrl({ name: 'main' })).toBe('/');
     expect(buildUrl({ name: 'stats' })).toBe('/?page=stats');

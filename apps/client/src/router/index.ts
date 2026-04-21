@@ -21,6 +21,14 @@ interface LocationLike {
 
 const PROFILE_STARTAPP_PREFIX = 'profile_';
 
+function safeDecodeURIComponent(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
 function normalizeProfileIdentifier(identifier: string): string | null {
   const normalized = identifier.trim().replace(/^@/, '');
   return normalized ? normalized : null;
@@ -43,7 +51,12 @@ function parseProfileRoute(pathname: string): AppRoute | null {
     return null;
   }
 
-  const identifier = normalizeProfileIdentifier(decodeURIComponent(match[1]));
+  const decodedIdentifier = safeDecodeURIComponent(match[1]);
+  if (!decodedIdentifier) {
+    return null;
+  }
+
+  const identifier = normalizeProfileIdentifier(decodedIdentifier);
   return identifier ? { name: 'public-profile', identifier } : null;
 }
 
@@ -53,9 +66,12 @@ function parseStartAppRoute(searchParams: URLSearchParams): AppRoute | null {
     return null;
   }
 
-  const identifier = normalizeProfileIdentifier(
-    decodeURIComponent(startApp.slice(PROFILE_STARTAPP_PREFIX.length)),
-  );
+  const decodedIdentifier = safeDecodeURIComponent(startApp.slice(PROFILE_STARTAPP_PREFIX.length));
+  if (!decodedIdentifier) {
+    return null;
+  }
+
+  const identifier = normalizeProfileIdentifier(decodedIdentifier);
 
   return identifier ? { name: 'public-profile', identifier } : null;
 }

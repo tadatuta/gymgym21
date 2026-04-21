@@ -33,13 +33,13 @@ import { renderProfileStats } from './components/profile/ProfileStats';
 import { ProfileStats } from './types';
 import { escapeAttribute, escapeHtml, renderOption, renderSafeAvatarMarkup, replaceAvatarContent, sanitizeUrl } from './utils/safe-html';
 import { replaceMarkdownContent } from './utils/safe-markdown';
+import { createRouterController } from './router/controller';
 import {
   type AppRoute,
   type InternalRouteName,
   buildUrl,
   createInternalRoute,
   isSameRoute,
-  resolveRoute,
 } from './router';
 
 const getProfileLink = (identifier: string) => {
@@ -123,7 +123,7 @@ function updateAiResult(type: AiRecommendationType, result: string) {
 // Register Service Worker
 registerSW({ immediate: true });
 
-let currentRoute: AppRoute = resolveRoute(window.location).route;
+let currentRoute: AppRoute = createInternalRoute('main');
 let selectedStatType = 'all';
 let editingLogId: string | null = null;
 let loadedPublicProfile: PublicProfileData | null = null;
@@ -184,19 +184,9 @@ async function loadPublicProfile(identifier: string) {
   render();
 }
 
-async function applyRoute(route: AppRoute, options: { replace?: boolean; syncHistory?: boolean } = {}) {
-  const { replace = false, syncHistory = true } = options;
-  const previousRoute = currentRoute;
+async function handleRouteChange(route: AppRoute, previousRoute: AppRoute) {
   const routeChanged = !isSameRoute(previousRoute, route);
   currentRoute = route;
-
-  if (syncHistory) {
-    const nextUrl = buildUrl(route);
-    const currentUrl = `${window.location.pathname}${window.location.search}`;
-    if (currentUrl !== nextUrl) {
-      window.history[replace ? 'replaceState' : 'pushState'](null, '', nextUrl);
-    }
-  }
 
   if (route.name === 'public-profile') {
     if (shouldReloadPublicProfile(route)) {
@@ -216,8 +206,13 @@ async function applyRoute(route: AppRoute, options: { replace?: boolean; syncHis
   render();
 }
 
+const routerController = createRouterController({
+  window,
+  onRouteChange: (route, context) => handleRouteChange(route, context.previousRoute),
+});
+
 function navigate(route: AppRoute, options?: { replace?: boolean }) {
-  void applyRoute(route, { replace: options?.replace, syncHistory: true });
+  routerController.navigate(route, options);
 }
 
 function bindRouteLinks(root: ParentNode = document) {
@@ -2310,20 +2305,8 @@ async function initApp() {
   }
 
   storage.scheduleSync(0);
-  const initialRoute = resolveRoute(window.location);
-  await applyRoute(initialRoute.route, {
-    replace: initialRoute.shouldReplace,
-    syncHistory: initialRoute.shouldReplace,
-  });
+  await routerController.start();
   // Note: storage.init() is called automatically in StorageService constructor
 }
-
-window.addEventListener('popstate', () => {
-  const resolvedRoute = resolveRoute(window.location);
-  void applyRoute(resolvedRoute.route, {
-    replace: resolvedRoute.shouldReplace,
-    syncHistory: resolvedRoute.shouldReplace,
-  });
-});
 
 initApp();
