@@ -100,8 +100,19 @@ export interface DirtyEntityRecord {
 
 export interface SyncStateRecord {
     key: string;
-    revision: number;
+    cursor: number;
     updatedAt: string;
+}
+
+export interface SyncConflictRecord {
+    key: string;
+    entityType: SyncEntityType;
+    entityId: string;
+    reason: 'stale-version';
+    serverVersion: number;
+    localPayload?: SyncItem;
+    serverPayload?: SyncItem;
+    createdAt: string;
 }
 
 export interface SyncConflict {
@@ -119,12 +130,12 @@ export interface SyncDelta {
 }
 
 export interface SyncRequest {
-    baseRevision: number;
+    cursor: number;
     changes: SyncDelta;
 }
 
 export interface SyncResponse {
-    revision: number;
+    cursor: number;
     changes: SyncDelta;
     conflicts: SyncConflict[];
 }

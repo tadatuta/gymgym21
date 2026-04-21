@@ -53,7 +53,6 @@ if (!process.env.ALLOWED_ORIGIN && !process.env.ALLOWED_ORIGINS) {
 }
 
 export const config = {
-  STORAGE_DIR: process.env.STORAGE_DIR || '/tmp/bucket-storage',
   ALLOWED_ORIGIN: defaultAppOrigin,
   ALLOWED_ORIGINS: allowedOrigins,
   APP_BASE_URL: process.env.APP_BASE_URL || defaultAppOrigin,

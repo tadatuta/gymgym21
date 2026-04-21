@@ -26,7 +26,6 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       DATABASE_SSL: ${DATABASE_SSL:-false}
-      STORAGE_DIR: /data/storage
       APP_BASE_URL: ${APP_BASE_URL}
       AUTH_BASE_URL: ${AUTH_BASE_URL}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
@@ -42,7 +41,6 @@ services:
       GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-global}
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/var/secrets/google-application-credentials.json}
     volumes:
-      - ${STORAGE_HOST_DIR:-./data/storage}:/data/storage
       - ./secrets:/var/secrets:ro
 
   postgres:

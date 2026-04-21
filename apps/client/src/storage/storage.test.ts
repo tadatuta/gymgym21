@@ -23,7 +23,7 @@ describe('StorageService sync scheduling', () => {
 
     it('batches repeated scheduleSync calls into one sync execution', async () => {
         const syncSpy = vi.spyOn(SyncService, 'sync').mockResolvedValue({
-            revision: 1,
+            cursor: 1,
             conflicts: 0,
             pushedEntities: 1,
             pulledEntities: 1
@@ -47,7 +47,7 @@ describe('StorageService sync scheduling', () => {
         let resolveSync: (() => void) | undefined;
         const syncSpy = vi.spyOn(SyncService, 'sync').mockImplementation(() => new Promise((resolve) => {
             resolveSync = () => resolve({
-                revision: 2,
+                cursor: 2,
                 conflicts: 0,
                 pushedEntities: 1,
                 pulledEntities: 1

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { config } from './config.js';
 
-export type AliasType = 'canonical' | 'telegram_username' | 'telegram_id' | 'legacy_username';
+export type AliasType = 'canonical' | 'telegram_username' | 'telegram_id';
 
 export interface AliasRecord {
     alias: string;

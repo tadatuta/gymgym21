@@ -47,9 +47,8 @@ npm run build
 ## Docker Deploy
 
 1. Создать `.env` на основе `.env.example`.
-2. Для файлового storage создать локальную директорию `./data/storage` и положить туда существующие JSON-файлы вида `<storageKey>.json`.
-3. При необходимости AI положить Google credentials в `./secrets/google-application-credentials.json`.
-4. Поднять стек:
+2. При необходимости AI положить Google credentials в `./secrets/google-application-credentials.json`.
+3. Поднять стек:
 
 ```bash
 npm run docker:up
@@ -60,31 +59,35 @@ npm run docker:up
 - `proxy` — единая точка входа на `http://localhost:${APP_PORT}`
 - `client` — статический SPA container
 - `server` — Express API и auth
-- `postgres` — auth/meta database
+- `postgres` — единственное runtime-хранилище данных
 
 Persistent data:
 
 - `postgres_data` — данные Postgres
-- `./data/storage` — файловый storage backend при локальном запуске
 
-Для Docker backend всегда читает storage из `/data/storage` внутри контейнера.
-По умолчанию compose монтирует туда `./data/storage`, а на продакшене можно переопределить host-путь через `STORAGE_HOST_DIR`, например `/srv/gym21/storage`.
-`STORAGE_DIR` должен оставаться путём внутри контейнера и обычно равен `/data/storage`.
+## Legacy Import
 
-## Storage Compatibility
+- Runtime работает только с PostgreSQL; file-backed storage и snapshot endpoints удалены.
+- Для переноса старых JSON используйте отдельный importer:
 
-- Legacy snapshot-файлы вида `<storageKey>.json` по-прежнему поддерживаются: backend лениво мигрирует их при первом чтении в новую структуру `<storageKey>/meta.json`, `profile.json`, `logs.json`, `workouts.json`, `workoutTypes.json`.
-- Миграция не удаляет исходный legacy snapshot автоматически, поэтому откат на старую версию backend возможен без ручного восстановления файлов.
-- Публичный профиль использует отдельный `public-profile-cache.json`; при изменении `profile`, `logs` или `workoutTypes` cache инвалидируется автоматически и пересобирается при следующем запросе.
+```bash
+npm run build --workspace @gym21/server
+npm run import:storage-json --workspace @gym21/server -- --dir ./data/storage --dry-run --report ./import-report.json
+npm run import:storage-json --workspace @gym21/server -- --dir ./data/storage --manifest ./import-manifest.json --apply --report ./import-report.json
+```
+
+- Importer поддерживает `--dry-run`, `--apply`, `--manifest`, `--skip-invalid`, `--truncate-storage`, `--report` и `--verbose`.
+- `manifest` позволяет переопределить `storageKey` и сразу сделать upsert в `user_storage_binding`.
 
 ## Env Notes
 
 - Для Docker `APP_BASE_URL`, `AUTH_BASE_URL` и `ALLOWED_ORIGINS` должны указывать на внешний origin proxy.
 - `TRUST_PROXY` должен соответствовать реальной схеме reverse proxy, иначе IP-based rate limiting будет считать клиентов некорректно.
 - Guardrails для чувствительных маршрутов настраиваются через `RATE_LIMIT_*`: отдельно для auth, username-check, storage/sync и AI.
+- Backend требует валидный `DATABASE_URL`; PostgreSQL schema применяется migration runner-ом при старте.
 - Для `POST /api/me/ai/recommendations` стоит держать консервативные `RATE_LIMIT_AI_*`, `AI_TIMEOUT_MS` и `AI_MAX_OUTPUT_TOKENS`, чтобы ограничивать burst-нагрузку и стоимость одного вызова.
 - `AI_MAX_CONTEXT_CHARS`, `AI_MAX_RECENT_LOGS`, `AI_MAX_EXERCISE_COUNT` и `AI_TEXT_FIELD_MAX_LENGTH` ограничивают размер пользовательского контекста перед отправкой в модель.
 - Browser-сессия опирается на secure Better Auth cookies; клиент не хранит bearer token в `localStorage` и не использует его как источник истины для auth.
 - AI endpoint работает только при наличии корректного Vertex AI конфига и credentials; без них backend отвечает явной конфигурационной ошибкой.
 - При превышении rate limit сервер возвращает `429 RATE_LIMIT_EXCEEDED`, а при конкурирующих дорогих запросах вроде AI/sync может вернуть `503 ROUTE_BUSY`.
-- После перехода со старого root API клиент и backend должны деплоиться вместе. Если браузер удерживает старый PWA shell, может понадобиться одноразовый refresh.
+- После обновления sync wire contract клиент и backend должны деплоиться вместе. Если браузер удерживает старый PWA shell, может понадобиться одноразовый refresh.

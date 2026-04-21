@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { config } from '../../config.js';
 import type { AppDependencies } from '../app-types.js';
 import { createRateLimitMiddleware, createStorageRateLimitKey } from '../middleware/rate-limit.js';
-import { prepareStorageDataForWrite } from '../../services/storage-data.js';
 
 const syncMetadataSchema = {
   id: z.string(),
@@ -68,12 +67,12 @@ const profileSyncSchema = z.object({
 }).strict();
 
 const syncRequestSchema = z.object({
-  baseRevision: z.number().int().nonnegative(),
+  cursor: z.number().int().nonnegative(),
   changes: z.object({
     workoutTypes: z.array(workoutTypeSyncSchema).optional(),
     logs: z.array(logSyncSchema).optional(),
     workouts: z.array(workoutSyncSchema).optional(),
-    profile: profileSyncSchema.optional(),
+    profile: profileSyncSchema.nullish(),
   }).strict(),
 }).strict();
 
@@ -89,12 +88,6 @@ const aiRequestSchema = z.object({
 
 export function createMeRouter(dependencies: AppDependencies): Router {
   const router = Router();
-  const storageRateLimit = createRateLimitMiddleware({
-    name: 'storage',
-    windowMs: config.RATE_LIMIT_STORAGE_WINDOW_MS,
-    maxRequests: config.RATE_LIMIT_STORAGE_MAX,
-    keyGenerator: createStorageRateLimitKey('storage'),
-  });
   const syncRateLimit = createRateLimitMiddleware({
     name: 'storage-sync',
     windowMs: config.RATE_LIMIT_SYNC_WINDOW_MS,
@@ -110,17 +103,6 @@ export function createMeRouter(dependencies: AppDependencies): Router {
     keyGenerator: createStorageRateLimitKey('ai-recommendations'),
   });
 
-  router.get('/storage', storageRateLimit, async (req, res) => {
-    res.json(await dependencies.storageRepository.readSnapshot(req.authContext!.storageKey));
-  });
-
-  router.put('/storage', storageRateLimit, async (req, res) => {
-    const current = await dependencies.storageRepository.readSnapshot(req.authContext!.storageKey);
-    const data = prepareStorageDataForWrite(req.body, req.authContext!, current);
-    await dependencies.storageRepository.replaceSnapshot(req.authContext!.storageKey, data);
-    res.json({ success: true });
-  });
-
   router.post('/storage/sync', syncRateLimit, async (req, res) => {
     const payload = syncRequestSchema.parse(req.body);
     res.json(await dependencies.storageRepository.sync(req.authContext!.storageKey, payload, req.authContext!));
@@ -128,7 +110,7 @@ export function createMeRouter(dependencies: AppDependencies): Router {
 
   router.post('/ai/recommendations', aiRateLimit, async (req, res) => {
     const payload = aiRequestSchema.parse(req.body);
-    const userData = await dependencies.storageRepository.readSnapshot(req.authContext!.storageKey);
+    const userData = await dependencies.storageRepository.readAiContext(req.authContext!.storageKey);
     const recommendation = await dependencies.generateRecommendation({
       ...payload,
       profile: userData.profile,

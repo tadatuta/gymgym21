@@ -19,7 +19,7 @@ import {
   isValidUsername,
   normalizeUsername,
 } from './auth-meta.js';
-import { Storage, type StorageData } from './storage.js';
+import { defaultStorageRepository } from './storage.js';
 import { extractTelegramUser, parseTelegramInitData, type TelegramUser, validateTelegramInitData } from './telegram.js';
 
 const TELEGRAM_PROVIDER_ID = 'telegram';
@@ -46,7 +46,7 @@ interface AccountRecord {
 }
 
 export interface AuthenticatedRequestContext {
-  kind: 'better-auth' | 'telegram-legacy';
+  kind: 'better-auth' | 'telegram';
   storageKey: string;
   authUser?: AuthUserRecord;
   telegramUser?: TelegramUser;
@@ -270,56 +270,13 @@ function parseTelegramUserOrThrow(initData: string): TelegramUser {
   return user;
 }
 
-function hasWorkoutPayload(data: StorageData): boolean {
-  return Boolean(data.workouts?.length || data.logs?.length || data.workoutTypes?.length);
-}
-
 async function chooseStorageKeyForUser(userId: string, telegramUserId?: number): Promise<string> {
-  const existingBinding = await AuthMetaService.getStorageKeyForUser(userId);
-  if (!telegramUserId) {
-    return existingBinding ?? `u_${userId}`;
-  }
-
-  const legacyStorageKey = String(telegramUserId);
-  if (!existingBinding) {
-    return (await Storage.exists(legacyStorageKey)) ? legacyStorageKey : `u_${userId}`;
-  }
-
-  if (existingBinding === legacyStorageKey) {
-    return existingBinding;
-  }
-
-  if (!(await Storage.exists(legacyStorageKey))) {
-    return existingBinding;
-  }
-
-  const currentData = await Storage.read(existingBinding);
-  if (!hasWorkoutPayload(currentData)) {
-    return legacyStorageKey;
-  }
-
-  return existingBinding;
+  return AuthMetaService.ensureStorageBinding(userId, () => (telegramUserId ? `u_${userId}` : `u_${userId}`));
 }
 
 async function assertNoStorageConflictForTelegramLink(userId: string, telegramUserId: number) {
-  const existingBinding = await AuthMetaService.getStorageKeyForUser(userId);
-  if (!existingBinding || existingBinding === String(telegramUserId)) {
-    return;
-  }
-
-  const legacyStorageKey = String(telegramUserId);
-  if (!(await Storage.exists(legacyStorageKey))) {
-    return;
-  }
-
-  const currentData = await Storage.read(existingBinding);
-  const legacyData = await Storage.read(legacyStorageKey);
-
-  if (hasWorkoutPayload(currentData) && hasWorkoutPayload(legacyData)) {
-    throw APIError.fromStatus('BAD_REQUEST', {
-      message: 'Нельзя автоматически связать Telegram: и в текущем аккаунте, и в legacy-данных уже есть тренировки',
-    });
-  }
+  void userId;
+  void telegramUserId;
 }
 
 async function upsertStorageBindingTx(client: PoolClient, userId: string, storageKey: string) {
@@ -342,7 +299,7 @@ async function getAliasOwnerTx(client: PoolClient, alias: string): Promise<strin
   return result.rows[0]?.user_id ?? null;
 }
 
-async function upsertAliasTx(client: PoolClient, userId: string, alias: string, type: 'canonical' | 'telegram_username' | 'telegram_id' | 'legacy_username') {
+async function upsertAliasTx(client: PoolClient, userId: string, alias: string, type: 'canonical' | 'telegram_username' | 'telegram_id') {
   const normalizedAlias = alias.trim().replace(/^@/, '').toLowerCase();
   if (!normalizedAlias) return;
 
@@ -362,14 +319,14 @@ async function upsertAliasTx(client: PoolClient, userId: string, alias: string, 
   );
 }
 
-async function tryUpsertAliasTx(client: PoolClient, userId: string, alias: string | undefined, type: 'telegram_username' | 'legacy_username') {
+async function tryUpsertAliasTx(client: PoolClient, userId: string, alias: string | undefined, type: 'telegram_username') {
   if (!alias) return;
   const normalizedAlias = normalizeUsername(alias);
   if (!isValidUsername(normalizedAlias)) return;
   try {
     await upsertAliasTx(client, userId, normalizedAlias, type);
   } catch {
-    // Keep migration flowing even when a legacy alias is occupied elsewhere.
+    // Keep auth linking flowing even if a secondary alias is already occupied.
   }
 }
 
@@ -501,48 +458,7 @@ async function syncStorageProfile(
     telegramUser?: TelegramUser;
   },
 ) {
-  const current = await Storage.read(storageKey);
-  const now = new Date().toISOString();
-  const nextRevision = Math.max(current.revision ?? 0, current.profile?.version ?? 0) + 1;
-
-  const nextProfile: StorageData['profile'] = {
-    ...current.profile,
-    id: current.profile?.id ?? 'me',
-    isPublic: current.profile?.isPublic ?? false,
-    createdAt: current.profile?.createdAt ?? now,
-    updatedAt: now,
-    friends: current.profile?.friends ?? [],
-    version: nextRevision,
-    serverUpdatedAt: now,
-  };
-
-  if (data.username) {
-    nextProfile.username = data.username;
-  }
-
-  if (!current.profile?.displayName && data.name) {
-    nextProfile.displayName = data.name;
-  }
-
-  if (data.image) {
-    nextProfile.photoUrl = data.image;
-  }
-
-  if (data.telegramUser) {
-    nextProfile.telegramUserId = data.telegramUser.id;
-    if (data.telegramUser.username) {
-      nextProfile.telegramUsername = data.telegramUser.username;
-    }
-    if (data.telegramUser.photo_url) {
-      nextProfile.photoUrl = data.telegramUser.photo_url;
-    }
-  }
-
-  await Storage.write(storageKey, {
-    ...current,
-    revision: nextRevision,
-    profile: nextProfile,
-  });
+  await defaultStorageRepository.updateProfileFromAuth(storageKey, data);
 }
 
 function needsCompletion(user: AuthUserRecord, accounts: AccountRecord[]): boolean {
@@ -556,16 +472,7 @@ async function getSuggestedUsername(userId: string, telegramUserId?: number): Pr
     return user.username;
   }
 
-  const candidates: string[] = [];
-  if (telegramUserId) {
-    const storageData = await Storage.read(String(telegramUserId));
-    if (storageData.profile?.telegramUsername) {
-      candidates.push(storageData.profile.telegramUsername);
-    }
-    if (storageData.profile?.username) {
-      candidates.push(storageData.profile.username);
-    }
-  }
+  const candidates = telegramUserId ? [`user${telegramUserId}`] : [];
 
   for (const candidate of candidates) {
     const normalized = normalizeUsername(candidate);
@@ -578,9 +485,7 @@ async function getSuggestedUsername(userId: string, telegramUserId?: number): Pr
 }
 
 async function ensureTelegramStateForUser(userId: string, telegramUser: TelegramUser): Promise<{ user: AuthUserRecord; storageKey: string }> {
-  const legacyStorageKey = String(telegramUser.id);
-  const legacyStorage = await Storage.read(legacyStorageKey);
-  const preferredUsername = [telegramUser.username, legacyStorage.profile?.username, legacyStorage.profile?.telegramUsername]
+  const preferredUsername = [telegramUser.username]
     .map((value) => value ? normalizeUsername(value) : null)
     .find((value): value is string => Boolean(value && isValidUsername(value)));
   const storageKey = await chooseStorageKeyForUser(userId, telegramUser.id);
@@ -602,13 +507,6 @@ async function ensureTelegramStateForUser(userId: string, telegramUser: Telegram
       const normalizedTelegramUsername = normalizeUsername(telegramUser.username);
       if ((!currentCanonical || currentCanonical !== normalizedTelegramUsername) && isValidUsername(normalizedTelegramUsername)) {
         await tryUpsertAliasTx(client, userId, normalizedTelegramUsername, 'telegram_username');
-      }
-    }
-
-    if (legacyStorage.profile?.telegramUsername) {
-      const normalizedLegacyUsername = normalizeUsername(legacyStorage.profile.telegramUsername);
-      if ((!currentCanonical || currentCanonical !== normalizedLegacyUsername) && isValidUsername(normalizedLegacyUsername)) {
-        await tryUpsertAliasTx(client, userId, normalizedLegacyUsername, 'legacy_username');
       }
     }
 
@@ -1194,6 +1092,10 @@ export async function resolveBetterAuthSession(headers: Headers): Promise<{ sess
 }
 
 export async function resolveRequestContext(headers: Headers): Promise<AuthenticatedRequestContext | null> {
+  if (!HAS_DATABASE) {
+    return null;
+  }
+
   const betterSession = await resolveBetterAuthSession(headers);
   if (betterSession) {
     const storageKey = await AuthMetaService.ensureStorageBinding(betterSession.user.id, () => `u_${betterSession.user.id}`);
@@ -1214,22 +1116,14 @@ export async function resolveRequestContext(headers: Headers): Promise<Authentic
     return null;
   }
 
-  if (!HAS_DATABASE) {
-    return {
-      kind: 'telegram-legacy',
-      storageKey: String(telegramUser.id),
-      telegramUser,
-    };
-  }
-
   const linkedUserId = await getUserIdByProviderAccount(String(telegramUser.id), TELEGRAM_PROVIDER_ID);
   const authUser = linkedUserId ? await getUserById(linkedUserId) : null;
   const storageKey = authUser
-    ? await AuthMetaService.ensureStorageBinding(authUser.id, () => String(telegramUser.id))
-    : String(telegramUser.id);
+    ? await AuthMetaService.ensureStorageBinding(authUser.id, () => `u_${authUser.id}`)
+    : `telegram_${telegramUser.id}`;
 
   return {
-    kind: 'telegram-legacy',
+    kind: 'telegram',
     storageKey,
     authUser: authUser ?? undefined,
     telegramUser,

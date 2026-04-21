@@ -3,9 +3,10 @@ import { pathToFileURL } from 'node:url';
 import { generateRecommendation } from './ai.js';
 import { createApp } from './app.js';
 import { closeAuthResources, createAuthNodeHandler, ensureAuthReady, resolveRequestContext } from './auth.js';
-import { config } from './config.js';
+import { config, HAS_DATABASE } from './config.js';
+import { closeDatabasePool, ensureDatabaseReady } from './database.js';
 import { findPublicProfileByIdentifier } from './services/public-profile.js';
-import { defaultStorageRepository, Storage } from './storage.js';
+import { defaultStorageRepository } from './storage.js';
 
 async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -21,7 +22,11 @@ async function closeServer(server: Server): Promise<void> {
 }
 
 export async function startServer(): Promise<Server> {
-  await Storage.ensureStorageDir();
+  if (!HAS_DATABASE) {
+    throw new Error('DATABASE_URL is required for the PostgreSQL runtime');
+  }
+
+  await ensureDatabaseReady();
   await ensureAuthReady();
 
   const app = createApp({
@@ -30,8 +35,6 @@ export async function startServer(): Promise<Server> {
     generateRecommendation,
     findPublicProfile: findPublicProfileByIdentifier,
     storageRepository: defaultStorageRepository,
-    readStorage: Storage.read.bind(Storage),
-    writeStorage: Storage.write.bind(Storage),
   });
 
   const server = createServer(app);
@@ -52,6 +55,7 @@ export async function startServer(): Promise<Server> {
     try {
       await closeServer(server);
       await closeAuthResources();
+      await closeDatabasePool();
       process.exit(0);
     } catch (error) {
       console.error('Failed to shut down cleanly:', error);

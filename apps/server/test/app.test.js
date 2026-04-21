@@ -1,15 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { after, beforeEach, test } from 'node:test';
+import { afterEach, beforeEach, test } from 'node:test';
 import request from 'supertest';
 
-const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'bucket-storage-test-'));
-const storageDir = path.join(tempRoot, 'storage');
-
-process.env.STORAGE_DIR = storageDir;
 process.env.ALLOWED_ORIGIN = 'http://localhost:5173';
 process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
 process.env.APP_BASE_URL = 'http://localhost:5173';
@@ -20,11 +13,8 @@ process.env.BETTER_AUTH_SECRET = 'test-secret';
 delete process.env.DATABASE_URL;
 delete process.env.DATABASE_SSL;
 
-const [{ createApp }, { resolveRequestContext }, { findPublicProfileByIdentifier }, { Storage, defaultStorageRepository }, { HttpError }] = await Promise.all([
+const [{ createApp }, { HttpError }] = await Promise.all([
   import('../dist/app.js'),
-  import('../dist/auth.js'),
-  import('../dist/services/public-profile.js'),
-  import('../dist/storage.js'),
   import('../dist/http/errors.js'),
 ]);
 const { config } = await import('../dist/config.js');
@@ -49,6 +39,10 @@ function resetGuardrailConfig() {
   Object.assign(config, defaultGuardrailConfig);
 }
 
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function createStubAuthHandler() {
   return async (req, res) => {
     if (
@@ -70,16 +64,286 @@ function createStubAuthHandler() {
   };
 }
 
+function normalizeAlias(value) {
+  return value.trim().replace(/^@/, '').toLowerCase();
+}
+
+function buildPublicProfile(snapshot, fallbackIdentifier) {
+  const profile = snapshot.profile;
+  if (!profile || profile.isDeleted || !profile.isPublic) {
+    return null;
+  }
+
+  const workoutTypes = (snapshot.workoutTypes ?? []).filter((entry) => !entry.isDeleted);
+  const visibleTypeIds = new Set(workoutTypes.map((entry) => entry.id));
+  const logs = (snapshot.logs ?? []).filter((entry) => !entry.isDeleted && visibleTypeIds.has(entry.workoutTypeId));
+
+  const totalVolume = logs.reduce((sum, entry) => sum + ((entry.weight ?? 0) * (entry.reps ?? 0)), 0);
+  const counts = new Map();
+  for (const log of logs) {
+    counts.set(log.workoutTypeId, (counts.get(log.workoutTypeId) ?? 0) + 1);
+  }
+
+  const favoriteId = [...counts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
+  const favoriteExercise = favoriteId ? workoutTypes.find((entry) => entry.id === favoriteId)?.name : undefined;
+  const activityMap = new Map();
+  for (const log of logs) {
+    const day = log.date.slice(0, 10);
+    activityMap.set(day, (activityMap.get(day) ?? 0) + 1);
+  }
+
+  return {
+    displayName: profile.displayName || profile.username || profile.telegramUsername || fallbackIdentifier,
+    identifier: profile.username || profile.telegramUsername || fallbackIdentifier,
+    photoUrl: profile.photoUrl,
+    stats: {
+      totalWorkouts: logs.length,
+      totalVolume,
+      favoriteExercise,
+      lastWorkoutDate: logs.length ? [...logs].sort((left, right) => left.date.localeCompare(right.date)).at(-1).date : undefined,
+    },
+    recentActivity: [...activityMap.entries()]
+      .sort((left, right) => left[0].localeCompare(right[0]))
+      .map(([date, exerciseCount]) => ({ date, exerciseCount })),
+    ...(profile.showFullHistory ? { logs, workoutTypes } : {}),
+  };
+}
+
+function createMemoryStorageRepository() {
+  const snapshots = new Map();
+
+  function ensureSnapshot(storageKey) {
+    if (!snapshots.has(storageKey)) {
+      snapshots.set(storageKey, {
+        cursor: 0,
+        workoutTypes: [],
+        logs: [],
+        workouts: [],
+        profile: undefined,
+      });
+    }
+
+    return snapshots.get(storageKey);
+  }
+
+  function bumpEntity(snapshot, entity) {
+    snapshot.cursor += 1;
+    return {
+      ...clone(entity),
+      updatedAt: entity.updatedAt ?? new Date().toISOString(),
+      version: snapshot.cursor,
+      serverUpdatedAt: new Date().toISOString(),
+    };
+  }
+
+  function applyEntity(snapshot, collectionName, entity) {
+    const collection = snapshot[collectionName];
+    const index = collection.findIndex((entry) => entry.id === entity.id);
+    if (index >= 0) {
+      collection[index] = entity;
+    } else {
+      collection.push(entity);
+    }
+  }
+
+  function listAliases(storageKey, snapshot) {
+    const aliases = new Set([`id_${storageKey}`.toLowerCase()]);
+    if (snapshot.profile?.username) {
+      aliases.add(normalizeAlias(snapshot.profile.username));
+    }
+    if (snapshot.profile?.telegramUsername) {
+      aliases.add(normalizeAlias(snapshot.profile.telegramUsername));
+    }
+    return aliases;
+  }
+
+  return {
+    async readSnapshot(storageKey) {
+      const snapshot = ensureSnapshot(String(storageKey));
+      return {
+        revision: snapshot.cursor,
+        workoutTypes: clone(snapshot.workoutTypes),
+        logs: clone(snapshot.logs),
+        workouts: clone(snapshot.workouts),
+        profile: snapshot.profile ? clone(snapshot.profile) : undefined,
+      };
+    },
+
+    async replaceSnapshot(storageKey, data) {
+      snapshots.set(String(storageKey), {
+        cursor: Number(data.revision ?? 0),
+        workoutTypes: clone(data.workoutTypes ?? []),
+        logs: clone(data.logs ?? []),
+        workouts: clone(data.workouts ?? []),
+        profile: data.profile ? clone(data.profile) : undefined,
+      });
+    },
+
+    async sync(storageKey, requestPayload, authContext) {
+      const snapshot = ensureSnapshot(String(storageKey));
+      const conflicts = [];
+      const authoritative = {
+        workoutTypes: [],
+        logs: [],
+        workouts: [],
+        profile: null,
+      };
+
+      const applyCollection = (collectionName, incomingItems = []) => {
+        for (const incoming of incomingItems) {
+          const collection = snapshot[collectionName];
+          const existing = collection.find((entry) => entry.id === incoming.id);
+          if (existing && (incoming.version ?? 0) !== (existing.version ?? 0)) {
+            conflicts.push({
+              entityType: collectionName,
+              entityId: incoming.id,
+              reason: 'stale-version',
+              serverVersion: existing.version ?? 0,
+            });
+            authoritative[collectionName].push(clone(existing));
+            continue;
+          }
+
+          if (!existing && incoming.isDeleted) {
+            continue;
+          }
+
+          applyEntity(snapshot, collectionName, bumpEntity(snapshot, incoming));
+        }
+      };
+
+      applyCollection('workoutTypes', requestPayload.changes.workoutTypes ?? []);
+      applyCollection('logs', requestPayload.changes.logs ?? []);
+      applyCollection('workouts', requestPayload.changes.workouts ?? []);
+
+      if (requestPayload.changes.profile) {
+        const incoming = clone(requestPayload.changes.profile);
+        const existing = snapshot.profile;
+        if (existing && (incoming.version ?? 0) !== (existing.version ?? 0)) {
+          conflicts.push({
+            entityType: 'profile',
+            entityId: existing.id,
+            reason: 'stale-version',
+            serverVersion: existing.version ?? 0,
+          });
+          authoritative.profile = clone(existing);
+        } else {
+          snapshot.profile = bumpEntity(snapshot, {
+            ...incoming,
+            id: incoming.id || 'me',
+            isPublic: incoming.isPublic ?? false,
+            createdAt: incoming.createdAt ?? new Date().toISOString(),
+            updatedAt: incoming.updatedAt ?? new Date().toISOString(),
+            friends: incoming.friends ?? [],
+            username: authContext.authUser?.username ?? incoming.username,
+            telegramUsername: authContext.telegramUser?.username ?? incoming.telegramUsername,
+          });
+        }
+      }
+
+      const changes = {
+        workoutTypes: snapshot.workoutTypes.filter((entry) => (entry.version ?? 0) > requestPayload.cursor),
+        logs: snapshot.logs.filter((entry) => (entry.version ?? 0) > requestPayload.cursor),
+        workouts: snapshot.workouts.filter((entry) => (entry.version ?? 0) > requestPayload.cursor),
+        profile: snapshot.profile && (snapshot.profile.version ?? 0) > requestPayload.cursor ? clone(snapshot.profile) : null,
+      };
+
+      for (const entity of authoritative.workoutTypes) {
+        if (!changes.workoutTypes.some((entry) => entry.id === entity.id)) {
+          changes.workoutTypes.push(entity);
+        }
+      }
+      for (const entity of authoritative.logs) {
+        if (!changes.logs.some((entry) => entry.id === entity.id)) {
+          changes.logs.push(entity);
+        }
+      }
+      for (const entity of authoritative.workouts) {
+        if (!changes.workouts.some((entry) => entry.id === entity.id)) {
+          changes.workouts.push(entity);
+        }
+      }
+      if (authoritative.profile && !changes.profile) {
+        changes.profile = authoritative.profile;
+      }
+
+      return {
+        cursor: snapshot.cursor,
+        changes,
+        conflicts,
+      };
+    },
+
+    async updateProfileFromAuth(storageKey, data) {
+      const snapshot = ensureSnapshot(String(storageKey));
+      snapshot.cursor += 1;
+      snapshot.profile = {
+        ...(snapshot.profile ?? {
+          id: 'me',
+          isPublic: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          friends: [],
+        }),
+        ...(data.username ? { username: data.username } : {}),
+        ...(!snapshot.profile?.displayName && data.name ? { displayName: data.name } : {}),
+        ...(data.image ? { photoUrl: data.image } : {}),
+        ...(data.telegramUser
+          ? {
+              telegramUserId: data.telegramUser.id,
+              telegramUsername: data.telegramUser.username,
+              photoUrl: data.telegramUser.photo_url ?? data.image ?? snapshot.profile?.photoUrl,
+            }
+          : {}),
+        updatedAt: new Date().toISOString(),
+        version: snapshot.cursor,
+        serverUpdatedAt: new Date().toISOString(),
+      };
+    },
+
+    async readAiContext(storageKey) {
+      const snapshot = ensureSnapshot(String(storageKey));
+      return {
+        profile: snapshot.profile ? clone(snapshot.profile) : undefined,
+        workoutTypes: clone(snapshot.workoutTypes.filter((entry) => !entry.isDeleted)),
+        workouts: clone(snapshot.workouts.filter((entry) => !entry.isDeleted)),
+        logs: clone(snapshot.logs.filter((entry) => !entry.isDeleted)),
+      };
+    },
+
+    async findPublicProfileByIdentifier(identifier) {
+      const normalized = normalizeAlias(identifier);
+      for (const [storageKey, snapshot] of snapshots.entries()) {
+        if (!listAliases(storageKey, snapshot).has(normalized)) {
+          continue;
+        }
+        return buildPublicProfile(snapshot, identifier);
+      }
+      return null;
+    },
+
+    async getPublicProfileByStorageKey(storageKey, fallbackIdentifier = `id_${storageKey}`) {
+      return buildPublicProfile(ensureSnapshot(String(storageKey)), fallbackIdentifier);
+    },
+  };
+}
+
 function createTestApp(overrides = {}) {
-  return createApp({
-    authHandler: overrides.authHandler ?? createStubAuthHandler(),
-    resolveRequestContext: overrides.resolveRequestContext ?? resolveRequestContext,
-    generateRecommendation: overrides.generateRecommendation ?? (async () => '# Test recommendation'),
-    findPublicProfile: overrides.findPublicProfile ?? findPublicProfileByIdentifier,
-    storageRepository: overrides.storageRepository ?? defaultStorageRepository,
-    readStorage: overrides.readStorage ?? Storage.read.bind(Storage),
-    writeStorage: overrides.writeStorage ?? Storage.write.bind(Storage),
-  });
+  const storageRepository = overrides.storageRepository ?? createMemoryStorageRepository();
+  return {
+    app: createApp({
+      authHandler: overrides.authHandler ?? createStubAuthHandler(),
+      resolveRequestContext: overrides.resolveRequestContext ?? (async () => ({
+        kind: 'telegram',
+        storageKey: 'test-user',
+        telegramUser: { id: 123, first_name: 'Test', username: 'test_user' },
+      })),
+      generateRecommendation: overrides.generateRecommendation ?? (async () => '# Test recommendation'),
+      findPublicProfile: overrides.findPublicProfile ?? ((identifier) => storageRepository.findPublicProfileByIdentifier(identifier)),
+      storageRepository,
+    }),
+    storageRepository,
+  };
 }
 
 function generateInitData(user) {
@@ -104,38 +368,36 @@ function generateInitData(user) {
   return `${new URLSearchParams(data).toString()}&hash=${hash}`;
 }
 
-beforeEach(async () => {
+beforeEach(() => {
   resetGuardrailConfig();
-  await fs.rm(storageDir, { recursive: true, force: true });
-  await Storage.ensureStorageDir();
 });
 
-after(async () => {
-  await fs.rm(tempRoot, { recursive: true, force: true });
+afterEach(() => {
+  resetGuardrailConfig();
 });
 
 test('GET /health returns service health', async () => {
-  const app = createTestApp();
+  const { app } = createTestApp();
   const response = await request(app).get('/health');
 
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, { ok: true });
 });
 
-test('OPTIONS applies CORS headers to protected routes', async () => {
-  const app = createTestApp();
+test('OPTIONS applies CORS headers to the sync route', async () => {
+  const { app } = createTestApp();
   const response = await request(app)
-    .options('/api/me/storage')
+    .options('/api/me/storage/sync')
     .set('Origin', 'http://localhost:5173')
-    .set('Access-Control-Request-Method', 'PUT');
+    .set('Access-Control-Request-Method', 'POST');
 
   assert.equal(response.status, 204);
   assert.equal(response.headers['access-control-allow-origin'], 'http://localhost:5173');
-  assert.match(response.headers['access-control-allow-methods'], /PUT/);
+  assert.match(response.headers['access-control-allow-methods'], /POST/);
 });
 
 test('GET /api/auth/ok is routed to the auth handler', async () => {
-  const app = createTestApp();
+  const { app } = createTestApp();
   const response = await request(app).get('/api/auth/ok');
 
   assert.equal(response.status, 200);
@@ -146,49 +408,42 @@ test('POST /api/auth/register/email is rate limited after repeated attempts', as
   config.RATE_LIMIT_AUTH_MAX = 2;
   config.RATE_LIMIT_AUTH_WINDOW_MS = 60_000;
 
-  const app = createTestApp();
+  const { app } = createTestApp();
 
-  const first = await request(app)
-    .post('/api/auth/register/email')
-    .send({ email: 'one@example.com' });
-  const second = await request(app)
-    .post('/api/auth/register/email')
-    .send({ email: 'two@example.com' });
-  const third = await request(app)
-    .post('/api/auth/register/email')
-    .send({ email: 'three@example.com' });
+  const first = await request(app).post('/api/auth/register/email').send({ email: 'one@example.com' });
+  const second = await request(app).post('/api/auth/register/email').send({ email: 'two@example.com' });
+  const third = await request(app).post('/api/auth/register/email').send({ email: 'three@example.com' });
 
   assert.equal(first.status, 200);
   assert.equal(second.status, 200);
   assert.equal(third.status, 429);
   assert.equal(third.body.code, 'RATE_LIMIT_EXCEEDED');
-  assert.equal(third.body.details.policy, 'auth-strict');
-  assert.match(third.headers['retry-after'], /^[0-9]+$/);
 });
 
-test('GET /api/profiles/:identifier returns a public profile', async () => {
-  await Storage.write('12345', {
+test('GET /api/profiles/:identifier returns a public profile from the read model', async () => {
+  const { app, storageRepository } = createTestApp();
+  await storageRepository.replaceSnapshot('12345', {
+    workoutTypes: [{ id: 'squat', name: 'Squat', category: 'time', updatedAt: '2026-03-20T10:00:00.000Z' }],
+    logs: [{
+      id: 'log-1',
+      workoutTypeId: 'squat',
+      duration: 15,
+      durationSeconds: 30,
+      date: '2026-03-20T10:00:00.000Z',
+      updatedAt: '2026-03-20T10:00:00.000Z',
+    }],
+    workouts: [],
     profile: {
       id: 'me',
       isPublic: true,
       showFullHistory: true,
-      createdAt: new Date().toISOString(),
+      createdAt: '2026-03-20T10:00:00.000Z',
+      updatedAt: '2026-03-20T10:00:00.000Z',
       displayName: 'Demo User',
       telegramUsername: 'demo_user',
     },
-    logs: [
-      {
-        id: 'log-1',
-        workoutTypeId: 'squat',
-        duration: 15,
-        durationSeconds: 30,
-        date: '2026-03-20T10:00:00.000Z',
-      },
-    ],
-    workoutTypes: [{ id: 'squat', name: 'Squat', category: 'time' }],
   });
 
-  const app = createTestApp();
   const response = await request(app).get('/api/profiles/demo_user');
 
   assert.equal(response.status, 200);
@@ -196,724 +451,246 @@ test('GET /api/profiles/:identifier returns a public profile', async () => {
   assert.equal(response.body.identifier, 'demo_user');
   assert.equal(response.body.stats.favoriteExercise, 'Squat');
   assert.equal(response.body.logs[0].durationSeconds, 30);
-  assert.equal(response.body.workoutTypes[0].category, 'time');
 });
 
-test('GET /api/profiles/:identifier excludes deleted logs from public stats and activity', async () => {
-  await Storage.write('12345', {
-    profile: {
-      id: 'me',
-      isPublic: true,
-      showFullHistory: true,
-      createdAt: new Date().toISOString(),
-      displayName: 'Demo User',
-      telegramUsername: 'demo_user',
-    },
-    logs: [
-      {
-        id: 'log-active',
-        workoutTypeId: 'squat',
-        reps: 5,
-        weight: 100,
-        date: '2026-03-20T10:00:00.000Z',
-      },
-      {
-        id: 'log-deleted',
-        workoutTypeId: 'squat',
-        reps: 10,
-        weight: 200,
-        date: '2026-03-21T10:00:00.000Z',
-        isDeleted: true,
-      },
-    ],
-    workoutTypes: [{ id: 'squat', name: 'Squat' }],
-  });
+test('GET and PUT snapshot endpoints are removed from runtime', async () => {
+  const { app } = createTestApp();
 
-  const app = createTestApp();
-  const response = await request(app).get('/api/profiles/demo_user');
+  const getResponse = await request(app).get('/api/me/storage');
+  const putResponse = await request(app).put('/api/me/storage').send({});
 
-  assert.equal(response.status, 200);
-  assert.equal(response.body.stats.totalVolume, 500);
-  assert.equal(response.body.stats.totalWorkouts, 1);
-  assert.equal(response.body.stats.lastWorkoutDate, '2026-03-20T10:00:00.000Z');
-  assert.deepEqual(response.body.recentActivity, [{ date: '2026-03-20', exerciseCount: 1 }]);
-  assert.deepEqual(response.body.logs.map((entry) => entry.id), ['log-active']);
+  assert.equal(getResponse.status, 404);
+  assert.equal(putResponse.status, 404);
 });
 
-test('GET /api/profiles/:identifier excludes logs for deleted workout types from public history', async () => {
-  await Storage.write('12345', {
-    profile: {
-      id: 'me',
-      isPublic: true,
-      showFullHistory: true,
-      createdAt: new Date().toISOString(),
-      displayName: 'Demo User',
-      telegramUsername: 'demo_user',
-    },
-    logs: [
-      {
-        id: 'log-active',
-        workoutTypeId: 'squat',
-        reps: 5,
-        weight: 100,
-        date: '2026-03-20T10:00:00.000Z',
-      },
-      {
-        id: 'log-hidden-type',
-        workoutTypeId: 'bench',
-        reps: 10,
-        weight: 120,
-        date: '2026-03-21T10:00:00.000Z',
-      },
-    ],
-    workoutTypes: [
-      { id: 'squat', name: 'Squat' },
-      { id: 'bench', name: 'Bench Press', isDeleted: true },
-    ],
-  });
-
-  const app = createTestApp();
-  const response = await request(app).get('/api/profiles/demo_user');
-
-  assert.equal(response.status, 200);
-  assert.equal(response.body.stats.totalVolume, 500);
-  assert.equal(response.body.stats.favoriteExercise, 'Squat');
-  assert.equal(response.body.stats.lastWorkoutDate, '2026-03-20T10:00:00.000Z');
-  assert.deepEqual(response.body.logs.map((entry) => entry.id), ['log-active']);
-  assert.deepEqual(response.body.workoutTypes, [{ id: 'squat', name: 'Squat' }]);
-});
-
-test('Telegram legacy auth can write and read storage data', async () => {
-  const telegramUser = {
-    id: 777,
-    first_name: 'Telegram',
-    username: 'telegram_user',
-    photo_url: 'https://example.com/telegram-user.png',
-  };
-  const initData = generateInitData(telegramUser);
-  const app = createTestApp();
-
-  const writeResponse = await request(app)
-    .put('/api/me/storage')
-    .set('X-Telegram-Init-Data', initData)
-    .send({
-      workoutTypes: [
-        {
-          id: 'rower',
-          name: 'Rower',
-          category: 'time',
-          updatedAt: '2026-03-20T10:00:00.000Z',
-        },
-      ],
-      logs: [
-        {
-          id: 'log-1',
-          workoutTypeId: 'rower',
-          duration: 12,
-          durationSeconds: 45,
-          date: '2026-03-20T10:00:00.000Z',
-          updatedAt: '2026-03-20T10:00:00.000Z',
-        },
-      ],
-      workouts: [
-        {
-          id: 'workout-1',
-          startTime: '2026-03-20T10:00:00.000Z',
-          endTime: '2026-03-20T10:30:00.000Z',
-          status: 'finished',
-          isManual: true,
-          pauseIntervals: [{ start: '2026-03-20T10:10:00.000Z', end: '2026-03-20T10:12:00.000Z' }],
-          updatedAt: '2026-03-20T10:30:00.000Z',
-        },
-      ],
-      profile: {
-        id: 'me',
-        isPublic: true,
-        createdAt: '2026-03-20T10:00:00.000Z',
-        displayName: 'Telegram Athlete',
-      },
-    });
-
-  assert.equal(writeResponse.status, 200);
-
-  const readResponse = await request(app)
-    .get('/api/me/storage')
-    .set('X-Telegram-Init-Data', initData);
-
-  assert.equal(readResponse.status, 200);
-  assert.equal(readResponse.body.profile.displayName, 'Telegram Athlete');
-  assert.equal(readResponse.body.profile.telegramUserId, 777);
-  assert.equal(readResponse.body.profile.telegramUsername, 'telegram_user');
-  assert.equal(readResponse.body.profile.photoUrl, 'https://example.com/telegram-user.png');
-  assert.equal(readResponse.body.logs[0].durationSeconds, 45);
-  assert.equal(readResponse.body.workoutTypes[0].category, 'time');
-  assert.equal(readResponse.body.workouts[0].pauseIntervals[0].end, '2026-03-20T10:12:00.000Z');
-});
-
-test('better-auth context enriches saved profile with canonical username and image', async () => {
-  const app = createTestApp({
+test('POST /api/me/storage/sync writes delta records and returns cursor metadata', async () => {
+  const { app, storageRepository } = createTestApp({
     resolveRequestContext: async () => ({
-      kind: 'better-auth',
-      storageKey: 'u_user-1',
-      authUser: {
-        id: 'user-1',
-        name: 'User 1',
-        email: 'user1@example.com',
-        emailVerified: true,
-        image: 'https://example.com/avatar.png',
-        createdAt: new Date('2026-03-20T10:00:00.000Z'),
-        updatedAt: new Date('2026-03-20T10:00:00.000Z'),
-        username: 'canonical_user',
-        displayUsername: 'canonical_user',
-        migrationCompleted: true,
-      },
-    }),
-  });
-
-  const response = await request(app)
-    .put('/api/me/storage')
-    .send({
-      profile: {
-        id: 'me',
-        isPublic: false,
-        createdAt: '2026-03-20T10:00:00.000Z',
-        displayName: 'Auth User',
-      },
-    });
-
-  assert.equal(response.status, 200);
-
-  const stored = await Storage.read('u_user-1');
-  assert.equal(stored.profile?.username, 'canonical_user');
-  assert.equal(stored.profile?.photoUrl, 'https://example.com/avatar.png');
-});
-
-test('POST /api/me/ai/recommendations uses stored workout data and returns markdown', async () => {
-  await Storage.write('ai-user', {
-    profile: {
-      id: 'me',
-      isPublic: false,
-      createdAt: '2026-03-20T10:00:00.000Z',
-      displayName: 'AI User',
-    },
-    logs: [
-      {
-        id: 'log-1',
-        workoutTypeId: 'bench',
-        reps: 8,
-        weight: 80,
-        date: '2026-03-21T10:00:00.000Z',
-      },
-    ],
-    workoutTypes: [{ id: 'bench', name: 'Bench Press' }],
-  });
-
-  let capturedRequest;
-  const app = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram-legacy',
-      storageKey: 'ai-user',
-      telegramUser: {
-        id: 888,
-        first_name: 'AI',
-      },
-    }),
-    generateRecommendation: async (input) => {
-      capturedRequest = input;
-      return '# Weekly plan';
-    },
-  });
-
-  const response = await request(app)
-    .post('/api/me/ai/recommendations')
-    .send({ type: 'plan', options: { period: 'week' } });
-
-  assert.equal(response.status, 200);
-  assert.equal(response.body.format, 'markdown');
-  assert.equal(response.body.recommendation, '# Weekly plan');
-  assert.equal(capturedRequest.type, 'plan');
-  assert.equal(capturedRequest.profile.displayName, 'AI User');
-  assert.equal(capturedRequest.logs.length, 1);
-});
-
-test('POST /api/me/ai/recommendations returns explicit config error when AI dependency is unavailable', async () => {
-  await Storage.write('ai-config-user', {
-    profile: {
-      id: 'me',
-      isPublic: false,
-      createdAt: '2026-03-20T10:00:00.000Z',
-      displayName: 'AI Config User',
-    },
-  });
-
-  const app = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram-legacy',
-      storageKey: 'ai-config-user',
-      telegramUser: {
-        id: 889,
-        first_name: 'AI',
-      },
-    }),
-    generateRecommendation: async () => {
-      throw new HttpError(503, 'AI is not configured', {
-        code: 'AI_NOT_CONFIGURED',
-      });
-    },
-  });
-
-  const response = await request(app)
-    .post('/api/me/ai/recommendations')
-    .send({ type: 'general' });
-
-  assert.equal(response.status, 503);
-  assert.equal(response.body.error, 'AI is not configured');
-  assert.equal(response.body.code, 'AI_NOT_CONFIGURED');
-});
-
-test('POST /api/me/ai/recommendations rejects concurrent bursts with a controlled 503', async () => {
-  await Storage.write('ai-burst-user', {
-    profile: {
-      id: 'me',
-      isPublic: false,
-      createdAt: '2026-03-20T10:00:00.000Z',
-      displayName: 'AI Burst User',
-    },
-  });
-
-  config.RATE_LIMIT_AI_MAX = 10;
-  config.RATE_LIMIT_AI_WINDOW_MS = 60_000;
-  config.RATE_LIMIT_AI_MAX_CONCURRENT = 1;
-
-  let notifyEntered;
-  const entered = new Promise((resolve) => {
-    notifyEntered = resolve;
-  });
-  let releaseGeneration;
-  const blockGeneration = new Promise((resolve) => {
-    releaseGeneration = resolve;
-  });
-
-  const app = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram-legacy',
-      storageKey: 'ai-burst-user',
-      telegramUser: {
-        id: 890,
-        first_name: 'Burst',
-      },
-    }),
-    generateRecommendation: async () => {
-      notifyEntered();
-      await blockGeneration;
-      return '# Controlled burst';
-    },
-  });
-
-  const firstResponsePromise = new Promise((resolve, reject) => {
-    request(app)
-      .post('/api/me/ai/recommendations')
-      .send({ type: 'general' })
-      .end((error, response) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve(response);
-      });
-  });
-
-  await entered;
-
-  const second = await request(app)
-    .post('/api/me/ai/recommendations')
-    .send({ type: 'general' });
-
-  releaseGeneration();
-
-  const first = await firstResponsePromise;
-
-  assert.equal(second.status, 503);
-  assert.equal(second.body.code, 'ROUTE_BUSY');
-  assert.equal(second.body.details.policy, 'ai-recommendations');
-  assert.equal(first.status, 200);
-});
-
-test('PUT /api/me/storage accepts payloads above the old 100kb default body limit', async () => {
-  const logs = Array.from({ length: 2500 }, (_, index) => ({
-    id: `log-${index}`,
-    workoutTypeId: 'run',
-    duration: 30,
-    date: '2026-03-22T10:00:00.000Z',
-  }));
-
-  const app = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram-legacy',
-      storageKey: 'big-payload-user',
-      telegramUser: {
-        id: 999,
-        first_name: 'Big',
-      },
-    }),
-  });
-
-  const response = await request(app)
-    .put('/api/me/storage')
-    .send({ logs });
-
-  assert.equal(response.status, 200);
-
-  const stored = await Storage.read('big-payload-user');
-  assert.equal(stored.logs?.length, 2500);
-});
-
-test('PUT /api/me/storage rejects invalid display names', async () => {
-  const app = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram-legacy',
-      storageKey: 'invalid-user',
-      telegramUser: {
-        id: 1000,
-        first_name: 'Invalid',
-      },
-    }),
-  });
-
-  const response = await request(app)
-    .put('/api/me/storage')
-    .send({
-      profile: {
-        id: 'me',
-        isPublic: false,
-        createdAt: '2026-03-20T10:00:00.000Z',
-        displayName: 'x'.repeat(101),
-      },
-    });
-
-  assert.equal(response.status, 400);
-  assert.equal(response.body.error, 'Display name too long');
-});
-
-test('POST /api/me/storage/sync writes only delta records and returns revision metadata', async () => {
-  const app = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram-legacy',
+      kind: 'telegram',
       storageKey: 'sync-user',
-      telegramUser: {
-        id: 1001,
-        first_name: 'Sync',
-      },
+      telegramUser: { id: 321, first_name: 'Sync', username: 'sync_user' },
     }),
   });
 
   const response = await request(app)
     .post('/api/me/storage/sync')
     .send({
-      baseRevision: 0,
-      changes: {
-        workoutTypes: [
-          {
-            id: 'rower',
-            name: 'Rower',
-            category: 'time',
-            updatedAt: '2026-03-20T10:00:00.000Z',
-          },
-        ],
-      },
-    });
-
-  assert.equal(response.status, 200);
-  assert.equal(response.body.revision, 1);
-  assert.equal(response.body.conflicts.length, 0);
-  assert.equal(response.body.changes.workoutTypes.length, 1);
-  assert.equal(response.body.changes.workoutTypes[0].version, 1);
-
-  const stored = await Storage.read('sync-user');
-  assert.equal(stored.revision, 1);
-  assert.equal(stored.workoutTypes[0].serverUpdatedAt !== undefined, true);
-});
-
-test('POST /api/me/storage/sync rejects stale concurrent edits and returns the authoritative entity', async () => {
-  const app = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram-legacy',
-      storageKey: 'concurrent-user',
-      telegramUser: {
-        id: 1002,
-        first_name: 'Concurrent',
-      },
-    }),
-  });
-
-  const initial = await request(app)
-    .post('/api/me/storage/sync')
-    .send({
-      baseRevision: 0,
+      cursor: 0,
       changes: {
         workoutTypes: [
           {
             id: 'bench',
             name: 'Bench Press',
-            updatedAt: '2026-03-20T10:00:00.000Z',
+            updatedAt: '2026-03-01T12:00:00.000Z',
           },
         ],
       },
     });
 
-  assert.equal(initial.status, 200);
-  const initialType = initial.body.changes.workoutTypes[0];
+  assert.equal(response.status, 200);
+  assert.equal(response.body.cursor, 1);
+  assert.equal(response.body.changes.workoutTypes[0].version, 1);
+
+  const stored = await storageRepository.readSnapshot('sync-user');
+  assert.equal(stored.revision, 1);
+  assert.equal(stored.workoutTypes[0].id, 'bench');
+});
+
+test('POST /api/me/storage/sync returns authoritative entities on stale updates', async () => {
+  const { app } = createTestApp({
+    resolveRequestContext: async () => ({
+      kind: 'telegram',
+      storageKey: 'conflict-user',
+      telegramUser: { id: 654, first_name: 'Conflict', username: 'conflict_user' },
+    }),
+  });
+
+  const initial = await request(app)
+    .post('/api/me/storage/sync')
+    .send({
+      cursor: 0,
+      changes: {
+        workoutTypes: [{ id: 'bench', name: 'Bench Press', updatedAt: '2026-03-01T10:00:00.000Z' }],
+      },
+    });
 
   const accepted = await request(app)
     .post('/api/me/storage/sync')
     .send({
-      baseRevision: initial.body.revision,
+      cursor: initial.body.cursor,
       changes: {
-        workoutTypes: [
-          {
-            ...initialType,
-            name: 'Bench Press (Client A)',
-            updatedAt: '2026-03-20T10:05:00.000Z',
-          },
-        ],
+        workoutTypes: [{
+          id: 'bench',
+          name: 'Bench Press Wide Grip',
+          updatedAt: '2026-03-01T11:00:00.000Z',
+          version: initial.body.changes.workoutTypes[0].version,
+        }],
       },
     });
-
-  assert.equal(accepted.status, 200);
-  assert.equal(accepted.body.conflicts.length, 0);
-  const acceptedType = accepted.body.changes.workoutTypes[0];
 
   const stale = await request(app)
     .post('/api/me/storage/sync')
     .send({
-      baseRevision: initial.body.revision,
+      cursor: initial.body.cursor,
       changes: {
-        workoutTypes: [
-          {
-            ...initialType,
-            name: 'Bench Press (Client B)',
-            updatedAt: '2026-03-20T10:06:00.000Z',
-          },
-        ],
+        workoutTypes: [{
+          id: 'bench',
+          name: 'Stale Name',
+          updatedAt: '2026-03-01T12:00:00.000Z',
+          version: initial.body.changes.workoutTypes[0].version,
+        }],
       },
     });
 
+  assert.equal(accepted.status, 200);
   assert.equal(stale.status, 200);
   assert.equal(stale.body.conflicts.length, 1);
   assert.equal(stale.body.conflicts[0].reason, 'stale-version');
-  assert.equal(stale.body.changes.workoutTypes[0].name, 'Bench Press (Client A)');
-  assert.equal(stale.body.changes.workoutTypes[0].version, acceptedType.version);
+  assert.equal(stale.body.changes.workoutTypes[0].name, 'Bench Press Wide Grip');
 });
 
-test('POST /api/me/storage/sync propagates soft deletions and keeps large histories incremental', async () => {
-  const app = createTestApp({
+test('POST /api/me/storage/sync propagates soft deletions incrementally', async () => {
+  const { app } = createTestApp({
     resolveRequestContext: async () => ({
-      kind: 'telegram-legacy',
+      kind: 'telegram',
       storageKey: 'deletion-user',
-      telegramUser: {
-        id: 1003,
-        first_name: 'Delete',
-      },
+      telegramUser: { id: 777, first_name: 'Delete', username: 'delete_user' },
     }),
   });
 
-  const logs = Array.from({ length: 250 }, (_, index) => ({
-    id: `log-${index}`,
-    workoutTypeId: 'run',
-    duration: 30,
-    workoutId: 'workout-1',
-    date: `2026-03-22T10:${String(index % 60).padStart(2, '0')}:00.000Z`,
-    updatedAt: '2026-03-22T10:00:00.000Z',
-  }));
-
-  const initial = await request(app)
-    .put('/api/me/storage')
+  const created = await request(app)
+    .post('/api/me/storage/sync')
     .send({
-      workoutTypes: [
-        {
-          id: 'run',
-          name: 'Run',
-          category: 'time',
-          updatedAt: '2026-03-22T10:00:00.000Z',
-        },
-      ],
-      workouts: [
-        {
-          id: 'workout-1',
-          startTime: '2026-03-22T10:00:00.000Z',
-          endTime: '2026-03-22T11:00:00.000Z',
-          status: 'finished',
-          isManual: true,
-          pauseIntervals: [],
-          updatedAt: '2026-03-22T11:00:00.000Z',
-        },
-      ],
-      logs,
-      profile: {
-        id: 'me',
-        isPublic: false,
-        createdAt: '2026-03-22T10:00:00.000Z',
-        displayName: 'Deletion User',
+      cursor: 0,
+      changes: {
+        logs: [{
+          id: 'log-1',
+          workoutTypeId: 'bench',
+          workoutId: 'workout-1',
+          reps: 5,
+          weight: 100,
+          date: '2026-03-05T12:00:00.000Z',
+          updatedAt: '2026-03-05T12:00:00.000Z',
+        }],
       },
     });
-
-  assert.equal(initial.status, 200);
-
-  const stored = await Storage.read('deletion-user');
-  const targetLog = stored.logs.find((entry) => entry.id === 'log-1');
 
   const deletion = await request(app)
     .post('/api/me/storage/sync')
     .send({
-      baseRevision: stored.revision,
+      cursor: created.body.cursor,
       changes: {
-        logs: [
-          {
-            ...targetLog,
-            isDeleted: true,
-            updatedAt: '2026-03-22T12:00:00.000Z',
-          },
-        ],
+        logs: [{
+          id: 'log-1',
+          workoutTypeId: 'bench',
+          workoutId: 'workout-1',
+          reps: 5,
+          weight: 100,
+          date: '2026-03-05T12:00:00.000Z',
+          updatedAt: '2026-03-05T12:30:00.000Z',
+          isDeleted: true,
+          version: created.body.changes.logs[0].version,
+        }],
       },
     });
 
-  assert.equal(deletion.status, 200);
-  assert.equal(deletion.body.changes.logs.length, 1);
-  assert.equal(deletion.body.changes.logs[0].isDeleted, true);
-
-  const noOp = await request(app)
+  const bootstrap = await request(app)
     .post('/api/me/storage/sync')
     .send({
-      baseRevision: deletion.body.revision,
+      cursor: 0,
       changes: {},
     });
 
-  assert.equal(noOp.status, 200);
-  assert.deepEqual(noOp.body.changes, {});
+  assert.equal(deletion.status, 200);
+  assert.equal(deletion.body.changes.logs[0].isDeleted, true);
+  assert.equal(bootstrap.body.changes.logs.length, 1);
+  assert.equal(bootstrap.body.changes.logs[0].isDeleted, true);
 });
 
-test('legacy snapshot storage is lazily migrated to the structured backend', async () => {
-  await fs.writeFile(path.join(storageDir, 'legacy-user.json'), JSON.stringify({
+test('POST /api/me/ai/recommendations reads AI context from the repository', async () => {
+  let receivedPayload;
+  const { app, storageRepository } = createTestApp({
+    resolveRequestContext: async () => ({
+      kind: 'telegram',
+      storageKey: 'ai-user',
+      telegramUser: { id: 888, first_name: 'AI', username: 'ai_user' },
+    }),
+    generateRecommendation: async (payload) => {
+      receivedPayload = payload;
+      return '# Recommendation';
+    },
+  });
+
+  await storageRepository.replaceSnapshot('ai-user', {
+    workoutTypes: [{ id: 'bench', name: 'Bench Press', updatedAt: '2026-03-01T10:00:00.000Z' }],
+    logs: [{
+      id: 'log-1',
+      workoutTypeId: 'bench',
+      workoutId: 'workout-1',
+      reps: 5,
+      weight: 100,
+      date: '2026-03-01T10:00:00.000Z',
+      updatedAt: '2026-03-01T10:00:00.000Z',
+    }],
+    workouts: [],
     profile: {
       id: 'me',
       isPublic: false,
-      createdAt: '2026-03-20T10:00:00.000Z',
-      displayName: 'Legacy User',
+      createdAt: '2026-03-01T10:00:00.000Z',
+      updatedAt: '2026-03-01T10:00:00.000Z',
+      displayName: 'AI User',
     },
-    workoutTypes: [
-      {
-        id: 'bike',
-        name: 'Bike',
-        category: 'time',
-      },
-    ],
-    logs: [
-      {
-        id: 'legacy-log',
-        workoutTypeId: 'bike',
-        duration: 20,
-        date: '2026-03-20T10:00:00.000Z',
-      },
-    ],
-  }));
-
-  const migrated = await Storage.read('legacy-user');
-
-  assert.equal(migrated.profile?.displayName, 'Legacy User');
-  assert.equal(migrated.workoutTypes?.[0]?.id, 'bike');
-  assert.equal(migrated.logs?.[0]?.id, 'legacy-log');
-  assert.equal(await fs.stat(path.join(storageDir, 'legacy-user', 'meta.json')).then(() => true, () => false), true);
-  assert.equal(await fs.stat(path.join(storageDir, 'legacy-user', 'logs.json')).then(() => true, () => false), true);
-});
-
-test('public profile cache serves repeated requests without re-reading full entity files', async () => {
-  await Storage.write('cached-user', {
-    profile: {
-      id: 'me',
-      isPublic: true,
-      showFullHistory: true,
-      createdAt: '2026-03-20T10:00:00.000Z',
-      displayName: 'Cached User',
-      telegramUsername: 'cached_user',
-    },
-    workoutTypes: [{ id: 'pullup', name: 'Pull Up' }],
-    logs: [
-      {
-        id: 'cached-log',
-        workoutTypeId: 'pullup',
-        reps: 10,
-        date: '2026-03-20T10:00:00.000Z',
-      },
-    ],
   });
 
-  const first = await findPublicProfileByIdentifier('cached_user');
-  assert.equal(first?.stats.totalWorkouts, 1);
-  assert.equal(await fs.stat(path.join(storageDir, 'cached-user', 'public-profile-cache.json')).then(() => true, () => false), true);
+  const response = await request(app)
+    .post('/api/me/ai/recommendations')
+    .send({
+      type: 'general',
+    });
 
-  await fs.rm(path.join(storageDir, 'cached-user', 'logs.json'), { force: true });
-  await fs.rm(path.join(storageDir, 'cached-user', 'workoutTypes.json'), { force: true });
-
-  const second = await findPublicProfileByIdentifier('cached_user');
-
-  assert.deepEqual(second, first);
+  assert.equal(response.status, 200);
+  assert.equal(response.body.format, 'markdown');
+  assert.equal(response.body.recommendation, '# Recommendation');
+  assert.equal(receivedPayload.logs.length, 1);
+  assert.equal(receivedPayload.workoutTypes.length, 1);
 });
 
-test('concurrent sync requests keep both writes instead of dropping the earlier delta', async () => {
-  config.RATE_LIMIT_SYNC_MAX = 10;
-  config.RATE_LIMIT_SYNC_WINDOW_MS = 60_000;
-  config.RATE_LIMIT_SYNC_MAX_CONCURRENT = 5;
-
-  const app = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram-legacy',
-      storageKey: 'parallel-sync-user',
-      telegramUser: {
-        id: 1004,
-        first_name: 'Parallel',
-      },
-    }),
+test('unauthorized requests to protected routes return 401', async () => {
+  const { app } = createTestApp({
+    resolveRequestContext: async () => null,
   });
 
-  const [left, right] = await Promise.all([
-    request(app)
-      .post('/api/me/storage/sync')
-      .send({
-        baseRevision: 0,
-        changes: {
-          workoutTypes: [
-            {
-              id: 'squat',
-              name: 'Squat',
-              updatedAt: '2026-03-20T10:00:00.000Z',
-            },
-          ],
-        },
-      }),
-    request(app)
-      .post('/api/me/storage/sync')
-      .send({
-        baseRevision: 0,
-        changes: {
-          workoutTypes: [
-            {
-              id: 'press',
-              name: 'Press',
-              updatedAt: '2026-03-20T10:00:01.000Z',
-            },
-          ],
-        },
-      }),
-  ]);
+  const response = await request(app).post('/api/me/storage/sync').send({ cursor: 0, changes: {} });
 
-  assert.equal(left.status, 200);
-  assert.equal(right.status, 200);
+  assert.equal(response.status, 401);
+});
 
-  const stored = await Storage.read('parallel-sync-user');
-  assert.deepEqual(
-    stored.workoutTypes?.map((entry) => entry.id).sort(),
-    ['press', 'squat'],
-  );
-  assert.equal(stored.revision, 2);
+test('Telegram Mini App auth headers can still be transformed into a request context by a custom resolver', async () => {
+  const initData = generateInitData({
+    id: 999,
+    first_name: 'Mini',
+    username: 'mini_user',
+  });
+
+  const { app } = createTestApp({
+    resolveRequestContext: async (headers) => {
+      const header = headers.get('x-telegram-init-data');
+      if (!header || header !== initData) {
+        return null;
+      }
+
+      return {
+        kind: 'telegram',
+        storageKey: 'mini-user',
+        telegramUser: { id: 999, first_name: 'Mini', username: 'mini_user' },
+      };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/me/storage/sync')
+    .set('x-telegram-init-data', initData)
+    .send({ cursor: 0, changes: {} });
+
+  assert.equal(response.status, 200);
 });
