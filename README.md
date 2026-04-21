@@ -74,6 +74,11 @@ Persistent data:
 ## Env Notes
 
 - Для Docker `APP_BASE_URL`, `AUTH_BASE_URL` и `ALLOWED_ORIGINS` должны указывать на внешний origin proxy.
+- `TRUST_PROXY` должен соответствовать реальной схеме reverse proxy, иначе IP-based rate limiting будет считать клиентов некорректно.
+- Guardrails для чувствительных маршрутов настраиваются через `RATE_LIMIT_*`: отдельно для auth, username-check, storage/sync и AI.
+- Для `POST /api/me/ai/recommendations` стоит держать консервативные `RATE_LIMIT_AI_*`, `AI_TIMEOUT_MS` и `AI_MAX_OUTPUT_TOKENS`, чтобы ограничивать burst-нагрузку и стоимость одного вызова.
+- `AI_MAX_CONTEXT_CHARS`, `AI_MAX_RECENT_LOGS`, `AI_MAX_EXERCISE_COUNT` и `AI_TEXT_FIELD_MAX_LENGTH` ограничивают размер пользовательского контекста перед отправкой в модель.
 - Browser-сессия опирается на secure Better Auth cookies; клиент не хранит bearer token в `localStorage` и не использует его как источник истины для auth.
 - AI endpoint работает только при наличии корректного Vertex AI конфига и credentials; без них backend отвечает явной конфигурационной ошибкой.
+- При превышении rate limit сервер возвращает `429 RATE_LIMIT_EXCEEDED`, а при конкурирующих дорогих запросах вроде AI/sync может вернуть `503 ROUTE_BUSY`.
 - После перехода со старого root API клиент и backend должны деплоиться вместе. Если браузер удерживает старый PWA shell, может понадобиться одноразовый refresh.

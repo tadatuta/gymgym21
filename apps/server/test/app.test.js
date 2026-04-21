@@ -27,10 +27,37 @@ const [{ createApp }, { resolveRequestContext }, { findPublicProfileByIdentifier
   import('../dist/storage.js'),
   import('../dist/http/errors.js'),
 ]);
+const { config } = await import('../dist/config.js');
+
+const defaultGuardrailConfig = {
+  RATE_LIMITS_ENABLED: config.RATE_LIMITS_ENABLED,
+  RATE_LIMIT_AUTH_WINDOW_MS: config.RATE_LIMIT_AUTH_WINDOW_MS,
+  RATE_LIMIT_AUTH_MAX: config.RATE_LIMIT_AUTH_MAX,
+  RATE_LIMIT_AUTH_USERNAME_CHECK_WINDOW_MS: config.RATE_LIMIT_AUTH_USERNAME_CHECK_WINDOW_MS,
+  RATE_LIMIT_AUTH_USERNAME_CHECK_MAX: config.RATE_LIMIT_AUTH_USERNAME_CHECK_MAX,
+  RATE_LIMIT_STORAGE_WINDOW_MS: config.RATE_LIMIT_STORAGE_WINDOW_MS,
+  RATE_LIMIT_STORAGE_MAX: config.RATE_LIMIT_STORAGE_MAX,
+  RATE_LIMIT_SYNC_WINDOW_MS: config.RATE_LIMIT_SYNC_WINDOW_MS,
+  RATE_LIMIT_SYNC_MAX: config.RATE_LIMIT_SYNC_MAX,
+  RATE_LIMIT_SYNC_MAX_CONCURRENT: config.RATE_LIMIT_SYNC_MAX_CONCURRENT,
+  RATE_LIMIT_AI_WINDOW_MS: config.RATE_LIMIT_AI_WINDOW_MS,
+  RATE_LIMIT_AI_MAX: config.RATE_LIMIT_AI_MAX,
+  RATE_LIMIT_AI_MAX_CONCURRENT: config.RATE_LIMIT_AI_MAX_CONCURRENT,
+};
+
+function resetGuardrailConfig() {
+  Object.assign(config, defaultGuardrailConfig);
+}
 
 function createStubAuthHandler() {
   return async (req, res) => {
-    if (req.url === '/api/auth/ok') {
+    if (
+      req.url === '/api/auth/ok'
+      || req.url === '/api/auth/register/email'
+      || req.url === '/api/auth/migration/complete'
+      || req.url === '/api/auth/username/check'
+      || req.url === '/api/auth/telegram/sign-in'
+    ) {
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json; charset=utf-8');
       res.end(JSON.stringify({ ok: true }));
@@ -77,6 +104,7 @@ function generateInitData(user) {
 }
 
 beforeEach(async () => {
+  resetGuardrailConfig();
   await fs.rm(storageDir, { recursive: true, force: true });
   await Storage.ensureStorageDir();
 });
@@ -111,6 +139,30 @@ test('GET /api/auth/ok is routed to the auth handler', async () => {
 
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, { ok: true });
+});
+
+test('POST /api/auth/register/email is rate limited after repeated attempts', async () => {
+  config.RATE_LIMIT_AUTH_MAX = 2;
+  config.RATE_LIMIT_AUTH_WINDOW_MS = 60_000;
+
+  const app = createTestApp();
+
+  const first = await request(app)
+    .post('/api/auth/register/email')
+    .send({ email: 'one@example.com' });
+  const second = await request(app)
+    .post('/api/auth/register/email')
+    .send({ email: 'two@example.com' });
+  const third = await request(app)
+    .post('/api/auth/register/email')
+    .send({ email: 'three@example.com' });
+
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(third.status, 429);
+  assert.equal(third.body.code, 'RATE_LIMIT_EXCEEDED');
+  assert.equal(third.body.details.policy, 'auth-strict');
+  assert.match(third.headers['retry-after'], /^[0-9]+$/);
 });
 
 test('GET /api/profiles/:identifier returns a public profile', async () => {
@@ -416,6 +468,75 @@ test('POST /api/me/ai/recommendations returns explicit config error when AI depe
   assert.equal(response.status, 503);
   assert.equal(response.body.error, 'AI is not configured');
   assert.equal(response.body.code, 'AI_NOT_CONFIGURED');
+});
+
+test('POST /api/me/ai/recommendations rejects concurrent bursts with a controlled 503', async () => {
+  await Storage.write('ai-burst-user', {
+    profile: {
+      id: 'me',
+      isPublic: false,
+      createdAt: '2026-03-20T10:00:00.000Z',
+      displayName: 'AI Burst User',
+    },
+  });
+
+  config.RATE_LIMIT_AI_MAX = 10;
+  config.RATE_LIMIT_AI_WINDOW_MS = 60_000;
+  config.RATE_LIMIT_AI_MAX_CONCURRENT = 1;
+
+  let notifyEntered;
+  const entered = new Promise((resolve) => {
+    notifyEntered = resolve;
+  });
+  let releaseGeneration;
+  const blockGeneration = new Promise((resolve) => {
+    releaseGeneration = resolve;
+  });
+
+  const app = createTestApp({
+    resolveRequestContext: async () => ({
+      kind: 'telegram-legacy',
+      storageKey: 'ai-burst-user',
+      telegramUser: {
+        id: 890,
+        first_name: 'Burst',
+      },
+    }),
+    generateRecommendation: async () => {
+      notifyEntered();
+      await blockGeneration;
+      return '# Controlled burst';
+    },
+  });
+
+  const firstResponsePromise = new Promise((resolve, reject) => {
+    request(app)
+      .post('/api/me/ai/recommendations')
+      .send({ type: 'general' })
+      .end((error, response) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve(response);
+      });
+  });
+
+  await entered;
+
+  const second = await request(app)
+    .post('/api/me/ai/recommendations')
+    .send({ type: 'general' });
+
+  releaseGeneration();
+
+  const first = await firstResponsePromise;
+
+  assert.equal(second.status, 503);
+  assert.equal(second.body.code, 'ROUTE_BUSY');
+  assert.equal(second.body.details.policy, 'ai-recommendations');
+  assert.equal(first.status, 200);
 });
 
 test('PUT /api/me/storage accepts payloads above the old 100kb default body limit', async () => {
