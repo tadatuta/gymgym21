@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { AuthenticatedRequestContext } from './auth.js';
 import { config } from './config.js';
+import { syncStorageData } from './services/storage-data.js';
 
 function sanitizeStorageKey(storageKey: string | number): string {
   const sanitized = String(storageKey).replace(/[^a-zA-Z0-9_-]/g, '');
@@ -8,6 +10,47 @@ function sanitizeStorageKey(storageKey: string | number): string {
     throw new Error('Invalid storage key');
   }
   return sanitized;
+}
+
+function cloneValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readJsonFile<T>(filePath: string): Promise<T | null> {
+  try {
+    const content = await fs.readFile(filePath, 'utf-8');
+    return JSON.parse(content) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempPath, JSON.stringify(data));
+  await fs.rename(tempPath, filePath);
+}
+
+async function removeFileIfExists(filePath: string): Promise<void> {
+  try {
+    await fs.rm(filePath, { force: true });
+  } catch {
+    // Ignore cache and optional-file cleanup failures.
+  }
+}
+
+function hasChanged(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left ?? null) !== JSON.stringify(right ?? null);
 }
 
 export interface StoragePauseInterval {
@@ -142,72 +185,175 @@ interface UsernameIndex {
   [username: string]: string;
 }
 
-export class Storage {
-  private static getIndexFilePath(): string {
-    return path.join(config.STORAGE_DIR, 'username_index.json');
-  }
+interface StorageCollectionMeta {
+  lastRevision: number;
+}
 
-  static async ensureStorageDir(): Promise<void> {
+interface StructuredStorageMeta {
+  formatVersion: number;
+  revision: number;
+  collections: Record<SyncEntityType, StorageCollectionMeta>;
+}
+
+interface PublicProfileCache {
+  sourceRevision: number;
+  stats: PublicProfileData['stats'];
+  recentActivity: PublicProfileData['recentActivity'];
+  logs?: PublicProfileData['logs'];
+  workoutTypes?: PublicProfileData['workoutTypes'];
+}
+
+const STORAGE_FORMAT_VERSION = 2;
+const ARRAY_COLLECTIONS = ['workoutTypes', 'logs', 'workouts'] as const;
+
+function maxVersion(items: Array<{ version?: number }> | undefined): number {
+  return (items ?? []).reduce((max, item) => Math.max(max, item.version ?? 0), 0);
+}
+
+function buildStorageMeta(data: StorageData): StructuredStorageMeta {
+  const collections: Record<SyncEntityType, StorageCollectionMeta> = {
+    workoutTypes: { lastRevision: maxVersion(data.workoutTypes) },
+    logs: { lastRevision: maxVersion(data.logs) },
+    workouts: { lastRevision: maxVersion(data.workouts) },
+    profile: { lastRevision: data.profile?.version ?? 0 },
+  };
+
+  return {
+    formatVersion: STORAGE_FORMAT_VERSION,
+    revision: Math.max(
+      data.revision ?? 0,
+      collections.workoutTypes.lastRevision,
+      collections.logs.lastRevision,
+      collections.workouts.lastRevision,
+      collections.profile.lastRevision,
+    ),
+    collections,
+  };
+}
+
+function buildPublicProfileFromCache(
+  profile: StorageProfile,
+  fallbackIdentifier: string,
+  cache: PublicProfileCache,
+): PublicProfileData {
+  return {
+    displayName: profile.displayName || profile.username || profile.telegramUsername || fallbackIdentifier,
+    identifier: profile.username || profile.telegramUsername || fallbackIdentifier,
+    photoUrl: profile.photoUrl,
+    stats: cache.stats,
+    recentActivity: cache.recentActivity,
+    ...(profile.showFullHistory
+      ? {
+          logs: (cache.logs ?? []).map(({ id, workoutTypeId, reps, weight, duration, durationSeconds, date, workoutId }) => ({
+            id,
+            workoutTypeId,
+            reps,
+            weight,
+            duration,
+            durationSeconds,
+            date,
+            workoutId,
+          })),
+          workoutTypes: (cache.workoutTypes ?? []).map(({ id, name, category }) => ({
+            id,
+            name,
+            category,
+          })),
+        }
+      : {}),
+  };
+}
+
+export interface StorageRepository {
+  ensureStorageDir(): Promise<void>;
+  readSnapshot(storageKey: string | number): Promise<StorageData>;
+  replaceSnapshot(storageKey: string | number, data: StorageData): Promise<void>;
+  sync(
+    storageKey: string | number,
+    request: StorageSyncRequest,
+    authContext: AuthenticatedRequestContext,
+  ): Promise<StorageSyncResponse>;
+  exists(storageKey: string | number): Promise<boolean>;
+  updateUsernameIndex(username: string, storageKey: string | number): Promise<void>;
+  readUsernameIndex(): Promise<UsernameIndex>;
+  findUserIdByIdentifier(identifier: string): Promise<string | null>;
+  getPublicProfileByStorageKey(
+    storageKey: string | number,
+    fallbackIdentifier?: string,
+  ): Promise<PublicProfileData | null>;
+  getPublicProfile(identifier: string): Promise<PublicProfileData | null>;
+}
+
+class FileStorageRepository implements StorageRepository {
+  private readonly locks = new Map<string, Promise<void>>();
+
+  async ensureStorageDir(): Promise<void> {
     await fs.mkdir(config.STORAGE_DIR, { recursive: true });
   }
 
-  private static getDataFilePath(storageKey: string | number): string {
+  async readSnapshot(storageKey: string | number): Promise<StorageData> {
+    await this.ensureStorageDir();
     const safeKey = sanitizeStorageKey(storageKey);
-    return path.join(config.STORAGE_DIR, `${safeKey}.json`);
-  }
+    await this.ensureStructuredStorage(safeKey);
 
-  static async read(storageKey: string | number): Promise<StorageData> {
-    await this.ensureStorageDir();
-
-    try {
-      const content = await fs.readFile(this.getDataFilePath(storageKey), 'utf-8');
-      return JSON.parse(content) as StorageData;
-    } catch {
-      // Missing storage is a valid empty state for new users.
+    if (!(await this.hasStructuredStorage(safeKey))) {
+      return {};
     }
 
-    return {};
+    return this.readStructuredSnapshot(safeKey);
   }
 
-  static async exists(storageKey: string | number): Promise<boolean> {
+  async replaceSnapshot(storageKey: string | number, data: StorageData): Promise<void> {
     await this.ensureStorageDir();
+    const safeKey = sanitizeStorageKey(storageKey);
 
-    try {
-      await fs.access(this.getDataFilePath(storageKey));
-      return true;
-    } catch {
-      return false;
-    }
+    await this.withLock(safeKey, async () => {
+      await this.ensureStructuredStorageUnlocked(safeKey);
+      const previous = await this.readStructuredSnapshot(safeKey);
+      await this.persistStructuredSnapshot(safeKey, data, { previous, writeAll: true });
+    });
   }
 
-  static async write(storageKey: string | number, data: StorageData): Promise<void> {
+  async sync(
+    storageKey: string | number,
+    request: StorageSyncRequest,
+    authContext: AuthenticatedRequestContext,
+  ): Promise<StorageSyncResponse> {
     await this.ensureStorageDir();
-    await fs.writeFile(this.getDataFilePath(storageKey), JSON.stringify(data));
+    const safeKey = sanitizeStorageKey(storageKey);
 
-    if (data.profile?.telegramUsername) {
-      await this.updateUsernameIndex(data.profile.telegramUsername, storageKey);
-    }
+    return this.withLock(safeKey, async () => {
+      await this.ensureStructuredStorageUnlocked(safeKey);
+      const current = await this.readStructuredSnapshot(safeKey);
+      const { data, response, changed } = syncStorageData(current, request, authContext);
+
+      if (changed) {
+        await this.persistStructuredSnapshot(safeKey, data, { previous: current, writeAll: false });
+      }
+
+      return response;
+    });
   }
 
-  static async updateUsernameIndex(username: string, storageKey: string | number): Promise<void> {
+  async exists(storageKey: string | number): Promise<boolean> {
+    await this.ensureStorageDir();
+    const safeKey = sanitizeStorageKey(storageKey);
+    return (await this.hasStructuredStorage(safeKey)) || (await pathExists(this.getLegacyDataFilePath(safeKey)));
+  }
+
+  async updateUsernameIndex(username: string, storageKey: string | number): Promise<void> {
     await this.ensureStorageDir();
     const index = await this.readUsernameIndex();
     index[username.toLowerCase()] = String(storageKey);
-    await fs.writeFile(this.getIndexFilePath(), JSON.stringify(index));
+    await writeJsonFile(this.getIndexFilePath(), index);
   }
 
-  static async readUsernameIndex(): Promise<UsernameIndex> {
+  async readUsernameIndex(): Promise<UsernameIndex> {
     await this.ensureStorageDir();
-
-    try {
-      const content = await fs.readFile(this.getIndexFilePath(), 'utf-8');
-      return JSON.parse(content) as UsernameIndex;
-    } catch {
-      return {};
-    }
+    return (await readJsonFile<UsernameIndex>(this.getIndexFilePath())) ?? {};
   }
 
-  static async findUserIdByIdentifier(identifier: string): Promise<string | null> {
+  async findUserIdByIdentifier(identifier: string): Promise<string | null> {
     const normalizedIdentifier = identifier.replace(/^@/, '');
 
     if (normalizedIdentifier.startsWith('id_')) {
@@ -226,6 +372,287 @@ export class Storage {
 
     const index = await this.readUsernameIndex();
     return index[normalizedIdentifier.toLowerCase()] || null;
+  }
+
+  async getPublicProfileByStorageKey(
+    storageKey: string | number,
+    fallbackIdentifier?: string,
+  ): Promise<PublicProfileData | null> {
+    await this.ensureStorageDir();
+    const safeKey = sanitizeStorageKey(storageKey);
+    await this.ensureStructuredStorage(safeKey);
+
+    if (!(await this.hasStructuredStorage(safeKey))) {
+      return null;
+    }
+
+    const [meta, profile, cache] = await Promise.all([
+      this.readStructuredMeta(safeKey),
+      this.readProfileFile(safeKey),
+      readJsonFile<PublicProfileCache>(this.getPublicProfileCacheFilePath(safeKey)),
+    ]);
+
+    if (!profile?.isPublic) {
+      return null;
+    }
+
+    const resolvedIdentifier = fallbackIdentifier || `id_${safeKey}`;
+    if (cache && cache.sourceRevision === meta.revision) {
+      return buildPublicProfileFromCache(profile, resolvedIdentifier, cache);
+    }
+
+    const snapshot = await this.readPublicProfileSnapshot(safeKey);
+    const publicProfile = Storage.buildPublicProfile(snapshot, resolvedIdentifier);
+    if (!publicProfile) {
+      return null;
+    }
+
+    await writeJsonFile(this.getPublicProfileCacheFilePath(safeKey), {
+      sourceRevision: meta.revision,
+      stats: publicProfile.stats,
+      recentActivity: publicProfile.recentActivity,
+      logs: publicProfile.logs,
+      workoutTypes: publicProfile.workoutTypes,
+    } satisfies PublicProfileCache);
+
+    return publicProfile;
+  }
+
+  async getPublicProfile(identifier: string): Promise<PublicProfileData | null> {
+    const storageKey = await this.findUserIdByIdentifier(identifier);
+    if (!storageKey) return null;
+
+    return this.getPublicProfileByStorageKey(
+      storageKey,
+      identifier.startsWith('id_') ? identifier : `id_${storageKey}`,
+    );
+  }
+
+  private async withLock<T>(safeKey: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(safeKey) ?? Promise.resolve();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chain = previous.then(() => pending);
+    this.locks.set(safeKey, chain);
+
+    await previous;
+
+    try {
+      return await task();
+    } finally {
+      release();
+      if (this.locks.get(safeKey) === chain) {
+        this.locks.delete(safeKey);
+      }
+    }
+  }
+
+  private getIndexFilePath(): string {
+    return path.join(config.STORAGE_DIR, 'username_index.json');
+  }
+
+  private getStructuredStorageDirPath(safeKey: string): string {
+    return path.join(config.STORAGE_DIR, safeKey);
+  }
+
+  private getLegacyDataFilePath(safeKey: string): string {
+    return path.join(config.STORAGE_DIR, `${safeKey}.json`);
+  }
+
+  private getMetaFilePath(safeKey: string): string {
+    return path.join(this.getStructuredStorageDirPath(safeKey), 'meta.json');
+  }
+
+  private getProfileFilePath(safeKey: string): string {
+    return path.join(this.getStructuredStorageDirPath(safeKey), 'profile.json');
+  }
+
+  private getCollectionFilePath(safeKey: string, collection: (typeof ARRAY_COLLECTIONS)[number]): string {
+    return path.join(this.getStructuredStorageDirPath(safeKey), `${collection}.json`);
+  }
+
+  private getPublicProfileCacheFilePath(safeKey: string): string {
+    return path.join(this.getStructuredStorageDirPath(safeKey), 'public-profile-cache.json');
+  }
+
+  private async hasStructuredStorage(safeKey: string): Promise<boolean> {
+    return pathExists(this.getStructuredStorageDirPath(safeKey));
+  }
+
+  private async ensureStructuredStorage(safeKey: string): Promise<void> {
+    if ((await this.hasStructuredStorage(safeKey)) || !(await pathExists(this.getLegacyDataFilePath(safeKey)))) {
+      return;
+    }
+
+    await this.withLock(safeKey, async () => {
+      await this.ensureStructuredStorageUnlocked(safeKey);
+    });
+  }
+
+  private async ensureStructuredStorageUnlocked(safeKey: string): Promise<void> {
+    if ((await this.hasStructuredStorage(safeKey)) || !(await pathExists(this.getLegacyDataFilePath(safeKey)))) {
+      return;
+    }
+
+    const legacySnapshot = await readJsonFile<StorageData>(this.getLegacyDataFilePath(safeKey));
+    if (!legacySnapshot) {
+      return;
+    }
+
+    await this.persistStructuredSnapshot(safeKey, legacySnapshot, { writeAll: true });
+  }
+
+  private async readStructuredMeta(safeKey: string): Promise<StructuredStorageMeta> {
+    return (await readJsonFile<StructuredStorageMeta>(this.getMetaFilePath(safeKey))) ?? buildStorageMeta({});
+  }
+
+  private async readCollectionFile<T>(safeKey: string, collection: (typeof ARRAY_COLLECTIONS)[number]): Promise<T[]> {
+    const value = await readJsonFile<T[]>(this.getCollectionFilePath(safeKey, collection));
+    return Array.isArray(value) ? value : [];
+  }
+
+  private async readProfileFile(safeKey: string): Promise<StorageProfile | undefined> {
+    const value = await readJsonFile<StorageProfile>(this.getProfileFilePath(safeKey));
+    return value ?? undefined;
+  }
+
+  private async readStructuredSnapshot(safeKey: string): Promise<StorageData> {
+    if (!(await this.hasStructuredStorage(safeKey))) {
+      return {};
+    }
+
+    const [meta, workoutTypes, logs, workouts, profile] = await Promise.all([
+      this.readStructuredMeta(safeKey),
+      this.readCollectionFile<StorageWorkoutType>(safeKey, 'workoutTypes'),
+      this.readCollectionFile<StorageLogEntry>(safeKey, 'logs'),
+      this.readCollectionFile<StorageWorkout>(safeKey, 'workouts'),
+      this.readProfileFile(safeKey),
+    ]);
+
+    const data: StorageData = {};
+    const revision = Math.max(
+      meta.revision ?? 0,
+      maxVersion(workoutTypes),
+      maxVersion(logs),
+      maxVersion(workouts),
+      profile?.version ?? 0,
+    );
+
+    if (revision > 0) {
+      data.revision = revision;
+    }
+    if (workoutTypes.length > 0) {
+      data.workoutTypes = workoutTypes;
+    }
+    if (logs.length > 0) {
+      data.logs = logs;
+    }
+    if (workouts.length > 0) {
+      data.workouts = workouts;
+    }
+    if (profile) {
+      data.profile = profile;
+    }
+
+    return data;
+  }
+
+  private async readPublicProfileSnapshot(safeKey: string): Promise<StorageData> {
+    const [meta, workoutTypes, logs, profile] = await Promise.all([
+      this.readStructuredMeta(safeKey),
+      this.readCollectionFile<StorageWorkoutType>(safeKey, 'workoutTypes'),
+      this.readCollectionFile<StorageLogEntry>(safeKey, 'logs'),
+      this.readProfileFile(safeKey),
+    ]);
+
+    return {
+      revision: meta.revision,
+      workoutTypes,
+      logs,
+      ...(profile ? { profile } : {}),
+    };
+  }
+
+  private async persistStructuredSnapshot(
+    safeKey: string,
+    data: StorageData,
+    options: { previous?: StorageData; writeAll: boolean },
+  ): Promise<void> {
+    const userDir = this.getStructuredStorageDirPath(safeKey);
+    await fs.mkdir(userDir, { recursive: true });
+
+    const nextMeta = buildStorageMeta(data);
+    const previous = options.previous;
+    const writes: Promise<void>[] = [];
+
+    for (const collection of ARRAY_COLLECTIONS) {
+      const previousValue = previous?.[collection];
+      const nextValue = data[collection];
+      if (options.writeAll || hasChanged(previousValue, nextValue)) {
+        writes.push(writeJsonFile(this.getCollectionFilePath(safeKey, collection), cloneValue(nextValue ?? [])));
+      }
+    }
+
+    if (options.writeAll || hasChanged(previous?.profile, data.profile)) {
+      if (data.profile) {
+        writes.push(writeJsonFile(this.getProfileFilePath(safeKey), cloneValue(data.profile)));
+      } else {
+        writes.push(removeFileIfExists(this.getProfileFilePath(safeKey)));
+      }
+    }
+
+    if (options.writeAll || !previous || hasChanged(buildStorageMeta(previous), nextMeta)) {
+      writes.push(writeJsonFile(this.getMetaFilePath(safeKey), nextMeta));
+    }
+
+    if (
+      options.writeAll
+      || hasChanged(previous?.profile, data.profile)
+      || hasChanged(previous?.logs, data.logs)
+      || hasChanged(previous?.workoutTypes, data.workoutTypes)
+    ) {
+      writes.push(removeFileIfExists(this.getPublicProfileCacheFilePath(safeKey)));
+    }
+
+    await Promise.all(writes);
+
+    if (data.profile?.telegramUsername) {
+      await this.updateUsernameIndex(data.profile.telegramUsername, safeKey);
+    }
+  }
+}
+
+export const defaultStorageRepository: StorageRepository = new FileStorageRepository();
+
+export class Storage {
+  static async ensureStorageDir(): Promise<void> {
+    await defaultStorageRepository.ensureStorageDir();
+  }
+
+  static async read(storageKey: string | number): Promise<StorageData> {
+    return defaultStorageRepository.readSnapshot(storageKey);
+  }
+
+  static async exists(storageKey: string | number): Promise<boolean> {
+    return defaultStorageRepository.exists(storageKey);
+  }
+
+  static async write(storageKey: string | number, data: StorageData): Promise<void> {
+    await defaultStorageRepository.replaceSnapshot(storageKey, data);
+  }
+
+  static async updateUsernameIndex(username: string, storageKey: string | number): Promise<void> {
+    await defaultStorageRepository.updateUsernameIndex(username, storageKey);
+  }
+
+  static async readUsernameIndex(): Promise<UsernameIndex> {
+    return defaultStorageRepository.readUsernameIndex();
+  }
+
+  static async findUserIdByIdentifier(identifier: string): Promise<string | null> {
+    return defaultStorageRepository.findUserIdByIdentifier(identifier);
   }
 
   static buildPublicProfile(data: StorageData, fallbackIdentifier: string): PublicProfileData | null {
@@ -296,16 +723,10 @@ export class Storage {
     storageKey: string | number,
     fallbackIdentifier?: string,
   ): Promise<PublicProfileData | null> {
-    const data = await this.read(storageKey);
-    return this.buildPublicProfile(data, fallbackIdentifier || `id_${storageKey}`);
+    return defaultStorageRepository.getPublicProfileByStorageKey(storageKey, fallbackIdentifier);
   }
 
   static async getPublicProfile(identifier: string): Promise<PublicProfileData | null> {
-    const storageKey = await this.findUserIdByIdentifier(identifier);
-    if (!storageKey) return null;
-    return this.getPublicProfileByStorageKey(
-      storageKey,
-      identifier.startsWith('id_') ? identifier : `id_${storageKey}`,
-    );
+    return defaultStorageRepository.getPublicProfile(identifier);
   }
 }

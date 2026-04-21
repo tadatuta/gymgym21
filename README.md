@@ -71,6 +71,12 @@ Persistent data:
 По умолчанию compose монтирует туда `./data/storage`, а на продакшене можно переопределить host-путь через `STORAGE_HOST_DIR`, например `/srv/gym21/storage`.
 `STORAGE_DIR` должен оставаться путём внутри контейнера и обычно равен `/data/storage`.
 
+## Storage Compatibility
+
+- Legacy snapshot-файлы вида `<storageKey>.json` по-прежнему поддерживаются: backend лениво мигрирует их при первом чтении в новую структуру `<storageKey>/meta.json`, `profile.json`, `logs.json`, `workouts.json`, `workoutTypes.json`.
+- Миграция не удаляет исходный legacy snapshot автоматически, поэтому откат на старую версию backend возможен без ручного восстановления файлов.
+- Публичный профиль использует отдельный `public-profile-cache.json`; при изменении `profile`, `logs` или `workoutTypes` cache инвалидируется автоматически и пересобирается при следующем запросе.
+
 ## Env Notes
 
 - Для Docker `APP_BASE_URL`, `AUTH_BASE_URL` и `ALLOWED_ORIGINS` должны указывать на внешний origin proxy.

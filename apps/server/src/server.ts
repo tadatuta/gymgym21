@@ -5,7 +5,7 @@ import { createApp } from './app.js';
 import { closeAuthResources, createAuthNodeHandler, ensureAuthReady, resolveRequestContext } from './auth.js';
 import { config } from './config.js';
 import { findPublicProfileByIdentifier } from './services/public-profile.js';
-import { Storage } from './storage.js';
+import { defaultStorageRepository, Storage } from './storage.js';
 
 async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -29,6 +29,7 @@ export async function startServer(): Promise<Server> {
     resolveRequestContext,
     generateRecommendation,
     findPublicProfile: findPublicProfileByIdentifier,
+    storageRepository: defaultStorageRepository,
     readStorage: Storage.read.bind(Storage),
     writeStorage: Storage.write.bind(Storage),
   });

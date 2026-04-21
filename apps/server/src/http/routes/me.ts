@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { config } from '../../config.js';
 import type { AppDependencies } from '../app-types.js';
 import { createRateLimitMiddleware, createStorageRateLimitKey } from '../middleware/rate-limit.js';
-import { prepareStorageDataForWrite, syncStorageData } from '../../services/storage-data.js';
+import { prepareStorageDataForWrite } from '../../services/storage-data.js';
 
 const syncMetadataSchema = {
   id: z.string(),
@@ -111,31 +111,24 @@ export function createMeRouter(dependencies: AppDependencies): Router {
   });
 
   router.get('/storage', storageRateLimit, async (req, res) => {
-    res.json(await dependencies.readStorage(req.authContext!.storageKey));
+    res.json(await dependencies.storageRepository.readSnapshot(req.authContext!.storageKey));
   });
 
   router.put('/storage', storageRateLimit, async (req, res) => {
-    const current = await dependencies.readStorage(req.authContext!.storageKey);
+    const current = await dependencies.storageRepository.readSnapshot(req.authContext!.storageKey);
     const data = prepareStorageDataForWrite(req.body, req.authContext!, current);
-    await dependencies.writeStorage(req.authContext!.storageKey, data);
+    await dependencies.storageRepository.replaceSnapshot(req.authContext!.storageKey, data);
     res.json({ success: true });
   });
 
   router.post('/storage/sync', syncRateLimit, async (req, res) => {
     const payload = syncRequestSchema.parse(req.body);
-    const current = await dependencies.readStorage(req.authContext!.storageKey);
-    const { data, response, changed } = syncStorageData(current, payload, req.authContext!);
-
-    if (changed) {
-      await dependencies.writeStorage(req.authContext!.storageKey, data);
-    }
-
-    res.json(response);
+    res.json(await dependencies.storageRepository.sync(req.authContext!.storageKey, payload, req.authContext!));
   });
 
   router.post('/ai/recommendations', aiRateLimit, async (req, res) => {
     const payload = aiRequestSchema.parse(req.body);
-    const userData = await dependencies.readStorage(req.authContext!.storageKey);
+    const userData = await dependencies.storageRepository.readSnapshot(req.authContext!.storageKey);
     const recommendation = await dependencies.generateRecommendation({
       ...payload,
       profile: userData.profile,

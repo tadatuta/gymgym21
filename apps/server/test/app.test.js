@@ -20,7 +20,7 @@ process.env.BETTER_AUTH_SECRET = 'test-secret';
 delete process.env.DATABASE_URL;
 delete process.env.DATABASE_SSL;
 
-const [{ createApp }, { resolveRequestContext }, { findPublicProfileByIdentifier }, { Storage }, { HttpError }] = await Promise.all([
+const [{ createApp }, { resolveRequestContext }, { findPublicProfileByIdentifier }, { Storage, defaultStorageRepository }, { HttpError }] = await Promise.all([
   import('../dist/app.js'),
   import('../dist/auth.js'),
   import('../dist/services/public-profile.js'),
@@ -76,6 +76,7 @@ function createTestApp(overrides = {}) {
     resolveRequestContext: overrides.resolveRequestContext ?? resolveRequestContext,
     generateRecommendation: overrides.generateRecommendation ?? (async () => '# Test recommendation'),
     findPublicProfile: overrides.findPublicProfile ?? findPublicProfileByIdentifier,
+    storageRepository: overrides.storageRepository ?? defaultStorageRepository,
     readStorage: overrides.readStorage ?? Storage.read.bind(Storage),
     writeStorage: overrides.writeStorage ?? Storage.write.bind(Storage),
   });
@@ -790,4 +791,129 @@ test('POST /api/me/storage/sync propagates soft deletions and keeps large histor
 
   assert.equal(noOp.status, 200);
   assert.deepEqual(noOp.body.changes, {});
+});
+
+test('legacy snapshot storage is lazily migrated to the structured backend', async () => {
+  await fs.writeFile(path.join(storageDir, 'legacy-user.json'), JSON.stringify({
+    profile: {
+      id: 'me',
+      isPublic: false,
+      createdAt: '2026-03-20T10:00:00.000Z',
+      displayName: 'Legacy User',
+    },
+    workoutTypes: [
+      {
+        id: 'bike',
+        name: 'Bike',
+        category: 'time',
+      },
+    ],
+    logs: [
+      {
+        id: 'legacy-log',
+        workoutTypeId: 'bike',
+        duration: 20,
+        date: '2026-03-20T10:00:00.000Z',
+      },
+    ],
+  }));
+
+  const migrated = await Storage.read('legacy-user');
+
+  assert.equal(migrated.profile?.displayName, 'Legacy User');
+  assert.equal(migrated.workoutTypes?.[0]?.id, 'bike');
+  assert.equal(migrated.logs?.[0]?.id, 'legacy-log');
+  assert.equal(await fs.stat(path.join(storageDir, 'legacy-user', 'meta.json')).then(() => true, () => false), true);
+  assert.equal(await fs.stat(path.join(storageDir, 'legacy-user', 'logs.json')).then(() => true, () => false), true);
+});
+
+test('public profile cache serves repeated requests without re-reading full entity files', async () => {
+  await Storage.write('cached-user', {
+    profile: {
+      id: 'me',
+      isPublic: true,
+      showFullHistory: true,
+      createdAt: '2026-03-20T10:00:00.000Z',
+      displayName: 'Cached User',
+      telegramUsername: 'cached_user',
+    },
+    workoutTypes: [{ id: 'pullup', name: 'Pull Up' }],
+    logs: [
+      {
+        id: 'cached-log',
+        workoutTypeId: 'pullup',
+        reps: 10,
+        date: '2026-03-20T10:00:00.000Z',
+      },
+    ],
+  });
+
+  const first = await findPublicProfileByIdentifier('cached_user');
+  assert.equal(first?.stats.totalWorkouts, 1);
+  assert.equal(await fs.stat(path.join(storageDir, 'cached-user', 'public-profile-cache.json')).then(() => true, () => false), true);
+
+  await fs.rm(path.join(storageDir, 'cached-user', 'logs.json'), { force: true });
+  await fs.rm(path.join(storageDir, 'cached-user', 'workoutTypes.json'), { force: true });
+
+  const second = await findPublicProfileByIdentifier('cached_user');
+
+  assert.deepEqual(second, first);
+});
+
+test('concurrent sync requests keep both writes instead of dropping the earlier delta', async () => {
+  config.RATE_LIMIT_SYNC_MAX = 10;
+  config.RATE_LIMIT_SYNC_WINDOW_MS = 60_000;
+  config.RATE_LIMIT_SYNC_MAX_CONCURRENT = 5;
+
+  const app = createTestApp({
+    resolveRequestContext: async () => ({
+      kind: 'telegram-legacy',
+      storageKey: 'parallel-sync-user',
+      telegramUser: {
+        id: 1004,
+        first_name: 'Parallel',
+      },
+    }),
+  });
+
+  const [left, right] = await Promise.all([
+    request(app)
+      .post('/api/me/storage/sync')
+      .send({
+        baseRevision: 0,
+        changes: {
+          workoutTypes: [
+            {
+              id: 'squat',
+              name: 'Squat',
+              updatedAt: '2026-03-20T10:00:00.000Z',
+            },
+          ],
+        },
+      }),
+    request(app)
+      .post('/api/me/storage/sync')
+      .send({
+        baseRevision: 0,
+        changes: {
+          workoutTypes: [
+            {
+              id: 'press',
+              name: 'Press',
+              updatedAt: '2026-03-20T10:00:01.000Z',
+            },
+          ],
+        },
+      }),
+  ]);
+
+  assert.equal(left.status, 200);
+  assert.equal(right.status, 200);
+
+  const stored = await Storage.read('parallel-sync-user');
+  assert.deepEqual(
+    stored.workoutTypes?.map((entry) => entry.id).sort(),
+    ['press', 'squat'],
+  );
+  assert.equal(stored.revision, 2);
 });

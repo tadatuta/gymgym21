@@ -503,14 +503,17 @@ async function syncStorageProfile(
 ) {
   const current = await Storage.read(storageKey);
   const now = new Date().toISOString();
+  const nextRevision = Math.max(current.revision ?? 0, current.profile?.version ?? 0) + 1;
 
   const nextProfile: StorageData['profile'] = {
+    ...current.profile,
     id: current.profile?.id ?? 'me',
     isPublic: current.profile?.isPublic ?? false,
     createdAt: current.profile?.createdAt ?? now,
     updatedAt: now,
     friends: current.profile?.friends ?? [],
-    ...current.profile,
+    version: nextRevision,
+    serverUpdatedAt: now,
   };
 
   if (data.username) {
@@ -537,6 +540,7 @@ async function syncStorageProfile(
 
   await Storage.write(storageKey, {
     ...current,
+    revision: nextRevision,
     profile: nextProfile,
   });
 }
