@@ -68,6 +68,9 @@ const profileSyncSchema = z.object({
 
 const syncRequestSchema = z.object({
   cursor: z.number().int().nonnegative(),
+  protocolVersion: z.number().int().positive().optional(),
+  limit: z.number().int().min(1).max(2000).optional(),
+  batchId: z.string().min(1).max(100).optional(),
   changes: z.object({
     workoutTypes: z.array(workoutTypeSyncSchema).optional(),
     logs: z.array(logSyncSchema).optional(),

@@ -82,6 +82,10 @@ export interface PublicProfileData {
     }[];
     logs?: WorkoutSet[];
     workoutTypes?: WorkoutType[];
+    cacheMetadata?: {
+        cached: boolean;
+        cachedAt: string;
+    };
 }
 
 export interface AppData {
@@ -96,6 +100,7 @@ export interface DirtyEntityRecord {
     entityType: SyncEntityType;
     entityId: string;
     queuedAt: string;
+    generation: string;
 }
 
 export interface SyncStateRecord {
@@ -122,6 +127,11 @@ export interface SyncConflict {
     serverVersion: number;
 }
 
+export interface SyncAcknowledgement {
+    entityType: SyncEntityType;
+    entityId: string;
+}
+
 export interface SyncDelta {
     workoutTypes?: WorkoutType[];
     logs?: WorkoutSet[];
@@ -132,10 +142,28 @@ export interface SyncDelta {
 export interface SyncRequest {
     cursor: number;
     changes: SyncDelta;
+    protocolVersion?: number;
+    limit?: number;
+    batchId?: string;
 }
 
 export interface SyncResponse {
     cursor: number;
     changes: SyncDelta;
     conflicts: SyncConflict[];
+    acknowledged?: SyncAcknowledgement[];
+    protocolVersion?: number;
+    hasMore?: boolean;
+}
+
+export interface CachedPublicProfileRecord {
+    identifier: string;
+    payload: PublicProfileData;
+    cachedAt: string;
+}
+
+export interface CachedAiResultRecord {
+    type: 'general' | 'plan';
+    markdown: string;
+    updatedAt: string;
 }

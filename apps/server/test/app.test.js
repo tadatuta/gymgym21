@@ -271,6 +271,16 @@ function createMemoryStorageRepository() {
         cursor: snapshot.cursor,
         changes,
         conflicts,
+        acknowledged: [
+          ...(requestPayload.changes.workoutTypes ?? []).map((entry) => ({ entityType: 'workoutTypes', entityId: entry.id })),
+          ...(requestPayload.changes.logs ?? []).map((entry) => ({ entityType: 'logs', entityId: entry.id })),
+          ...(requestPayload.changes.workouts ?? []).map((entry) => ({ entityType: 'workouts', entityId: entry.id })),
+          ...(requestPayload.changes.profile
+            ? [{ entityType: 'profile', entityId: requestPayload.changes.profile.id }]
+            : []),
+        ],
+        protocolVersion: 1,
+        hasMore: false,
       };
     },
 
@@ -490,6 +500,8 @@ test('POST /api/me/storage/sync writes delta records and returns cursor metadata
   assert.equal(response.status, 200);
   assert.equal(response.body.cursor, 1);
   assert.equal(response.body.changes.workoutTypes[0].version, 1);
+  assert.deepEqual(response.body.acknowledged, [{ entityType: 'workoutTypes', entityId: 'bench' }]);
+  assert.equal(response.body.protocolVersion, 1);
 
   const stored = await storageRepository.readSnapshot('sync-user');
   assert.equal(stored.revision, 1);

@@ -3,6 +3,7 @@ import { db } from '../db';
 import {
   AppData,
   DirtyEntityRecord,
+  SyncAcknowledgement,
   SyncConflictRecord,
   SyncDelta,
   SyncEntityType,
@@ -15,9 +16,12 @@ import {
   WorkoutSet,
   WorkoutType,
 } from '../types';
+import { createEntityId } from '../utils/entity-id';
 
 const SYNC_CURSOR_KEY = 'sync-cursor';
 const PROFILE_ID = 'me';
+const SYNC_PROTOCOL_VERSION = 1;
+const SYNC_PULL_LIMIT = 1000;
 
 type SyncEntityMap = {
   workoutTypes: WorkoutType;
@@ -28,14 +32,20 @@ type SyncEntityMap = {
 
 type ArrayEntityType = 'workoutTypes' | 'logs' | 'workouts';
 
+interface SyncRequestSnapshot {
+  request: SyncRequest;
+  dirtyEntries: Map<string, DirtyEntityRecord>;
+}
+
 export interface SyncExecutionResult {
   cursor: number;
   conflicts: number;
   pushedEntities: number;
   pulledEntities: number;
+  hasMore: boolean;
 }
 
-function dirtyKey(entityType: SyncEntityType, entityId: string): string {
+export function dirtyKey(entityType: SyncEntityType, entityId: string): string {
   return `${entityType}:${entityId}`;
 }
 
@@ -50,28 +60,46 @@ function asArray<T>(items: T[] | undefined): T[] {
   return items ?? [];
 }
 
+function acknowledgementKeys(acknowledged: SyncAcknowledgement[]): Set<string> {
+  return new Set(acknowledged.map((entry) => dirtyKey(entry.entityType, entry.entityId)));
+}
+
+function conflictKeys(response: SyncResponse): Set<string> {
+  return new Set(response.conflicts.map((entry) => dirtyKey(entry.entityType, entry.entityId)));
+}
+
+function hashBatchPart(value: string, seed: bigint): string {
+  let hash = seed;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= BigInt(value.charCodeAt(index));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+function createBatchId(cursor: number, dirtyEntries: Map<string, DirtyEntityRecord>): string {
+  const source = [
+    String(cursor),
+    ...[...dirtyEntries.values()]
+      .sort((left, right) => left.key.localeCompare(right.key))
+      .map((entry) => `${entry.key}:${entry.generation}`),
+  ].join('|');
+  return `v1-${hashBatchPart(source, 0xcbf29ce484222325n)}${hashBatchPart(source, 0x84222325cbf29ce4n)}`;
+}
+
 export class SyncService {
   static async sync(): Promise<SyncExecutionResult> {
     if (!navigator.onLine) {
       throw new Error('Offline');
     }
 
-    const [cursor, dirtyEntries] = await Promise.all([
-      this.getCursor(),
-      db.dirtyEntities.toArray(),
-    ]);
-
-    const request: SyncRequest = {
-      cursor,
-      changes: await this.readDirtyDelta(dirtyEntries),
-    };
-
+    const snapshot = await this.createRequestSnapshot();
     const response = await authorizedApiFetch('/me/storage/sync', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(request),
+      body: JSON.stringify(snapshot.request),
     });
 
     if (!response.ok) {
@@ -83,40 +111,39 @@ export class SyncService {
 
     const result = await response.json() as SyncResponse;
     const pulledEntities = countDeltaEntities(result.changes);
-    const pushedEntities = countDeltaEntities(request.changes);
+    const pushedEntities = countDeltaEntities(snapshot.request.changes);
 
-    await this.applySyncResponse(result, request);
+    await this.applySyncResponse(result, snapshot);
 
     return {
       cursor: result.cursor,
       conflicts: result.conflicts.length,
       pushedEntities,
       pulledEntities,
+      hasMore: result.hasMore ?? false,
     };
   }
 
   static async markDirty(entityType: SyncEntityType, entityId: string) {
-    const record: DirtyEntityRecord = {
-      key: dirtyKey(entityType, entityId),
-      entityType,
-      entityId,
-      queuedAt: new Date().toISOString(),
-    };
-    await db.dirtyEntities.put(record);
+    await this.markDirtyMany([{ entityType, entityId }]);
   }
 
   static async markDirtyMany(changes: Array<{ entityType: SyncEntityType; entityId: string }>) {
-    if (changes.length === 0) {
+    const uniqueChanges = new Map(
+      changes.map((change) => [dirtyKey(change.entityType, change.entityId), change]),
+    );
+    if (uniqueChanges.size === 0) {
       return;
     }
 
     const queuedAt = new Date().toISOString();
     await db.dirtyEntities.bulkPut(
-      changes.map(({ entityType, entityId }) => ({
-        key: dirtyKey(entityType, entityId),
+      [...uniqueChanges.entries()].map(([key, { entityType, entityId }]) => ({
+        key,
         entityType,
         entityId,
         queuedAt,
+        generation: createEntityId(),
       })),
     );
   }
@@ -126,30 +153,73 @@ export class SyncService {
   }
 
   static async bootstrapDirtyState() {
-    const [cursor, dirtyCount] = await Promise.all([
-      this.getCursor(),
-      db.dirtyEntities.count(),
-    ]);
+    await db.transaction(
+      'rw',
+      [db.workouts, db.logs, db.workoutTypes, db.profile, db.dirtyEntities, db.syncState],
+      async () => {
+        const dirtyEntries = await db.dirtyEntities.toArray();
+        const entriesWithoutGeneration = dirtyEntries.filter((entry) => !entry.generation);
+        if (entriesWithoutGeneration.length > 0) {
+          await db.dirtyEntities.bulkPut(
+            entriesWithoutGeneration.map((entry) => ({
+              ...entry,
+              generation: createEntityId(),
+            })),
+          );
+        }
 
-    if (cursor > 0 || dirtyCount > 0) {
-      return;
-    }
+        const cursor = await this.getCursor();
+        if (cursor > 0 || dirtyEntries.length > 0) {
+          return;
+        }
 
-    const unsyncedEntities = await this.listUnsyncedEntities();
-    if (unsyncedEntities.length === 0) {
-      return;
-    }
-
-    await this.markDirtyMany(unsyncedEntities);
+        const unsyncedEntities = await this.listUnsyncedEntities();
+        if (unsyncedEntities.length > 0) {
+          await this.markDirtyMany(unsyncedEntities);
+        }
+      },
+    );
   }
 
   static async readAll(): Promise<AppData> {
+    const [workouts, logs, workoutTypes, profile] = await Promise.all([
+      db.workouts.toArray(),
+      db.logs.toArray(),
+      db.workoutTypes.toArray(),
+      db.profile.get(PROFILE_ID),
+    ]);
+
     return {
-      workouts: await db.workouts.toArray(),
-      logs: await db.logs.toArray(),
-      workoutTypes: await db.workoutTypes.toArray(),
-      profile: await db.profile.get(PROFILE_ID),
+      workouts,
+      logs,
+      workoutTypes,
+      profile,
     };
+  }
+
+  private static async createRequestSnapshot(): Promise<SyncRequestSnapshot> {
+    return db.transaction(
+      'r',
+      [db.workouts, db.logs, db.workoutTypes, db.profile, db.dirtyEntities, db.syncState],
+      async () => {
+        const [cursor, dirtyEntryList] = await Promise.all([
+          this.getCursor(),
+          db.dirtyEntities.toArray(),
+        ]);
+        const dirtyEntries = new Map(dirtyEntryList.map((entry) => [entry.key, entry]));
+
+        return {
+          request: {
+            cursor,
+            changes: await this.readDirtyDelta(dirtyEntryList),
+            protocolVersion: SYNC_PROTOCOL_VERSION,
+            limit: SYNC_PULL_LIMIT,
+            batchId: createBatchId(cursor, dirtyEntries),
+          },
+          dirtyEntries,
+        };
+      },
+    );
   }
 
   private static async readDirtyDelta(dirtyEntries: DirtyEntityRecord[]): Promise<SyncDelta> {
@@ -182,8 +252,7 @@ export class SyncService {
       return [];
     }
 
-    const table = this.getArrayTable(entityType);
-    const items = await table.bulkGet(ids);
+    const items = await this.getArrayTable(entityType).bulkGet(ids);
     return items.filter((item): item is SyncEntityMap[K] => Boolean(item));
   }
 
@@ -198,20 +267,27 @@ export class SyncService {
     }
   }
 
-  private static async applySyncResponse(response: SyncResponse, request: SyncRequest) {
+  private static async applySyncResponse(response: SyncResponse, snapshot: SyncRequestSnapshot) {
+    const fallbackAcknowledgements = [
+      ...snapshot.dirtyEntries.values(),
+    ].map(({ entityType, entityId }) => ({ entityType, entityId }));
+    const acknowledged = acknowledgementKeys(response.acknowledged ?? fallbackAcknowledgements);
+    const conflicts = conflictKeys(response);
+
     await db.transaction(
       'rw',
       [db.workouts, db.logs, db.workoutTypes, db.profile, db.dirtyEntities, db.syncState, db.syncConflicts],
       async () => {
-        await this.applyArrayDelta('workoutTypes', response.changes.workoutTypes);
-        await this.applyArrayDelta('logs', response.changes.logs);
-        await this.applyArrayDelta('workouts', response.changes.workouts);
+        await this.applyArrayDelta('workoutTypes', response.changes.workoutTypes, snapshot, acknowledged, conflicts);
+        await this.applyArrayDelta('logs', response.changes.logs, snapshot, acknowledged, conflicts);
+        await this.applyArrayDelta('workouts', response.changes.workouts, snapshot, acknowledged, conflicts);
 
         if (response.changes.profile) {
-          await this.applyProfileDelta(response.changes.profile);
+          await this.applyProfileDelta(response.changes.profile, snapshot, acknowledged, conflicts);
         }
 
-        await this.recordConflicts(response, request);
+        await this.recordConflicts(response, snapshot.request);
+        await this.acknowledgeUnchangedOutboxEntries(snapshot, acknowledged, conflicts);
 
         const syncState: SyncStateRecord = {
           key: SYNC_CURSOR_KEY,
@@ -226,35 +302,112 @@ export class SyncService {
   private static async applyArrayDelta<K extends ArrayEntityType>(
     entityType: K,
     incomingItems: SyncEntityMap[K][] | undefined,
+    snapshot: SyncRequestSnapshot,
+    acknowledged: Set<string>,
+    conflicts: Set<string>,
   ) {
     for (const incoming of asArray(incomingItems)) {
+      const key = dirtyKey(entityType, incoming.id);
       const table = this.getArrayTable(entityType);
       const local = await table.get(incoming.id) as SyncEntityMap[K] | undefined;
-      if (!local || this.shouldReplaceLocal(local, incoming)) {
-        switch (entityType) {
-          case 'workoutTypes':
-            await db.workoutTypes.put(incoming as WorkoutType);
-            break;
-          case 'logs':
-            await db.logs.put(incoming as WorkoutSet);
-            break;
-          case 'workouts':
-            await db.workouts.put(incoming as WorkoutSession);
-            break;
+      const dirtyState = await this.getDirtyState(key, snapshot);
+
+      if (dirtyState.changedAfterSnapshot && local) {
+        await this.putRebasedArrayEntity(entityType, local, incoming);
+      } else if (!local || this.shouldReplaceLocal(local, incoming)) {
+        await this.putArrayEntity(entityType, incoming);
+      }
+
+      if (acknowledged.has(key) && dirtyState.matchesSnapshot) {
+        await db.dirtyEntities.delete(key);
+        if (!conflicts.has(key)) {
+          await db.syncConflicts.delete(key);
         }
       }
-      await db.dirtyEntities.delete(dirtyKey(entityType, incoming.id));
-      await db.syncConflicts.delete(dirtyKey(entityType, incoming.id));
     }
   }
 
-  private static async applyProfileDelta(profile: UserProfile) {
+  private static async applyProfileDelta(
+    incoming: UserProfile,
+    snapshot: SyncRequestSnapshot,
+    acknowledged: Set<string>,
+    conflicts: Set<string>,
+  ) {
+    const key = dirtyKey('profile', PROFILE_ID);
     const local = await db.profile.get(PROFILE_ID);
-    if (!local || this.shouldReplaceLocal(local, profile)) {
-      await db.profile.put({ ...profile, id: PROFILE_ID });
+    const dirtyState = await this.getDirtyState(key, snapshot);
+
+    if (dirtyState.changedAfterSnapshot && local) {
+      await db.profile.put({
+        ...local,
+        id: PROFILE_ID,
+        version: incoming.version,
+        serverUpdatedAt: incoming.serverUpdatedAt,
+      });
+    } else if (!local || this.shouldReplaceLocal(local, incoming)) {
+      await db.profile.put({ ...incoming, id: PROFILE_ID });
     }
-    await db.dirtyEntities.delete(dirtyKey('profile', PROFILE_ID));
-    await db.syncConflicts.delete(dirtyKey('profile', PROFILE_ID));
+
+    if (acknowledged.has(key) && dirtyState.matchesSnapshot) {
+      await db.dirtyEntities.delete(key);
+      if (!conflicts.has(key)) {
+        await db.syncConflicts.delete(key);
+      }
+    }
+  }
+
+  private static async getDirtyState(key: string, snapshot: SyncRequestSnapshot) {
+    const current = await db.dirtyEntities.get(key);
+    const sent = snapshot.dirtyEntries.get(key);
+    return {
+      matchesSnapshot: Boolean(current && sent && current.generation === sent.generation),
+      changedAfterSnapshot: Boolean(current && (!sent || current.generation !== sent.generation)),
+    };
+  }
+
+  private static async putArrayEntity<K extends ArrayEntityType>(entityType: K, entity: SyncEntityMap[K]) {
+    switch (entityType) {
+      case 'workoutTypes':
+        await db.workoutTypes.put(entity as WorkoutType);
+        break;
+      case 'logs':
+        await db.logs.put(entity as WorkoutSet);
+        break;
+      case 'workouts':
+        await db.workouts.put(entity as WorkoutSession);
+        break;
+    }
+  }
+
+  private static async putRebasedArrayEntity<K extends ArrayEntityType>(
+    entityType: K,
+    local: SyncEntityMap[K],
+    incoming: SyncEntityMap[K],
+  ) {
+    await this.putArrayEntity(entityType, {
+      ...local,
+      version: incoming.version,
+      serverUpdatedAt: incoming.serverUpdatedAt,
+    });
+  }
+
+  private static async acknowledgeUnchangedOutboxEntries(
+    snapshot: SyncRequestSnapshot,
+    acknowledged: Set<string>,
+    conflicts: Set<string>,
+  ) {
+    for (const key of acknowledged) {
+      const sent = snapshot.dirtyEntries.get(key);
+      const current = await db.dirtyEntities.get(key);
+      if (!sent || !current || sent.generation !== current.generation) {
+        continue;
+      }
+
+      await db.dirtyEntities.delete(key);
+      if (!conflicts.has(key)) {
+        await db.syncConflicts.delete(key);
+      }
+    }
   }
 
   private static shouldReplaceLocal<T extends SyncItem>(local: T, incoming: T): boolean {
@@ -302,15 +455,12 @@ export class SyncService {
     for (const item of delta.workoutTypes ?? []) {
       entries.set(dirtyKey('workoutTypes', item.id), item);
     }
-
     for (const item of delta.logs ?? []) {
       entries.set(dirtyKey('logs', item.id), item);
     }
-
     for (const item of delta.workouts ?? []) {
       entries.set(dirtyKey('workouts', item.id), item);
     }
-
     if (delta.profile) {
       entries.set(dirtyKey('profile', delta.profile.id), delta.profile);
     }

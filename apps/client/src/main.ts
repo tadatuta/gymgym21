@@ -13,14 +13,20 @@ import { renderHeatmap } from './components/stats/Heatmap';
 import { renderVolumeChart, render1RMChart, renderDurationChart } from './components/stats/Charts';
 import {
   MigrationStatus,
+  type OfflineAccount,
   TelegramLoginData,
   addPasskey,
+  cacheOfflineAccount,
   canUsePasskeyInCurrentContext,
+  clearAuthState,
   getCurrentUser,
+  getOfflineAccount,
   getMigrationStatus,
+  hasActiveSession,
+  hasVerifiedOnlineAccount,
   linkTelegramAccount,
   openBrowserHandoff,
-  restoreSession,
+  restoreSessionState,
   serializeTelegramLoginData,
   signOut,
   TELEGRAM_BOT_NAME,
@@ -49,44 +55,8 @@ const getProfileLink = (identifier: string) => {
 type AiRecommendationType = 'general' | 'plan';
 type AiResultsState = Record<AiRecommendationType, string | null>;
 
-const AI_RESULTS_STORAGE_KEY = 'gym_ai_results';
-const AI_RESULTS_CACHE_VERSION = 2;
-
 function createEmptyAiResults(): AiResultsState {
   return { general: null, plan: null };
-}
-
-function normalizeAiResultValue(value: unknown): string | null {
-  return typeof value === 'string' ? value : null;
-}
-
-function readAiResultsCache(): AiResultsState {
-  const savedValue = localStorage.getItem(AI_RESULTS_STORAGE_KEY);
-  if (!savedValue) {
-    return createEmptyAiResults();
-  }
-
-  try {
-    const parsed = JSON.parse(savedValue);
-    if (parsed?.version === AI_RESULTS_CACHE_VERSION && parsed.results) {
-      return {
-        general: normalizeAiResultValue(parsed.results.general),
-        plan: normalizeAiResultValue(parsed.results.plan),
-      };
-    }
-  } catch {
-    // Treat malformed or legacy payloads as stale and clear them.
-  }
-
-  localStorage.removeItem(AI_RESULTS_STORAGE_KEY);
-  return createEmptyAiResults();
-}
-
-function persistAiResultsCache(results: AiResultsState) {
-  localStorage.setItem(AI_RESULTS_STORAGE_KEY, JSON.stringify({
-    version: AI_RESULTS_CACHE_VERSION,
-    results,
-  }));
 }
 
 function getAiResultContainerId(type: AiRecommendationType) {
@@ -116,7 +86,6 @@ function renderAiResults() {
 
 function updateAiResult(type: AiRecommendationType, result: string) {
   aiResults[type] = result;
-  persistAiResultsCache(aiResults);
   renderAiResult(type);
 }
 
@@ -135,7 +104,7 @@ let currentStatsTab: 'overview' | 'progress' = 'overview';
 let currentProfileTab: 'ai' | 'public' | 'data' = 'ai';
 let isFilterEnabled = false;
 let authStatus: MigrationStatus | null = null;
-const aiResults = readAiResultsCache();
+let aiResults = createEmptyAiResults();
 let aiLoadingState: 'idle' | 'general' | 'plan' = 'idle';
 
 // Workout UI state
@@ -1052,6 +1021,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
   const safeHeight = escapeAttribute(profile?.height || '');
   const safeWeight = escapeAttribute(profile?.weight || '');
   const safeAdditionalInfo = escapeHtml(profile?.additionalInfo || '');
+  const onlineAccountVerified = hasVerifiedOnlineAccount(storage.getStorageKey());
 
   if (tab === 'public') {
     return `${profile?.friends && profile.friends.length > 0 ? `
@@ -1167,9 +1137,10 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
     return `
       <div class="settings-section">
             <div class="settings-section-title">AI Рекомендации</div>
+            ${onlineAccountVerified ? '' : '<p class="hint" style="margin-bottom:12px;">Оффлайн: сохранённые рекомендации доступны, генерация новых — после подключения.</p>'}
 
             <div class="ai-controls" style="display: flex; flex-direction: column; gap: 12px;">
-                <button class="button" id="ai-general-btn" ${aiLoadingState !== 'idle' ? 'disabled' : ''}>
+                <button class="button" id="ai-general-btn" ${aiLoadingState !== 'idle' || !onlineAccountVerified ? 'disabled' : ''}>
                     ${aiLoadingState === 'general' ? 'Анализ...' : '✨ Общий анализ'}
                 </button>
 
@@ -1195,7 +1166,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
                           <span class="toggle-slider"></span>
                       </label>
                     </div>
-                    <button class="button" id="ai-plan-btn" ${aiLoadingState !== 'idle' ? 'disabled' : ''} style="margin-top: 8px;">
+                    <button class="button" id="ai-plan-btn" ${aiLoadingState !== 'idle' || !onlineAccountVerified ? 'disabled' : ''} style="margin-top: 8px;">
                         ${aiLoadingState === 'plan' ? 'Генерация...' : '📅 Создать план'}
                     </button>
 
@@ -1256,12 +1227,40 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
           <div><strong>Passkey:</strong> ${authStatus?.hasPasskey ? 'добавлен' : 'не добавлен'}</div>
         </div>
         <div style="display:flex; flex-direction:column; gap:12px; margin-top:16px;">
-          <button class="button button_secondary" id="add-passkey-btn">${canUsePasskeyInCurrentContext() ? 'Добавить Passkey' : 'Открыть браузер для Passkey'}</button>
-          ${authStatus?.hasTelegram
+          <button class="button button_secondary" id="add-passkey-btn" ${onlineAccountVerified ? '' : 'disabled'}>${canUsePasskeyInCurrentContext() ? 'Добавить Passkey' : 'Открыть браузер для Passkey'}</button>
+          ${!onlineAccountVerified
+            ? '<div class="hint">Изменение способов входа требует подключения к интернету.</div>'
+            : authStatus?.hasTelegram
             ? '<div style="padding:12px 14px; border-radius:14px; background:var(--surface-color-alt); color:var(--text-color-secondary);">Telegram уже привязан к этому аккаунту.</div>'
             : '<div id="link-telegram-widget" style="display:flex; justify-content:center;"></div>'}
         </div>
       </div>
+
+      ${storage.getConflicts().length > 0 ? `
+        <div class="settings-section">
+          <div class="settings-section-title">Конфликты синхронизации</div>
+          <p class="hint" style="margin-bottom:12px;">
+            Серверная версия уже применена. Можно вернуть локальное изменение поверх неё или оставить серверную.
+          </p>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            ${storage.getConflicts().map((conflict) => `
+              <div style="padding:12px; border-radius:12px; background:var(--surface-color-alt);">
+                <div style="font-weight:600; margin-bottom:8px;">
+                  ${escapeHtml(conflict.entityType)} · ${escapeHtml(conflict.entityId)}
+                </div>
+                <div style="display:flex; gap:8px;">
+                  <button class="button conflict-restore-btn" data-conflict-key="${escapeAttribute(conflict.key)}" style="flex:1;">
+                    Вернуть локальное
+                  </button>
+                  <button class="button button_secondary conflict-dismiss-btn" data-conflict-key="${escapeAttribute(conflict.key)}" style="flex:1;">
+                    Оставить серверное
+                  </button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
 
       <div class="settings-section">
         <div class="settings-section-title">Управление данными</div>
@@ -1515,6 +1514,25 @@ function bindWorkoutControlEvents() {
 function bindProfileSettingsEvents() {
   renderAiResults();
 
+  document.querySelectorAll<HTMLElement>('.conflict-restore-btn').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const key = button.getAttribute('data-conflict-key');
+      if (!key) return;
+      await storage.restoreConflictLocal(key);
+      updateProfileTabContent();
+      showToast('Локальное изменение возвращено в очередь');
+    });
+  });
+
+  document.querySelectorAll<HTMLElement>('.conflict-dismiss-btn').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const key = button.getAttribute('data-conflict-key');
+      if (!key) return;
+      await storage.dismissConflict(key);
+      updateProfileTabContent();
+    });
+  });
+
   const saveBtn = document.getElementById('save-profile-btn');
   saveBtn?.addEventListener('click', async () => {
     const publicToggle = document.getElementById('profile-public-toggle') as HTMLInputElement;
@@ -1751,6 +1769,11 @@ function renderPublicProfilePage() {
   const safeFriendPhoto = escapeAttribute(sanitizeUrl(profile.photoUrl) ?? '');
   return `
     <div class="page-content profile-page">
+      ${profile.cacheMetadata?.cached ? `
+        <div class="hint" style="margin-bottom:12px; padding:10px 12px; border-radius:12px; background:var(--surface-color-alt);">
+          Оффлайн-копия от ${new Date(profile.cacheMetadata.cachedAt).toLocaleString()}
+        </div>
+      ` : ''}
       <div class="profile-header">
         <div class="profile-avatar">
           ${renderSafeAvatarMarkup(profile.displayName, profile.photoUrl)}
@@ -2240,7 +2263,12 @@ function updateSyncStatus(status: SyncStatus) {
       syncStatusEl.textContent = 'Ошибка синхронизации';
       break;
     default:
-      syncStatusEl.className = 'sync-status'; // Hide
+      if (!navigator.onLine || !hasActiveSession()) {
+        syncStatusEl.className = 'sync-status visible idle';
+        syncStatusEl.textContent = 'Оффлайн · изменения сохраняются на устройстве';
+      } else {
+        syncStatusEl.className = 'sync-status';
+      }
   }
 }
 
@@ -2265,33 +2293,65 @@ storage.onUpdate(() => {
 storage.onSyncStatusChange(updateSyncStatus);
 
 async function initApp() {
-  const session = await restoreSession();
-  if (!session) {
-    renderLogin(document.getElementById('app')!, () => {
+  const app = document.getElementById('app')!;
+  const showLogin = (error?: string) => {
+    void renderLogin(app, () => {
       location.reload();
-    });
+    }, error);
+  };
+  const activateLocalAccount = async (account: OfflineAccount) => {
+    authStatus = account.migrationStatus;
+    await storage.activate(account.storageKey);
+    aiResults = await storage.readCachedAIResults();
+    await routerController.start();
+    updateSyncStatus('idle');
+  };
+
+  const cachedAccount = getOfflineAccount();
+  if (cachedAccount) {
+    await activateLocalAccount(cachedAccount);
+  }
+
+  const sessionState = await restoreSessionState();
+  if (sessionState.status === 'unavailable') {
+    if (!cachedAccount) {
+      showLogin('Нет подключения к серверу. Первый вход на этом устройстве требует интернет.');
+    }
     return;
   }
 
+  if (sessionState.status === 'unauthenticated') {
+    clearAuthState({ clearOfflineAccount: true });
+    showLogin();
+    return;
+  }
+
+  if (cachedAccount && cachedAccount.user.id !== sessionState.session.user.id) {
+    app.innerHTML = '<div class="profile-loading">Переключаем аккаунт...</div>';
+  }
+
+  let onlineStatus: MigrationStatus;
   try {
-    authStatus = await getMigrationStatus();
+    onlineStatus = await getMigrationStatus();
   } catch {
-    renderLogin(document.getElementById('app')!, () => {
-      location.reload();
-    });
+    if (getOfflineAccount()?.user.id === sessionState.session.user.id) {
+      updateSyncStatus('idle');
+      return;
+    }
+
+    clearAuthState({ clearOfflineAccount: true });
+    showLogin('Не удалось определить локальное хранилище аккаунта.');
     return;
   }
 
-  if (authStatus?.needsCompletion) {
-    renderLogin(document.getElementById('app')!, () => {
-      location.reload();
-    });
+  if (onlineStatus.needsCompletion) {
+    showLogin();
     return;
   }
 
+  const onlineAccount = cacheOfflineAccount(sessionState.session.user, onlineStatus);
+  await activateLocalAccount(onlineAccount);
   storage.scheduleSync(0);
-  await routerController.start();
-  // Note: storage.init() is called automatically in StorageService constructor
 }
 
 initApp();

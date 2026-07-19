@@ -3,6 +3,8 @@ import { createAuthClient } from 'better-auth/client';
 
 const DEFAULT_AUTH_BASE_URL = '/api/auth';
 const LEGACY_AUTH_TOKEN_KEY = 'gym_auth_token';
+const OFFLINE_ACCOUNTS_KEY = 'gym21_offline_accounts_v1';
+const PENDING_SIGN_OUT_KEY = 'gym21_pending_sign_out_v1';
 
 function normalizeBaseUrl(value: string): string {
   if (value === '/') {
@@ -93,6 +95,24 @@ export interface MigrationStatus {
   telegramUserId: string | null;
 }
 
+export interface OfflineAccount {
+  storageKey: string;
+  user: AuthUser;
+  migrationStatus: MigrationStatus;
+  lastValidatedAt: string;
+}
+
+interface OfflineAccountRegistry {
+  version: 1;
+  activeStorageKey: string | null;
+  accounts: Record<string, OfflineAccount>;
+}
+
+export type SessionRestoreState =
+  | { status: 'authenticated'; session: AuthSession }
+  | { status: 'unauthenticated' }
+  | { status: 'unavailable'; error?: unknown };
+
 interface AuthMutationResponse {
   user: AuthUser;
   needsCompletion?: boolean;
@@ -110,6 +130,64 @@ const authClient = createAuthClient({
 });
 
 let currentSession: AuthSession | null = null;
+let currentOfflineAccount: OfflineAccount | null = null;
+
+function emptyOfflineAccountRegistry(): OfflineAccountRegistry {
+  return {
+    version: 1,
+    activeStorageKey: null,
+    accounts: {},
+  };
+}
+
+function readOfflineAccountRegistry(): OfflineAccountRegistry {
+  if (typeof localStorage === 'undefined') {
+    return emptyOfflineAccountRegistry();
+  }
+
+  try {
+    const parsed = JSON.parse(localStorage.getItem(OFFLINE_ACCOUNTS_KEY) || 'null') as Partial<OfflineAccountRegistry> | null;
+    if (parsed?.version !== 1 || typeof parsed.accounts !== 'object' || parsed.accounts === null) {
+      return emptyOfflineAccountRegistry();
+    }
+
+    return {
+      version: 1,
+      activeStorageKey: typeof parsed.activeStorageKey === 'string' ? parsed.activeStorageKey : null,
+      accounts: parsed.accounts as Record<string, OfflineAccount>,
+    };
+  } catch {
+    return emptyOfflineAccountRegistry();
+  }
+}
+
+function writeOfflineAccountRegistry(registry: OfflineAccountRegistry) {
+  if (typeof localStorage === 'undefined') {
+    return;
+  }
+
+  localStorage.setItem(OFFLINE_ACCOUNTS_KEY, JSON.stringify(registry));
+}
+
+function loadActiveOfflineAccount(): OfflineAccount | null {
+  const registry = readOfflineAccountRegistry();
+  if (!registry.activeStorageKey) {
+    return null;
+  }
+
+  const account = registry.accounts[registry.activeStorageKey];
+  if (
+    !account
+    || typeof account.storageKey !== 'string'
+    || !account.user
+    || !account.migrationStatus
+    || account.migrationStatus.needsCompletion
+  ) {
+    return null;
+  }
+
+  return account;
+}
 
 function purgeLegacyAuthToken() {
   if (typeof localStorage === 'undefined') {
@@ -124,6 +202,7 @@ function purgeLegacyAuthToken() {
 }
 
 purgeLegacyAuthToken();
+currentOfflineAccount = loadActiveOfflineAccount();
 
 function toErrorMessage(message: unknown, fallback: string): string {
   if (typeof message === 'string' && message.length > 0) {
@@ -182,35 +261,116 @@ export function hasActiveSession(): boolean {
   return Boolean(currentSession?.session && currentSession.user);
 }
 
+export function hasOfflineAccount(): boolean {
+  return currentOfflineAccount !== null;
+}
+
+export function hasVerifiedOnlineAccount(storageKey?: string | null): boolean {
+  if (!currentSession?.user || !currentOfflineAccount) {
+    return false;
+  }
+
+  return currentSession.user.id === currentOfflineAccount.user.id
+    && (!storageKey || currentOfflineAccount.storageKey === storageKey);
+}
+
 export function getCurrentSession(): AuthSession | null {
   return currentSession;
 }
 
 export function getCurrentUser(): AuthUser | null {
-  return currentSession?.user ?? null;
+  return currentSession?.user ?? currentOfflineAccount?.user ?? null;
 }
 
-export function clearAuthState() {
+export function getOfflineAccount(): OfflineAccount | null {
+  return currentOfflineAccount;
+}
+
+export function getActiveStorageKey(): string | null {
+  return currentOfflineAccount?.storageKey ?? null;
+}
+
+export function cacheOfflineAccount(user: AuthUser, migrationStatus: MigrationStatus): OfflineAccount {
+  if (!migrationStatus.storageKey) {
+    throw new Error('Authenticated account does not have a storage key');
+  }
+
+  const account: OfflineAccount = {
+    storageKey: migrationStatus.storageKey,
+    user,
+    migrationStatus,
+    lastValidatedAt: new Date().toISOString(),
+  };
+  const registry = readOfflineAccountRegistry();
+  registry.accounts[account.storageKey] = account;
+  registry.activeStorageKey = account.storageKey;
+  writeOfflineAccountRegistry(registry);
+  currentOfflineAccount = account;
+  return account;
+}
+
+export function clearOfflineAccountSelection() {
+  const registry = readOfflineAccountRegistry();
+  registry.activeStorageKey = null;
+  writeOfflineAccountRegistry(registry);
+  currentOfflineAccount = null;
+}
+
+export function clearAuthState(options: { clearOfflineAccount?: boolean } = {}) {
   purgeLegacyAuthToken();
   currentSession = null;
+  if (options.clearOfflineAccount ?? true) {
+    clearOfflineAccountSelection();
+  }
+}
+
+function getErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object' || !('status' in error)) {
+    return undefined;
+  }
+
+  return typeof error.status === 'number' ? error.status : undefined;
+}
+
+export async function restoreSessionState(): Promise<SessionRestoreState> {
+  purgeLegacyAuthToken();
+
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(PENDING_SIGN_OUT_KEY) === '1') {
+      await authClient.signOut();
+      localStorage.removeItem(PENDING_SIGN_OUT_KEY);
+      currentSession = null;
+      return { status: 'unauthenticated' };
+    }
+
+    const result = await authClient.getSession({
+      query: {
+        disableRefresh: true,
+      },
+    });
+
+    if (!result.error && result.data?.session && result.data.user) {
+      currentSession = result.data as unknown as AuthSession;
+      return { status: 'authenticated', session: currentSession };
+    }
+
+    const errorStatus = getErrorStatus(result.error);
+    if (!result.error || errorStatus === 401 || errorStatus === 403) {
+      currentSession = null;
+      return { status: 'unauthenticated' };
+    }
+
+    currentSession = null;
+    return { status: 'unavailable', error: result.error };
+  } catch (error) {
+    currentSession = null;
+    return { status: 'unavailable', error };
+  }
 }
 
 export async function restoreSession(): Promise<AuthSession | null> {
-  purgeLegacyAuthToken();
-
-  const result = await authClient.getSession({
-    query: {
-      disableRefresh: true,
-    },
-  });
-
-  if (!result.error && result.data?.session && result.data.user) {
-    currentSession = result.data as unknown as AuthSession;
-    return currentSession;
-  }
-
-  currentSession = null;
-  return null;
+  const state = await restoreSessionState();
+  return state.status === 'authenticated' ? state.session : null;
 }
 
 export function serializeTelegramLoginData(user: TelegramLoginData): string {
@@ -250,8 +410,18 @@ export async function signInWithEmail(email: string, password: string): Promise<
 }
 
 export async function signOut(): Promise<void> {
-  await authClient.signOut();
-  clearAuthState();
+  try {
+    await authClient.signOut();
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(PENDING_SIGN_OUT_KEY);
+    }
+  } catch {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(PENDING_SIGN_OUT_KEY, '1');
+    }
+  } finally {
+    clearAuthState({ clearOfflineAccount: true });
+  }
 }
 
 export async function signInWithPasskey(): Promise<AuthSession> {
@@ -346,7 +516,7 @@ export async function authorizedApiFetch(path: string, init: RequestInit = {}): 
   });
 
   if (response.status === 401) {
-    clearAuthState();
+    clearAuthState({ clearOfflineAccount: true });
   }
 
   return response;

@@ -29,6 +29,16 @@ export default defineConfig({
         VitePWA({
             registerType: 'autoUpdate',
             includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
+            workbox: {
+                navigateFallback: '/index.html',
+                cleanupOutdatedCaches: true,
+                runtimeCaching: [
+                    {
+                        urlPattern: /\/api\//,
+                        handler: 'NetworkOnly'
+                    }
+                ]
+            },
             manifest: {
                 name: 'Gym Gym 21',
                 short_name: 'Gym21',

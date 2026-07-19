@@ -29,6 +29,16 @@ interface RootRow {
   server_revision: string | number;
 }
 
+interface ChangedEntityRow {
+  entity_type: SyncEntityType;
+  entity_id: string;
+  version: string | number;
+}
+
+interface SyncReceiptRow {
+  response_payload: StorageSyncResponse | string;
+}
+
 interface StorageProfileRow {
   profile_id: string;
   is_public: boolean;
@@ -200,6 +210,9 @@ function validateSyncRequest(request: StorageSyncRequest) {
   if (!Number.isInteger(request.cursor) || request.cursor < 0) {
     throw new HttpError(400, 'cursor must be a non-negative integer');
   }
+  if (request.batchId && !/^[a-zA-Z0-9_-]{1,100}$/.test(request.batchId)) {
+    throw new HttpError(400, 'batchId is invalid');
+  }
 
   const dataForValidation: StorageData = {
     workoutTypes: request.changes.workoutTypes,
@@ -209,6 +222,12 @@ function validateSyncRequest(request: StorageSyncRequest) {
   };
 
   validateStorageDataShape(dataForValidation);
+}
+
+function parseSyncReceiptPayload(payload: StorageSyncResponse | string): StorageSyncResponse {
+  return typeof payload === 'string'
+    ? JSON.parse(payload) as StorageSyncResponse
+    : payload;
 }
 
 function normalizeProfileForWrite(
@@ -824,6 +843,120 @@ function mergeConflictEntity<T extends StorageWorkoutType | StorageWorkout | Sto
   return [...items, entity].sort((left, right) => (left.version ?? 0) - (right.version ?? 0));
 }
 
+function listSyncAcknowledgements(changes: StorageSyncRequest['changes']): SyncAcknowledgement[] {
+  const entries: SyncAcknowledgement[] = [
+    ...(changes.workoutTypes ?? []).map((entry) => ({
+      entityType: 'workoutTypes' as const,
+      entityId: entry.id,
+    })),
+    ...(changes.logs ?? []).map((entry) => ({
+      entityType: 'logs' as const,
+      entityId: entry.id,
+    })),
+    ...(changes.workouts ?? []).map((entry) => ({
+      entityType: 'workouts' as const,
+      entityId: entry.id,
+    })),
+    ...(changes.profile
+      ? [{
+          entityType: 'profile' as const,
+          entityId: changes.profile.id,
+        }]
+      : []),
+  ];
+
+  return [...new Map(entries.map((entry) => [
+    `${entry.entityType}:${entry.entityId}`,
+    entry,
+  ])).values()];
+}
+
+function hasOutgoingSyncChanges(changes: StorageSyncRequest['changes']): boolean {
+  return Boolean(
+    changes.profile
+    || changes.workoutTypes?.length
+    || changes.logs?.length
+    || changes.workouts?.length,
+  );
+}
+
+async function readPagedSyncChanges(
+  client: PoolClient,
+  storageKey: string,
+  cursor: number,
+  revision: number,
+  limit: number,
+): Promise<Pick<StorageSyncResponse, 'cursor' | 'changes' | 'hasMore'>> {
+  const changedResult = await client.query<ChangedEntityRow>(
+    `
+      SELECT entity_type, entity_id, version
+      FROM (
+        SELECT 'profile'::text AS entity_type, profile_id AS entity_id, version
+        FROM storage_profiles
+        WHERE storage_key = $1 AND version > $2
+        UNION ALL
+        SELECT 'workoutTypes'::text AS entity_type, id AS entity_id, version
+        FROM storage_workout_types
+        WHERE storage_key = $1 AND version > $2
+        UNION ALL
+        SELECT 'workouts'::text AS entity_type, id AS entity_id, version
+        FROM storage_workouts
+        WHERE storage_key = $1 AND version > $2
+        UNION ALL
+        SELECT 'logs'::text AS entity_type, id AS entity_id, version
+        FROM storage_logs
+        WHERE storage_key = $1 AND version > $2
+      ) AS changed_entities
+      ORDER BY version ASC
+      LIMIT $3
+    `,
+    [storageKey, cursor, limit + 1],
+  );
+  const hasMore = changedResult.rows.length > limit;
+  const selected = changedResult.rows.slice(0, limit);
+  const idsByType = {
+    workoutTypes: selected.filter((entry) => entry.entity_type === 'workoutTypes').map((entry) => entry.entity_id),
+    workouts: selected.filter((entry) => entry.entity_type === 'workouts').map((entry) => entry.entity_id),
+    logs: selected.filter((entry) => entry.entity_type === 'logs').map((entry) => entry.entity_id),
+  };
+  const includesProfile = selected.some((entry) => entry.entity_type === 'profile');
+
+  const [profileResult, workoutTypeResult, workoutResult, logResult] = await Promise.all([
+    includesProfile
+      ? client.query<StorageProfileRow>('SELECT * FROM storage_profiles WHERE storage_key = $1 LIMIT 1', [storageKey])
+      : Promise.resolve({ rows: [] as StorageProfileRow[] }),
+    idsByType.workoutTypes.length > 0
+      ? client.query<StorageWorkoutTypeRow>(
+          'SELECT * FROM storage_workout_types WHERE storage_key = $1 AND id = ANY($2::text[]) ORDER BY version ASC',
+          [storageKey, idsByType.workoutTypes],
+        )
+      : Promise.resolve({ rows: [] as StorageWorkoutTypeRow[] }),
+    idsByType.workouts.length > 0
+      ? client.query<StorageWorkoutRow>(
+          'SELECT * FROM storage_workouts WHERE storage_key = $1 AND id = ANY($2::text[]) ORDER BY version ASC',
+          [storageKey, idsByType.workouts],
+        )
+      : Promise.resolve({ rows: [] as StorageWorkoutRow[] }),
+    idsByType.logs.length > 0
+      ? client.query<StorageLogRow>(
+          'SELECT * FROM storage_logs WHERE storage_key = $1 AND id = ANY($2::text[]) ORDER BY version ASC',
+          [storageKey, idsByType.logs],
+        )
+      : Promise.resolve({ rows: [] as StorageLogRow[] }),
+  ]);
+
+  return {
+    cursor: selected.length > 0 ? toNumber(selected.at(-1)!.version) : revision,
+    hasMore,
+    changes: {
+      workoutTypes: workoutTypeResult.rows.map(mapWorkoutTypeRow),
+      workouts: workoutResult.rows.map(mapWorkoutRow),
+      logs: logResult.rows.map(mapLogRow),
+      profile: mapProfileRow(profileResult.rows[0]) ?? null,
+    },
+  };
+}
+
 export interface StoragePauseInterval {
   start: string;
   end?: string;
@@ -916,8 +1049,16 @@ export interface SyncConflict {
   serverVersion: number;
 }
 
+export interface SyncAcknowledgement {
+  entityType: SyncEntityType;
+  entityId: string;
+}
+
 export interface StorageSyncRequest {
   cursor: number;
+  protocolVersion?: number;
+  limit?: number;
+  batchId?: string;
   changes: {
     workoutTypes?: StorageWorkoutType[];
     logs?: StorageLogEntry[];
@@ -935,6 +1076,9 @@ export interface StorageSyncResponse {
     profile: StorageProfile | null;
   };
   conflicts: SyncConflict[];
+  acknowledged: SyncAcknowledgement[];
+  protocolVersion: number;
+  hasMore: boolean;
 }
 
 export interface PublicProfileData {
@@ -1062,6 +1206,23 @@ class PostgresStorageRepository implements StorageRepository {
     try {
       await client.query('BEGIN');
       let revision = await ensureStorageRoot(client, storageKey);
+      if (request.batchId) {
+        const receiptResult = await client.query<SyncReceiptRow>(
+          `
+            SELECT response_payload
+            FROM storage_sync_receipts
+            WHERE storage_key = $1 AND batch_id = $2
+            LIMIT 1
+          `,
+          [storageKey, request.batchId],
+        );
+        if (receiptResult.rows[0]) {
+          const storedResponse = parseSyncReceiptPayload(receiptResult.rows[0].response_payload);
+          await client.query('COMMIT');
+          return storedResponse;
+        }
+      }
+
       const conflicts: SyncConflict[] = [];
       let profileChanged = false;
       let workoutTypesChanged = false;
@@ -1221,34 +1382,47 @@ class PostgresStorageRepository implements StorageRepository {
         await invalidatePublicProfileCache(client, storageKey);
       }
 
-      const [profileResult, workoutTypeResult, workoutResult, logResult] = await Promise.all([
-        client.query<StorageProfileRow>(
-          'SELECT * FROM storage_profiles WHERE storage_key = $1 AND version > $2 ORDER BY version ASC LIMIT 1',
-          [storageKey, request.cursor],
-        ),
-        client.query<StorageWorkoutTypeRow>(
-          'SELECT * FROM storage_workout_types WHERE storage_key = $1 AND version > $2 ORDER BY version ASC',
-          [storageKey, request.cursor],
-        ),
-        client.query<StorageWorkoutRow>(
-          'SELECT * FROM storage_workouts WHERE storage_key = $1 AND version > $2 ORDER BY version ASC',
-          [storageKey, request.cursor],
-        ),
-        client.query<StorageLogRow>(
-          'SELECT * FROM storage_logs WHERE storage_key = $1 AND version > $2 ORDER BY version ASC',
-          [storageKey, request.cursor],
-        ),
-      ]);
+      let pulled: Pick<StorageSyncResponse, 'cursor' | 'changes' | 'hasMore'>;
+      if (request.limit && !hasOutgoingSyncChanges(request.changes)) {
+        pulled = await readPagedSyncChanges(client, storageKey, request.cursor, revision, request.limit);
+      } else {
+        const [profileResult, workoutTypeResult, workoutResult, logResult] = await Promise.all([
+          client.query<StorageProfileRow>(
+            'SELECT * FROM storage_profiles WHERE storage_key = $1 AND version > $2 ORDER BY version ASC LIMIT 1',
+            [storageKey, request.cursor],
+          ),
+          client.query<StorageWorkoutTypeRow>(
+            'SELECT * FROM storage_workout_types WHERE storage_key = $1 AND version > $2 ORDER BY version ASC',
+            [storageKey, request.cursor],
+          ),
+          client.query<StorageWorkoutRow>(
+            'SELECT * FROM storage_workouts WHERE storage_key = $1 AND version > $2 ORDER BY version ASC',
+            [storageKey, request.cursor],
+          ),
+          client.query<StorageLogRow>(
+            'SELECT * FROM storage_logs WHERE storage_key = $1 AND version > $2 ORDER BY version ASC',
+            [storageKey, request.cursor],
+          ),
+        ]);
+        pulled = {
+          cursor: revision,
+          hasMore: false,
+          changes: {
+            workoutTypes: workoutTypeResult.rows.map(mapWorkoutTypeRow),
+            workouts: workoutResult.rows.map(mapWorkoutRow),
+            logs: logResult.rows.map(mapLogRow),
+            profile: mapProfileRow(profileResult.rows[0]) ?? null,
+          },
+        };
+      }
 
       const response: StorageSyncResponse = {
-        cursor: revision,
-        changes: {
-          workoutTypes: workoutTypeResult.rows.map(mapWorkoutTypeRow),
-          workouts: workoutResult.rows.map(mapWorkoutRow),
-          logs: logResult.rows.map(mapLogRow),
-          profile: mapProfileRow(profileResult.rows[0]) ?? null,
-        },
+        cursor: pulled.cursor,
+        changes: pulled.changes,
         conflicts,
+        acknowledged: listSyncAcknowledgements(request.changes),
+        protocolVersion: 1,
+        hasMore: pulled.hasMore,
       };
 
       if (authoritativeProfile && (!response.changes.profile || response.changes.profile.id === authoritativeProfile.id)) {
@@ -1262,6 +1436,25 @@ class PostgresStorageRepository implements StorageRepository {
       }
       for (const entry of authoritativeLogs) {
         response.changes.logs = mergeConflictEntity(response.changes.logs, entry);
+      }
+
+      if (request.batchId) {
+        await client.query(
+          `
+            INSERT INTO storage_sync_receipts (storage_key, batch_id, response_payload)
+            VALUES ($1, $2, $3::jsonb)
+            ON CONFLICT (storage_key, batch_id) DO NOTHING
+          `,
+          [storageKey, request.batchId, JSON.stringify(response)],
+        );
+        await client.query(
+          `
+            DELETE FROM storage_sync_receipts
+            WHERE storage_key = $1
+              AND created_at < NOW() - INTERVAL '30 days'
+          `,
+          [storageKey],
+        );
       }
 
       await client.query('COMMIT');
