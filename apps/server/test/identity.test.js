@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac } from 'node:crypto';
 import { test } from 'node:test';
 import { Pool } from 'pg';
 import request from 'supertest';
@@ -71,11 +71,36 @@ test('PostgreSQL: HTTP sync and concurrent alias writers preserve identity owner
       await pool.query("UPDATE account SET telegram_username = NULL WHERE id = 'telegram-victim'");
       assert.equal((await resolveRequestContext(headers)).telegramUser.username, undefined);
     });
+    await t.test('changed cookie rejects A payload before push or AI; missing identity cannot bypass guard', async () => {
+      const token = 'account-b-cookie-token';
+      await pool.query("INSERT INTO session (id, token, expires_at, user_id) VALUES ('session-b', $1, NOW() + INTERVAL '1 hour', 'attacker-user')", [token]);
+      const signature = createHmac('sha256', process.env.BETTER_AUTH_SECRET).update(token).digest('base64');
+      const cookie = `better-auth.session_token=${encodeURIComponent(`${token}.${signature}`)}`;
+      assert.equal((await resolveRequestContext(new Headers({ cookie }))).storageKey, 'attacker-user');
+      let aiCalls = 0;
+      const app = createApp({ authHandler: async () => {}, resolveRequestContext,
+        generateRecommendation: async () => { aiCalls += 1; return 'advice'; },
+        findPublicProfile: async () => null, storageRepository: repository });
+      const beforeA = await repository.readSnapshot('victim-user');
+      const beforeB = await repository.readSnapshot('attacker-user');
+      for (const expected of [undefined, 'victim-user']) {
+        for (const route of ['storage/sync', 'ai/recommendations']) {
+          let call = request(app).post(`/api/me/${route}`).set('Cookie', cookie);
+          if (expected) call = call.set('X-Expected-Storage-Key', expected);
+          await call.send(route === 'storage/sync' ? { cursor: 0, changes: { profile } } : { type: 'general' }).expect(409);
+        }
+      }
+      assert.equal(aiCalls, 0);
+      assert.deepEqual(await repository.readSnapshot('victim-user'), beforeA);
+      assert.deepEqual(await repository.readSnapshot('attacker-user'), beforeB);
+      await request(app).post('/api/me/storage/sync').set('Cookie', cookie)
+        .set('X-Expected-Storage-Key', 'attacker-user').send({ cursor: 0, changes: {} }).expect(200);
+    });
     await t.test('HTTP cookie sync cannot forge any identity or steal an existing public alias', async () => {
       const context = { kind: 'better-auth', storageKey: 'attacker-user', authUser: { id: 'attacker-user', username: null } };
       const app = createApp({ authHandler: async () => {}, resolveRequestContext: async () => context,
         generateRecommendation: async () => '', findPublicProfile: async () => null, storageRepository: repository });
-      await request(app).post('/api/me/storage/sync').send({ cursor: 0, changes: { profile } }).expect(200);
+      await request(app).post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'attacker-user').send({ cursor: 0, changes: { profile } }).expect(200);
       const saved = (await repository.readSnapshot('attacker-user')).profile;
       assert.equal(saved.username, undefined);
       assert.equal(saved.telegramUsername, undefined);

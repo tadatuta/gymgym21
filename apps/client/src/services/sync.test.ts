@@ -192,3 +192,25 @@ describe('SyncService reliable outbox acknowledgements', () => {
     expect(secondRequest.batchId).toBe(firstRequest.batchId);
   });
 });
+
+it('discards delayed sync from A after activating B, preserving both databases and A outbox', async () => {
+  await activateAccountDatabase(`isolation-a-${Math.random()}`);
+  const a = db;
+  await a.workoutTypes.put({ id: 'a', name: 'A', updatedAt: '2026-09-01T00:00:00Z' });
+  await SyncService.markDirty('workoutTypes', 'a');
+  let finish!: (response: Response) => void;
+  vi.mocked(authorizedApiFetch).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const pending = SyncService.sync();
+  const rejected = expect(pending).rejects.toThrow('Stale account operation');
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+  await activateAccountDatabase(`isolation-b-${Math.random()}`);
+  await db.workoutTypes.put({ id: 'b', name: 'B', updatedAt: '2026-09-01T00:00:00Z' });
+  finish(jsonResponse({ cursor: 3, conflicts: [], acknowledged: [{ entityType: 'workoutTypes', entityId: 'a' }], changes: { workoutTypes: [{ id: 'a', name: 'SERVER A', version: 3 }] } }));
+  await rejected;
+  expect((await db.workoutTypes.toArray()).map(x => x.id)).toEqual(['b']);
+  await a.open();
+  expect((await a.workoutTypes.get('a'))?.name).toBe('A');
+  expect(await a.dirtyEntities.count()).toBe(1);
+  expect(await a.syncState.count()).toBe(0);
+  a.close();
+});

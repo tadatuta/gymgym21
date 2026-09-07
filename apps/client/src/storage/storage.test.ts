@@ -177,3 +177,28 @@ describe('StorageService sync scheduling', () => {
         storage.dispose();
     });
 });
+
+it.each(['ai', 'public'] as const)('discards delayed %s cache response after account switch', async (kind) => {
+    const { authorizedApiFetch } = await import('../auth');
+    const storage = new StorageService({ enableBroadcast: false });
+    await storage.activate(`cache-a-${Math.random()}`);
+    const a = db;
+    let finish!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>(resolve => { finish = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.mocked(authorizedApiFetch).mockImplementation(fetchMock);
+    const pending = kind === 'ai' ? storage.getAIRecommendation('general') : storage.getPublicProfile('someone');
+    const rejected = expect(pending).rejects.toThrow('Stale account operation');
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    await storage.activate(`cache-b-${Math.random()}`);
+    finish(new Response(JSON.stringify(kind === 'ai' ? { format: 'markdown', recommendation: 'A advice' } : { username: 'someone' })));
+    await rejected;
+    expect(await db.aiResultCache.count()).toBe(0);
+    expect(await db.publicProfileCache.count()).toBe(0);
+    await a.open();
+    expect(await a.aiResultCache.count()).toBe(0);
+    expect(await a.publicProfileCache.count()).toBe(0);
+    a.close();
+    storage.dispose();
+    vi.unstubAllGlobals();
+});

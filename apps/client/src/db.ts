@@ -69,6 +69,24 @@ const INACTIVE_DATABASE_NAME = 'GymDatabase:inactive';
 export let db = new GymDatabase(INACTIVE_DATABASE_NAME);
 
 let activeStorageKey: string | null = null;
+let generation = 0;
+let controller = new AbortController();
+export function invalidateAccountOperations() {
+    generation += 1;
+    controller.abort();
+    controller = new AbortController();
+}
+export function captureAccountContext() {
+    const capturedGeneration = generation;
+    const database = db;
+    return {
+        database, storageKey: activeStorageKey, signal: controller.signal,
+        isCurrent: () => capturedGeneration === generation && database === db,
+        assertCurrent() {
+            if (!this.isCurrent()) throw new Error('Stale account operation');
+        },
+    };
+}
 
 function accountDatabaseName(storageKey: string): string {
     return `${ACCOUNT_DATABASE_PREFIX}${encodeURIComponent(storageKey)}`;
@@ -165,10 +183,16 @@ export async function activateAccountDatabase(storageKey: string): Promise<GymDa
         return db;
     }
 
+    invalidateAccountOperations();
+    const activationGeneration = generation;
     const nextDatabase = new GymDatabase(accountDatabaseName(normalizedStorageKey));
     await nextDatabase.open();
     await copyLegacyDatabase(nextDatabase, normalizedStorageKey);
 
+    if (activationGeneration !== generation) {
+        nextDatabase.close();
+        throw new Error('Stale account activation');
+    }
     db.close();
     db = nextDatabase;
     activeStorageKey = normalizedStorageKey;
@@ -184,6 +208,7 @@ export function isAccountDatabaseActive(): boolean {
 }
 
 export function closeActiveDatabase() {
+    invalidateAccountOperations();
     db.close();
     db = new GymDatabase(INACTIVE_DATABASE_NAME);
     activeStorageKey = null;

@@ -1,3 +1,4 @@
+import { captureAccountContext, invalidateAccountOperations } from './db';
 import { passkeyClient } from '@better-auth/passkey/client';
 import { createAuthClient } from 'better-auth/client';
 
@@ -131,6 +132,21 @@ const authClient = createAuthClient({
 
 let currentSession: AuthSession | null = null;
 let currentOfflineAccount: OfflineAccount | null = null;
+let authGeneration = 0;
+const authChannel = typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined'
+  ? new BroadcastChannel('gym21-auth-v1') : null;
+function invalidateAuth(broadcast = true) {
+  authGeneration += 1;
+  invalidateAccountOperations();
+  if (broadcast) authChannel?.postMessage({ type: 'auth-changed' });
+}
+if (authChannel) authChannel.onmessage = (event) => {
+  if (event.data?.type !== 'auth-changed') return;
+  invalidateAuth(false);
+  currentSession = null;
+  currentOfflineAccount = null;
+  window.dispatchEvent(new Event('gym21-auth-changed'));
+};
 
 function emptyOfflineAccountRegistry(): OfflineAccountRegistry {
   return {
@@ -227,12 +243,14 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
     headers.set('Content-Type', 'application/json');
   }
 
+  const requestGeneration = authGeneration;
   const response = await fetch(resolveUrl(AUTH_BASE_URL, path), {
     ...init,
     headers,
     credentials: 'include',
   });
 
+  if (requestGeneration !== authGeneration) throw new Error('Stale auth operation');
   if (response.status === 401) {
     clearAuthState();
   }
@@ -242,7 +260,9 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
     throw new Error(payload?.message || payload?.error || 'Auth request failed');
   }
 
-  return parseJson<T>(response);
+  const payload = await parseJson<T>(response);
+  if (requestGeneration !== authGeneration) throw new Error('Stale auth operation');
+  return payload;
 }
 
 export function getApiBaseUrl(): string {
@@ -305,6 +325,7 @@ export function cacheOfflineAccount(user: AuthUser, migrationStatus: MigrationSt
   registry.accounts[account.storageKey] = account;
   registry.activeStorageKey = account.storageKey;
   writeOfflineAccountRegistry(registry);
+  if (currentOfflineAccount?.storageKey !== account.storageKey) invalidateAuth(false);
   currentOfflineAccount = account;
   return account;
 }
@@ -317,11 +338,13 @@ export function clearOfflineAccountSelection() {
 }
 
 export function clearAuthState(options: { clearOfflineAccount?: boolean } = {}) {
+  invalidateAuth();
   purgeLegacyAuthToken();
   currentSession = null;
   if (options.clearOfflineAccount ?? true) {
     clearOfflineAccountSelection();
   }
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('gym21-auth-changed'));
 }
 
 function getErrorStatus(error: unknown): number | undefined {
@@ -333,11 +356,13 @@ function getErrorStatus(error: unknown): number | undefined {
 }
 
 export async function restoreSessionState(): Promise<SessionRestoreState> {
+  const requestGeneration = authGeneration;
   purgeLegacyAuthToken();
 
   try {
     if (typeof localStorage !== 'undefined' && localStorage.getItem(PENDING_SIGN_OUT_KEY) === '1') {
       await authClient.signOut();
+      if (requestGeneration !== authGeneration) return { status: 'unavailable', error: new Error('Stale auth operation') };
       localStorage.removeItem(PENDING_SIGN_OUT_KEY);
       currentSession = null;
       return { status: 'unauthenticated' };
@@ -349,7 +374,9 @@ export async function restoreSessionState(): Promise<SessionRestoreState> {
       },
     });
 
+    if (requestGeneration !== authGeneration) return { status: 'unavailable', error: new Error('Stale auth operation') };
     if (!result.error && result.data?.session && result.data.user) {
+      if (currentSession?.user.id !== result.data.user.id) invalidateAuth(false);
       currentSession = result.data as unknown as AuthSession;
       return { status: 'authenticated', session: currentSession };
     }
@@ -363,7 +390,7 @@ export async function restoreSessionState(): Promise<SessionRestoreState> {
     currentSession = null;
     return { status: 'unavailable', error: result.error };
   } catch (error) {
-    currentSession = null;
+    if (requestGeneration === authGeneration) currentSession = null;
     return { status: 'unavailable', error };
   }
 }
@@ -392,15 +419,19 @@ export function openBrowserHandoff() {
 }
 
 export async function signInWithEmail(email: string, password: string): Promise<AuthSession> {
+  invalidateAuth();
+  const requestGeneration = authGeneration;
   const result = await authClient.signIn.email({
     email,
     password,
   });
 
+  if (requestGeneration !== authGeneration) throw new Error('Stale auth operation');
   if (result.error) {
     throw new Error(toErrorMessage(result.error.message, 'Не удалось войти'));
   }
 
+  invalidateAuth();
   const session = await restoreSession();
   if (!session) {
     throw new Error('Не удалось восстановить сессию');
@@ -410,26 +441,34 @@ export async function signInWithEmail(email: string, password: string): Promise<
 }
 
 export async function signOut(): Promise<void> {
+  invalidateAuth();
+  const requestGeneration = authGeneration;
   try {
     await authClient.signOut();
+    if (requestGeneration !== authGeneration) return;
     if (typeof localStorage !== 'undefined') {
       localStorage.removeItem(PENDING_SIGN_OUT_KEY);
     }
   } catch {
+    if (requestGeneration !== authGeneration) return;
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(PENDING_SIGN_OUT_KEY, '1');
     }
   } finally {
-    clearAuthState({ clearOfflineAccount: true });
+    if (requestGeneration === authGeneration) clearAuthState({ clearOfflineAccount: true });
   }
 }
 
 export async function signInWithPasskey(): Promise<AuthSession> {
+  invalidateAuth();
+  const requestGeneration = authGeneration;
   const result = await authClient.signIn.passkey();
+  if (requestGeneration !== authGeneration) throw new Error('Stale auth operation');
   if (result.error) {
     throw new Error(toErrorMessage(result.error.message, 'Не удалось войти по Passkey'));
   }
 
+  invalidateAuth();
   const session = await restoreSession();
   if (!session) {
     throw new Error('Не удалось восстановить сессию');
@@ -449,11 +488,14 @@ export async function addPasskey(name?: string): Promise<void> {
 }
 
 export async function signInWithTelegram(initData: string): Promise<AuthMutationResponse> {
+  invalidateAuth();
   const result = await requestJson<AuthMutationResponse>('/telegram/sign-in', {
     method: 'POST',
     body: JSON.stringify({ initData }),
   });
-  await restoreSession();
+  invalidateAuth();
+  const session = await restoreSession();
+  if (!session || session.user.id !== result.user.id) throw new Error('Stale auth operation');
   return result;
 }
 
@@ -462,7 +504,9 @@ export async function linkTelegramAccount(initData: string): Promise<AuthMutatio
     method: 'POST',
     body: JSON.stringify({ initData }),
   });
-  await restoreSession();
+  invalidateAuth();
+  const session = await restoreSession();
+  if (!session || session.user.id !== result.user.id) throw new Error('Stale auth operation');
   return result;
 }
 
@@ -476,7 +520,9 @@ export async function registerWithEmail(input: {
     method: 'POST',
     body: JSON.stringify(input),
   });
-  await restoreSession();
+  invalidateAuth();
+  const session = await restoreSession();
+  if (!session || session.user.id !== result.user.id) throw new Error('Stale auth operation');
   return result;
 }
 
@@ -490,7 +536,9 @@ export async function completeMigration(input: {
     method: 'POST',
     body: JSON.stringify(input),
   });
-  await restoreSession();
+  invalidateAuth();
+  const session = await restoreSession();
+  if (!session || session.user.id !== result.user.id) throw new Error('Stale auth operation');
   return result;
 }
 
@@ -508,16 +556,15 @@ export async function checkUsernameAvailability(username: string): Promise<boole
   return result.available;
 }
 
-export async function authorizedApiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+export async function authorizedApiFetch(path: string, init: RequestInit = {}, context = captureAccountContext()): Promise<Response> {
+  context.assertCurrent();
+  if (!context.storageKey || !hasVerifiedOnlineAccount(context.storageKey)) throw new Error('Unauthorized');
+  const headers = new Headers(init.headers);
+  headers.set('X-Expected-Storage-Key', context.storageKey);
   const response = await fetch(resolveApiUrl(path), {
-    ...init,
-    headers: new Headers(init.headers),
-    credentials: 'include',
+    ...init, headers, signal: init.signal ? AbortSignal.any([init.signal, context.signal]) : context.signal, credentials: 'include',
   });
-
-  if (response.status === 401) {
-    clearAuthState({ clearOfflineAccount: true });
-  }
-
+  context.assertCurrent();
+  if (response.status === 401 || response.status === 409) clearAuthState({ clearOfflineAccount: true });
   return response;
 }

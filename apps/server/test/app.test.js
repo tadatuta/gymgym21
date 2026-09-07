@@ -404,6 +404,7 @@ test('OPTIONS applies CORS headers to the sync route', async () => {
   assert.equal(response.status, 204);
   assert.equal(response.headers['access-control-allow-origin'], 'http://localhost:5173');
   assert.match(response.headers['access-control-allow-methods'], /POST/);
+  assert.match(response.headers['access-control-allow-headers'], /X-Expected-Storage-Key/i);
 });
 
 test('GET /api/auth/ok is routed to the auth handler', async () => {
@@ -466,8 +467,8 @@ test('GET /api/profiles/:identifier returns a public profile from the read model
 test('GET and PUT snapshot endpoints are removed from runtime', async () => {
   const { app } = createTestApp();
 
-  const getResponse = await request(app).get('/api/me/storage');
-  const putResponse = await request(app).put('/api/me/storage').send({});
+  const getResponse = await request(app).get('/api/me/storage').set('X-Expected-Storage-Key', 'test-user');
+  const putResponse = await request(app).put('/api/me/storage').set('X-Expected-Storage-Key', 'test-user').send({});
 
   assert.equal(getResponse.status, 404);
   assert.equal(putResponse.status, 404);
@@ -483,7 +484,7 @@ test('POST /api/me/storage/sync writes delta records and returns cursor metadata
   });
 
   const response = await request(app)
-    .post('/api/me/storage/sync')
+    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'sync-user')
     .send({
       cursor: 0,
       changes: {
@@ -518,7 +519,7 @@ test('POST /api/me/storage/sync returns authoritative entities on stale updates'
   });
 
   const initial = await request(app)
-    .post('/api/me/storage/sync')
+    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'conflict-user')
     .send({
       cursor: 0,
       changes: {
@@ -527,7 +528,7 @@ test('POST /api/me/storage/sync returns authoritative entities on stale updates'
     });
 
   const accepted = await request(app)
-    .post('/api/me/storage/sync')
+    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'conflict-user')
     .send({
       cursor: initial.body.cursor,
       changes: {
@@ -541,7 +542,7 @@ test('POST /api/me/storage/sync returns authoritative entities on stale updates'
     });
 
   const stale = await request(app)
-    .post('/api/me/storage/sync')
+    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'conflict-user')
     .send({
       cursor: initial.body.cursor,
       changes: {
@@ -571,7 +572,7 @@ test('POST /api/me/storage/sync propagates soft deletions incrementally', async 
   });
 
   const created = await request(app)
-    .post('/api/me/storage/sync')
+    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'deletion-user')
     .send({
       cursor: 0,
       changes: {
@@ -588,7 +589,7 @@ test('POST /api/me/storage/sync propagates soft deletions incrementally', async 
     });
 
   const deletion = await request(app)
-    .post('/api/me/storage/sync')
+    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'deletion-user')
     .send({
       cursor: created.body.cursor,
       changes: {
@@ -607,7 +608,7 @@ test('POST /api/me/storage/sync propagates soft deletions incrementally', async 
     });
 
   const bootstrap = await request(app)
-    .post('/api/me/storage/sync')
+    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'deletion-user')
     .send({
       cursor: 0,
       changes: {},
@@ -655,7 +656,7 @@ test('POST /api/me/ai/recommendations reads AI context from the repository', asy
   });
 
   const response = await request(app)
-    .post('/api/me/ai/recommendations')
+    .post('/api/me/ai/recommendations').set('X-Expected-Storage-Key', 'ai-user')
     .send({
       type: 'general',
     });
@@ -672,7 +673,7 @@ test('unauthorized requests to protected routes return 401', async () => {
     resolveRequestContext: async () => null,
   });
 
-  const response = await request(app).post('/api/me/storage/sync').send({ cursor: 0, changes: {} });
+  const response = await request(app).post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'test-user').send({ cursor: 0, changes: {} });
 
   assert.equal(response.status, 401);
 });
@@ -700,7 +701,7 @@ test('Telegram Mini App auth headers can still be transformed into a request con
   });
 
   const response = await request(app)
-    .post('/api/me/storage/sync')
+    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'mini-user')
     .set('x-telegram-init-data', initData)
     .send({ cursor: 0, changes: {} });
 

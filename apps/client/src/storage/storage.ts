@@ -11,7 +11,7 @@ import {
     WorkoutType,
 } from '../types';
 import { SyncService } from '../services/sync';
-import { activateAccountDatabase, db, getActiveStorageKey } from '../db';
+import { activateAccountDatabase, db, getActiveStorageKey, captureAccountContext, closeActiveDatabase } from '../db';
 import {
     authorizedApiFetch,
     clearAuthState,
@@ -92,6 +92,19 @@ export class StorageService {
     private cache: AppData = emptyData();
     private conflicts: SyncConflictRecord[] = [];
 
+    private readonly handleAuthChange = () => {
+        this.clearScheduledSync();
+        this.disconnectBroadcastChannel();
+        this.initialized = false;
+        this.activeStorageKey = null;
+        this.syncInFlight = false;
+        this.syncQueued = false;
+        this.cache = emptyData();
+        this.conflicts = [];
+        closeActiveDatabase();
+        this.onUnauthorizedCallback?.();
+    };
+
     private readonly handleOnline = () => {
         this.scheduleSync(0);
     };
@@ -107,6 +120,7 @@ export class StorageService {
         this.syncDebounceMs = options.syncDebounceMs ?? 1500;
         this.enableBroadcast = options.enableBroadcast ?? true;
         this.attachSyncTriggers();
+        if (typeof window !== 'undefined') window.addEventListener('gym21-auth-changed', this.handleAuthChange);
 
         if (options.autoInit) {
             console.warn('StorageService now requires activate(storageKey); autoInit is ignored.');
@@ -122,13 +136,19 @@ export class StorageService {
         this.clearScheduledSync();
         this.disconnectBroadcastChannel();
         await activateAccountDatabase(storageKey);
+        const context = captureAccountContext();
+        this.syncInFlight = false;
+        this.syncQueued = false;
         this.activeStorageKey = storageKey;
         this.initialized = true;
         this.connectBroadcastChannel(storageKey);
 
         await this.migrateFromLocalStorage(storageKey);
+        context.assertCurrent();
         await this.migrateLegacyAiResults(storageKey);
+        context.assertCurrent();
         await SyncService.bootstrapDirtyState();
+        context.assertCurrent();
         await this.reloadCache();
     }
 
@@ -144,6 +164,7 @@ export class StorageService {
         this.clearScheduledSync();
         this.disconnectBroadcastChannel();
         if (typeof window !== 'undefined') {
+            window.removeEventListener('gym21-auth-changed', this.handleAuthChange);
             window.removeEventListener('online', this.handleOnline);
             document.removeEventListener('visibilitychange', this.handleVisibilityChange);
         }
@@ -341,16 +362,21 @@ export class StorageService {
             return;
         }
 
+        const context = captureAccountContext();
         this.syncInFlight = true;
         let retryDelay = 0;
         try {
             const lockAcquired = await this.withSyncLock(async () => {
+                context.assertCurrent();
                 this.setStatus('saving');
                 const result = await SyncService.sync();
+                context.assertCurrent();
                 await this.reloadCache();
+                context.assertCurrent();
                 const seededDefaults = result.hasMore
                     ? false
                     : await this.ensureDefaultWorkoutTypesAfterBootstrap();
+                context.assertCurrent();
                 this.setStatus('success');
                 this.broadcastUpdate();
 
@@ -369,6 +395,7 @@ export class StorageService {
                 retryDelay = 250;
             }
         } catch (error: unknown) {
+            if (!context.isCurrent()) return;
             console.error('Sync failed', error);
             const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
             if (message.includes('unauthorized')) {
@@ -379,10 +406,12 @@ export class StorageService {
             }
             this.setStatus(error instanceof Error && error.message === 'Offline' ? 'idle' : 'error');
         } finally {
-            this.syncInFlight = false;
-            if (this.syncQueued) {
-                this.syncQueued = false;
-                this.scheduleSync(retryDelay);
+            if (context.isCurrent()) {
+                this.syncInFlight = false;
+                if (this.syncQueued) {
+                    this.syncQueued = false;
+                    this.scheduleSync(retryDelay);
+                }
             }
         }
     }
@@ -444,10 +473,12 @@ export class StorageService {
             return;
         }
 
+        const context = captureAccountContext();
         const [data, conflicts] = await Promise.all([
             SyncService.readAll(),
             db.syncConflicts.orderBy('createdAt').reverse().toArray(),
         ]);
+        if (!context.isCurrent()) return;
         this.cache = data;
         this.conflicts = conflicts;
         this.onUpdateCallback?.();
@@ -845,13 +876,17 @@ export class StorageService {
 
     async getPublicProfile(identifier: string): Promise<PublicProfileWithCacheMetadata | null> {
         this.assertActive();
+        const context = captureAccountContext();
+        const db = context.database;
         const normalizedIdentifier = identifier.trim().replace(/^@/, '').toLowerCase();
         if (!normalizedIdentifier) return null;
 
         try {
-            const response = await fetch(resolveApiUrl(`/profiles/${encodeURIComponent(identifier)}`));
+            const response = await fetch(resolveApiUrl(`/profiles/${encodeURIComponent(identifier)}`), { signal: context.signal });
+            context.assertCurrent();
             if (response.ok) {
                 const payload = await response.json() as PublicProfileData;
+                context.assertCurrent();
                 const cachedAt = new Date().toISOString();
                 await db.publicProfileCache.put({
                     identifier: normalizedIdentifier,
@@ -872,7 +907,9 @@ export class StorageService {
             // Fall through to the account-scoped IndexedDB cache.
         }
 
+        context.assertCurrent();
         const cached = await db.publicProfileCache.get(normalizedIdentifier);
+        context.assertCurrent();
         return cached
             ? {
                 ...cached.payload,
@@ -894,6 +931,8 @@ export class StorageService {
         type: 'general' | 'plan',
         options?: { period?: 'day' | 'week'; allowNewExercises?: boolean },
     ): Promise<string> {
+        const context = captureAccountContext();
+        const db = context.database;
         if (!hasVerifiedOnlineAccount(this.activeStorageKey)) {
             throw new Error('Новая рекомендация требует подключения к интернету');
         }
@@ -902,16 +941,17 @@ export class StorageService {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ type, options }),
-        });
+        }, context);
+        context.assertCurrent();
         if (!response.ok) {
             if (response.status === 401) {
-                clearAuthState();
                 throw new Error('Unauthorized');
             }
             throw new Error('AI Generation Failed');
         }
 
         const data = await response.json();
+        context.assertCurrent();
         if (data?.format !== 'markdown' || typeof data?.recommendation !== 'string') {
             throw new Error('Invalid AI response');
         }
@@ -921,6 +961,7 @@ export class StorageService {
             markdown: data.recommendation,
             updatedAt: new Date().toISOString(),
         });
+        context.assertCurrent();
         this.broadcastUpdate();
         return data.recommendation;
     }
