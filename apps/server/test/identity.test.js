@@ -76,7 +76,7 @@ test('PostgreSQL: HTTP sync and concurrent alias writers preserve identity owner
       const bindingBefore = await pool.query("SELECT xmin::text FROM user_storage_binding WHERE user_id = 'victim-user'");
       assert.equal(await AuthMetaService.ensureStorageBinding('victim-user', () => 'changed-storage'), 'victim-user');
       assert.deepEqual((await pool.query("SELECT xmin::text FROM user_storage_binding WHERE user_id = 'victim-user'")).rows, bindingBefore.rows);
-      await assert.rejects(AuthMetaService.tryClaimAlias('missing-user', 'unexpected', 'telegram_username'), /foreign key/);
+      await assert.rejects(withIdentityTransaction(client => upsertAliasTx(client, 'missing-user', 'unexpected', 'telegram_username')), /foreign key/);
     });
     await t.test('cookie identity comes from linked account even when Telegram username equals canonical', async () => {
       await pool.query("INSERT INTO account (id, account_id, provider_id, user_id, telegram_username) VALUES ('telegram-victim', '999', 'telegram', 'victim-user', 'victim')");

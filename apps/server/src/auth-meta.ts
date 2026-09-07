@@ -2,7 +2,7 @@ import { Pool, type PoolClient } from 'pg';
 import { ensureDatabaseReady } from './database.js';
 import { config } from './config.js';
 
-import { normalizeIdentifier, claimUserAliasTx, AliasOwnershipError, setCanonicalAliasTx, upsertStorageBindingTx, ensureStorageBindingTx, type AliasType } from './auth-identity.js';
+import { normalizeIdentifier, claimUserAliasTx, setCanonicalAliasTx, ensureStorageBindingTx, type AliasType } from './auth-identity.js';
 export { normalizeIdentifier, normalizeUsername, isValidUsername, claimUserAliasTx, type AliasType } from './auth-identity.js';
 
 export interface AliasRecord {
@@ -176,11 +176,6 @@ export class AuthMetaService {
         return result.rows[0]?.storage_key ?? null;
     }
 
-    static async upsertStorageBinding(userId: string, storageKey: string): Promise<string> {
-        await withIdentityTransaction(client => upsertStorageBindingTx(client, userId, storageKey));
-        return storageKey;
-    }
-
     static async ensureStorageBinding(userId: string, storageKeyFactory?: () => string): Promise<string> {
         return withIdentityTransaction(client => ensureStorageBindingTx(client, userId, storageKeyFactory ? storageKeyFactory() : `u_${userId}`));
     }
@@ -223,22 +218,7 @@ export class AuthMetaService {
         await withIdentityTransaction(client => claimUserAliasTx(client, userId, alias, type));
     }
 
-    static async tryClaimAlias(userId: string, alias: string, type: AliasType): Promise<boolean> {
-        try {
-            await this.claimAlias(userId, alias, type);
-            return true;
-        } catch (error) {
-            if (!(error instanceof AliasOwnershipError)) throw error;
-            return false;
-        }
-    }
-
     static async setCanonicalAlias(userId: string, username: string): Promise<void> {
         await withIdentityTransaction(client => setCanonicalAliasTx(client, userId, username));
-    }
-
-    static async resolveStorageKeyByIdentifier(identifier: string): Promise<string | null> {
-        const alias = await this.getAlias(identifier);
-        return alias?.storageKey ?? null;
     }
 }

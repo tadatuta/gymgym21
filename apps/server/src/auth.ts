@@ -106,11 +106,6 @@ function parseTelegramUserOrThrow(initData: string): TelegramUser {
   return user;
 }
 
-async function assertNoStorageConflictForTelegramLink(userId: string, telegramUserId: number) {
-  void userId;
-  void telegramUserId;
-}
-
 export async function upsertAliasTx(client: PoolClient, userId: string, alias: string, type: 'canonical' | 'telegram_username' | 'telegram_id') {
   const normalizedAlias = alias.trim().replace(/^@/, '').toLowerCase();
   if (!normalizedAlias) return;
@@ -457,8 +452,6 @@ function telegramPlugin() {
         await ensureAuthDatabaseSchema();
         const telegramUser = parseTelegramUserOrThrow(ctx.body.initData);
         const sessionUser = ctx.context.session.user as AuthUserRecord;
-
-        await assertNoStorageConflictForTelegramLink(sessionUser.id, telegramUser.id);
 
         let telegramState: { user: AuthUserRecord; storageKey: string };
         const client = await connectIdentityClient();

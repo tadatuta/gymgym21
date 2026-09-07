@@ -54,18 +54,6 @@ export function getOneRepMaxByDate(logs: WorkoutSet[], workoutTypeId: string, ti
 }
 
 /**
- * Get distinct days where a workout occurred (for Heatmap).
- */
-export function getWorkoutDates(sessions: WorkoutSession[], logs: WorkoutSet[], timeZone = 'UTC'): Set<string> {
-    const dates = new Set<string>();
-
-    sessions.forEach(s => dates.add(dayKey(s.startTime, timeZone)));
-    logs.forEach(l => dates.add(dayKey(l.date, timeZone)));
-
-    return dates;
-}
-
-/**
  * Calculates statistics for workout duration.
  */
 export function getDurationStats(sessions: WorkoutSession[], logs: WorkoutSet[] = []) {
