@@ -1147,6 +1147,40 @@ export interface StorageRepository {
   getPublicProfileByStorageKey(storageKey: string | number, fallbackIdentifier?: string): Promise<PublicProfileData | null>;
 }
 
+/** Caller owns the transaction. Never reset cursors or delete retry receipts. */
+export async function replaceSnapshotTx(client: PoolClient, storageKeyInput: string | number, data: StorageData): Promise<number> {
+  const storageKey = sanitizeStorageKey(storageKeyInput);
+  const prepared = prepareImportedSnapshot(data);
+  let revision = await ensureStorageRoot(client, storageKey);
+  const now = new Date().toISOString();
+  const write = async <T extends { id: string; isDeleted?: boolean }>(
+    incoming: T[], existing: T[], upsert: (client: PoolClient, key: string, item: T) => Promise<void>,
+  ) => {
+    const ids = new Set(incoming.map((item) => item.id));
+    const missing = existing.filter((item) => !item.isDeleted && !ids.has(item.id))
+      .map((item) => ({ ...item, isDeleted: true }));
+    for (const item of [...incoming, ...missing]) {
+      revision += 1;
+      if (!Number.isSafeInteger(revision)) throw new Error('Storage revision exhausted');
+      await upsert(client, storageKey, { ...item, version: revision, updatedAt: now, serverUpdatedAt: now });
+    }
+  };
+  const types = await client.query<StorageWorkoutTypeRow>('SELECT * FROM storage_workout_types WHERE storage_key = $1', [storageKey]);
+  const workouts = await client.query<StorageWorkoutRow>('SELECT * FROM storage_workouts WHERE storage_key = $1', [storageKey]);
+  const logs = await client.query<StorageLogRow>('SELECT * FROM storage_logs WHERE storage_key = $1', [storageKey]);
+  const profile = await readExistingProfile(client, storageKey);
+  await write(prepared.workoutTypes.map((entry) => entry.item), types.rows.map(mapWorkoutTypeRow), upsertWorkoutType);
+  await write(prepared.workouts.map((entry) => entry.item), workouts.rows.map(mapWorkoutRow), upsertWorkout);
+  await write(prepared.logs.map((entry) => entry.item), logs.rows.map(mapLogRow), upsertLog);
+  // The profile is a singleton even when a legacy file used a different ID.
+  const nextProfile = prepared.profile?.item;
+  await write(nextProfile ? [nextProfile] : [], profile && !nextProfile ? [profile] : [], upsertProfile);
+  await updateStorageRootRevision(client, storageKey, revision);
+  await refreshPublicAliases(client, storageKey, nextProfile);
+  await invalidatePublicProfileCache(client, storageKey);
+  return revision;
+}
+
 class PostgresStorageRepository implements StorageRepository {
   async readSnapshot(storageKeyInput: string | number): Promise<StorageData> {
     await ensureDatabaseReady();
@@ -1182,37 +1216,13 @@ class PostgresStorageRepository implements StorageRepository {
   async replaceSnapshot(storageKeyInput: string | number, data: StorageData): Promise<void> {
     await ensureDatabaseReady();
     const storageKey = sanitizeStorageKey(storageKeyInput);
-    const prepared = prepareImportedSnapshot(data);
+    // Validate before opening a transaction; replacement shares the same primitive as CLI plans.
+    prepareImportedSnapshot(data);
+    await ensureAuthDatabaseSchema();
     const client = await getDatabasePool().connect();
-
     try {
       await client.query('BEGIN');
-      await ensureStorageRoot(client, storageKey);
-
-      await client.query('DELETE FROM storage_profiles WHERE storage_key = $1', [storageKey]);
-      await client.query('DELETE FROM storage_workout_types WHERE storage_key = $1', [storageKey]);
-      await client.query('DELETE FROM storage_workouts WHERE storage_key = $1', [storageKey]);
-      await client.query('DELETE FROM storage_logs WHERE storage_key = $1', [storageKey]);
-
-      if (prepared.profile) {
-        await upsertProfile(client, storageKey, prepared.profile.item);
-      }
-
-      for (const entry of prepared.workoutTypes) {
-        await upsertWorkoutType(client, storageKey, entry.item);
-      }
-
-      for (const entry of prepared.workouts) {
-        await upsertWorkout(client, storageKey, entry.item);
-      }
-
-      for (const entry of prepared.logs) {
-        await upsertLog(client, storageKey, entry.item);
-      }
-
-      await updateStorageRootRevision(client, storageKey, prepared.revision);
-      await refreshPublicAliases(client, storageKey, prepared.profile?.item);
-      await invalidatePublicProfileCache(client, storageKey);
+      await replaceSnapshotTx(client, storageKey, data);
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
