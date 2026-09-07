@@ -1,25 +1,8 @@
-import { disposeLogin } from './components/auth/Login';
-import * as trainingTime from './utils/training-time';
-import { formatDuration } from './utils/duration';
-import { getDurationStats } from './utils/statistics';
-import { getTrainingActivity } from './utils/training-activity';
-import { getLatestLog } from './utils/latest-log';
-import source from './main.ts?raw';
-import ts from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import * as safeHtml from './utils/safe-html';
-import * as typeahead from './components/typeahead/Typeahead';
-import { FormDrafts } from './utils/form-drafts';
-import { renderProfileStats } from './components/profile/ProfileStats';
+import { createApplication } from './ui/application';
+import type { UiDependencies } from './ui/dependencies';
+import * as trainingTime from './utils/training-time';
 
-// Execute production renderers, bindings and onUpdate without booting auth/SW (S01 removes this seam).
-const ast = ts.createSourceFile('main.ts', source, ts.ScriptTarget.Latest, true);
-const declarations = ast.statements.filter(node => ts.isFunctionDeclaration(node)
-    || ts.isVariableStatement(node) && !!(node.declarationList.flags & ts.NodeFlags.Let)
-    || ts.isExpressionStatement(node) && node.getText(ast).startsWith('storage.onUpdate('));
-const compiled = ts.transpileModule(declarations.map(node => node.getText(ast)).join('\n'), {
-    compilerOptions: { target: ts.ScriptTarget.ESNext },
-}).outputText;
 const input = (selector: string, value: string) => {
     const field = document.querySelector<HTMLInputElement>(selector)!;
     field.value = value;
@@ -33,7 +16,7 @@ const submit = async (selector: string) => {
 };
 const cleanups: Array<() => void> = [];
 afterEach(() => { cleanups.splice(0).forEach(fn => fn()); document.body.innerHTML = ''; vi.restoreAllMocks(); });
-function setup(page = 'main', manyTypes = false) {
+function setup(page: 'main' | 'stats' | 'settings' | 'profile-settings' = 'main', manyTypes = false) {
     document.body.innerHTML = '<div id="app"></div>';
     vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
     let account = 'A';
@@ -47,7 +30,8 @@ function setup(page = 'main', manyTypes = false) {
         getWorkoutTypes: () => types, getLogs: () => logs, getWorkouts: () => workouts,
         getActiveWorkout: () => active ? { ...workouts[0], status: 'active' } : null, getWorkoutDuration: () => 0, getProfile: () => profile, getProfileIdentifier: () => '',
         getTimeZone: () => 'UTC', getConflicts: () => [], getStorageKey: () => account,
-        onUpdate: (fn: () => void) => { refresh = fn; },
+        onUpdate: (fn: () => void) => { refresh = fn; return () => { refresh = () => {}; }; },
+        onSyncStatusChange: () => () => {}, onUnauthorized: () => () => {},
         addLog: vi.fn(async (data) => { logs.push({ ...logs[0], ...data, id: 'l2' }); refresh(); return logs.at(-1)!; }),
         updateLog: vi.fn(async (data) => { Object.assign(logs[0], data); refresh(); }),
         addWorkoutType: vi.fn(async (name, category) => { types.push({ id: 'new', name, category }); refresh(); }),
@@ -57,22 +41,16 @@ function setup(page = 'main', manyTypes = false) {
         finishWorkout: vi.fn(async () => { active = false; refresh(); }),
         updateProfileSettings: vi.fn(async (data) => { Object.assign(profile, data); refresh(); }),
     };
-    const context = {
-        ...trainingTime, formatDuration, getDurationStats, getTrainingActivity, getLatestLog, ...safeHtml, ...typeahead, FormDrafts, storage, renderProfileStats,
+    const ui = createApplication({
+        storage,
         captureAccountContext: () => ({ storageKey: account }),
-        createInternalRoute: (name: string) => ({ name }), getCurrentUser: () => ({ name: 'User' }),
-        hasVerifiedOnlineAccount: () => true, canUsePasskeyInCurrentContext: () => false,
-        renderDurationChart: () => '', renderHeatmap: () => '', replaceMarkdownContent: () => {},
-        disposeLogin,
-        Sortable: { create: () => {} }, getProfileLink: () => '', TELEGRAM_BOT_NAME: 'test',
-    };
-    const ui = new Function(...Object.keys(context), `${compiled}; return {
-      route(name) { currentRoute = {name}; render(); },
-      tab(name) { currentProfileTab = name; updateProfileTabContent(); },
-      dispose() { formDrafts?.dispose(); clearInterval(workoutTimerInterval); clearTimeout(toastTimeout); }
-    };`)(...Object.values(context));
+        getCurrentUser: () => ({ name: 'User' }),
+        hasVerifiedOnlineAccount: () => true,
+        canUsePasskeyInCurrentContext: () => false,
+    } as unknown as Partial<UiDependencies>);
+    void ui.mount({ bootstrap: false });
     cleanups.push(() => ui.dispose());
-    ui.route(page);
+    ui.navigate({ name: page });
     return { storage, logs, profile, types, ui, refresh: () => refresh(), account: (value: string) => { account = value; refresh(); } };
 }
 
@@ -82,10 +60,10 @@ describe('production UI drafts across storage updates', () => {
         app.logs.splice(0, app.logs.length,
             { id: 'a', workoutTypeId: 'missing', workoutId: '', weight: 10, reps: 2, date: '2026-01-01T23:30:00-03:00' },
             { id: 'b', workoutTypeId: 't0', workoutId: '', weight: 10, reps: 2, date: '2026-01-02T02:30:00Z' });
-        app.ui.tab('public');
+        app.ui.pages.profile.selectTab('public');
         expect(document.querySelector('.stat-label')?.textContent).toBe('Тренировочных дней');
         expect(document.querySelector('.stat-value')?.textContent).toBe('1');
-        app.ui.route('stats');
+        app.ui.navigate({ name: 'stats' });
         expect(document.querySelector('.stat-metric__label')?.textContent).toBe('Тренировочных дней');
         expect(document.querySelector('.stat-metric__value')?.textContent).toBe('1');
     });
@@ -96,10 +74,10 @@ describe('production UI drafts across storage updates', () => {
         app.logs.splice(0, app.logs.length,
             { id: 'a', workoutTypeId: 'missing', workoutId: '', weight: 10, reps: 2, date: '2026-01-01T21:30:00Z' },
             { id: 'b', workoutTypeId: 't0', workoutId: '', weight: 10, reps: 2, date: '2026-01-02T01:00:00Z' });
-        app.ui.tab('public');
+        app.ui.pages.profile.selectTab('public');
         expect(document.querySelector('.stat-value')?.textContent).toBe('1');
         expect(document.body.textContent).toContain(trainingTime.dayLabel('2026-01-02'));
-        app.ui.route('stats');
+        app.ui.navigate({ name: 'stats' });
         expect(document.querySelector('.stat-metric__value')?.textContent).toBe('1');
     });
 
@@ -166,21 +144,21 @@ describe('production UI drafts across storage updates', () => {
         const period = document.querySelector<HTMLSelectElement>('#ai-plan-period')!;
         period.selectedIndex = 1; period.dispatchEvent(new Event('change', { bubbles: true }));
         const selected = period.value;
-        app.ui.tab('public');
+        app.ui.pages.profile.selectTab('public');
         input('#profile-display-name', 'Draft name'); click('#profile-public-toggle');
         app.refresh();
         expect(document.querySelector<HTMLInputElement>('#profile-display-name')!.value).toBe('Draft name');
         expect(document.querySelector<HTMLInputElement>('#profile-public-toggle')!.checked).toBe(true);
-        app.ui.tab('ai'); input('#profile-additional-info', 'My notes'); input('#profile-gender', 'female'); app.refresh();
+        app.ui.pages.profile.selectTab('ai'); input('#profile-additional-info', 'My notes'); input('#profile-gender', 'female'); app.refresh();
         expect(document.querySelector<HTMLTextAreaElement>('#profile-additional-info')!.value).toBe('My notes');
         expect(document.querySelector<HTMLSelectElement>('#profile-gender')!.value).toBe('female');
-        app.ui.tab('data'); input('#import-mode', 'replace'); app.refresh();
+        app.ui.pages.profile.selectTab('data'); input('#import-mode', 'replace'); app.refresh();
         expect(document.querySelector<HTMLSelectElement>('#import-mode')!.value).toBe('replace');
-        app.ui.tab('ai'); expect(document.querySelector<HTMLSelectElement>('#ai-plan-period')!.value).toBe(selected);
-        app.ui.tab('public'); click('#save-profile-btn'); await new Promise(resolve => setTimeout(resolve, 0));
+        app.ui.pages.profile.selectTab('ai'); expect(document.querySelector<HTMLSelectElement>('#ai-plan-period')!.value).toBe(selected);
+        app.ui.pages.profile.selectTab('public'); click('#save-profile-btn'); await new Promise(resolve => setTimeout(resolve, 0));
         app.profile.displayName = 'Remote'; app.refresh();
         expect(document.querySelector<HTMLInputElement>('#profile-display-name')!.value).toBe('Remote');
-        app.ui.tab('ai'); expect(document.querySelector<HTMLTextAreaElement>('#profile-additional-info')!.value).toBe('My notes');
+        app.ui.pages.profile.selectTab('ai'); expect(document.querySelector<HTMLTextAreaElement>('#profile-additional-info')!.value).toBe('My notes');
         click('#save-profile-btn'); await new Promise(resolve => setTimeout(resolve, 0));
         expect(document.querySelector<HTMLSelectElement>('#ai-plan-period')!.value).toBe(selected);
         app.profile.additionalInfo = 'Remote notes'; app.refresh();
@@ -192,9 +170,9 @@ describe('production UI drafts across storage updates', () => {
         pristine.focus(); app.refresh();
         expect(document.activeElement).toBe(document.querySelector('#new-type-name'));
         input('#new-type-name', 'Pending type');
-        app.ui.route('main'); input('[name=weight]', '33');
-        app.ui.route('settings'); expect(document.querySelector<HTMLInputElement>('#new-type-name')!.value).toBe('Pending type');
-        app.ui.route('main'); expect(document.querySelector<HTMLInputElement>('[name=weight]')!.value).toBe('33');
+        app.ui.navigate({ name: 'main' }); input('[name=weight]', '33');
+        app.ui.navigate({ name: 'settings' }); expect(document.querySelector<HTMLInputElement>('#new-type-name')!.value).toBe('Pending type');
+        app.ui.navigate({ name: 'main' }); expect(document.querySelector<HTMLInputElement>('[name=weight]')!.value).toBe('33');
     });
     it('clears successful log and workout edit drafts before reopening the same entity', async () => {
         const app = setup();

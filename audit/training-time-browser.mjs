@@ -1,21 +1,11 @@
 // Synthetic A15 Chromium/IndexedDB + production DOM handler. Never loads user env, cookies or data.
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'vite';
-import ts from 'typescript';
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : 'playwright');
-const text = await readFile('apps/client/src/main.ts', 'utf8');
-const ast = ts.createSourceFile('main.ts', text, ts.ScriptTarget.Latest, true);
-let callback;
-const visit = node => {
-  if (ts.isCallExpression(node) && node.expression.getText(ast) === 'form?.addEventListener' && node.arguments[0]?.getText(ast) === "'submit'") callback = node.arguments[1];
-  ts.forEachChild(node, visit);
-}; visit(ast);
-const renderer = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'generateLogsListHtml');
-const compiled = ts.transpileModule(`const handler = ${callback.getText(ast)};\n${renderer.getText(ast)}`, { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText;
 const envDir = await mkdtemp(join(tmpdir(), 'gym21-a15-env-'));
 const server = await createServer({ root: resolve('apps/client'), configFile: false, envDir,
   server: { host: '127.0.0.1', port: 0, hmr: false },
@@ -29,11 +19,11 @@ try {
   const page = await browser.newPage({ timezoneId: 'America/Los_Angeles' });
   await page.route('**/api/**', route => route.abort());
   await page.goto(`${server.resolvedUrls.local[0]}a15-test`);
-  const result = await page.evaluate(async compiled => {
+  const result = await page.evaluate(async () => {
     const { StorageService } = await import('/src/storage/storage.ts');
     const database = await import('/src/db.ts');
     const time = await import('/src/utils/training-time.ts');
-    const safe = await import('/src/utils/safe-html.ts');
+    const { createApplication } = await import('/src/ui/application.ts');
     const { formatDuration } = await import('/src/utils/duration.ts');
     const { getDurationStats } = await import('/src/utils/statistics.ts');
     const { renderDurationChart } = await import('/src/components/stats/Charts.ts');
@@ -49,15 +39,16 @@ try {
     await storage.reloadCache();
     document.body.innerHTML = '<form><input name="typeId" value="time"><input name="duration_seconds" value="0"><input name="date" value="2026-01-03T00:30"><input name="weight" value="20"><input name="reps" value="5"></form>';
     const form = document.querySelector('form');
-    const context = { ...time, ...safe, formatDuration, form, storage, formDrafts: null, editingLogId: 'old', editingWorkoutId: null, lastAddedLogId: null, showToast: message => { throw new Error(message); }, render: () => {} };
-    const { handler, generateLogsListHtml } = new Function(...Object.keys(context), `${compiled}; return { handler, generateLogsListHtml };`)(...Object.values(context));
+    const ui = createApplication({ storage, getCurrentUser: () => ({ id: 'synthetic', name: 'Synthetic' }), hasVerifiedOnlineAccount: () => false, canUsePasskeyInCurrentContext: () => false });
+    ui.state.editingLogId = 'old';
+    const { generateLogsListHtml, submitLog } = ui.pages.workout;
     const card = generateLogsListHtml(storage.getLogs(), storage.getWorkoutTypes(), true);
     const duration = formatDuration(storage.getWorkoutDuration(sessions[0]) * 60);
     if (!card.includes(duration) || !renderDurationChart(sessions, storage.getLogs()).includes(duration) || getDurationStats(sessions, storage.getLogs()).averageSeconds !== 30) throw new Error('Duration mismatch');
     const publicHtml = generateLogsListHtml([storage.getLogs().find(l => l.id === 'old')], [], false, 'Europe/Moscow');
     if (!publicHtml.includes(time.dayLabel('2026-01-02'))) throw new Error('Viewer zone leaked');
     let pending;
-    form.addEventListener('submit', e => { pending = handler(e); });
+    form.addEventListener('submit', e => { pending = submitLog(form, e); });
     const submit = async () => { form.dispatchEvent(new Event('submit', { cancelable: true })); await pending; };
     await submit();
     const cleared = await activeDb.logs.get('old');
@@ -70,9 +61,37 @@ try {
     const timed = await activeDb.logs.get('old');
     if (timed.weight !== undefined || timed.reps !== undefined) throw new Error('Time switch failed');
     const outbox = (await activeDb.dirtyEntities.toArray()).map(x => x.key).sort();
+    document.body.innerHTML = '<div id="app"></div>';
+    ui.state.editingLogId = null;
+    await ui.mount({ bootstrap: false });
+    ui.navigate({ name: 'main' });
+    const exercise = document.querySelector('[name=typeId]');
+    exercise.value = 'strength'; exercise.dispatchEvent(new Event('change', { bubbles: true }));
+    const weight = document.querySelector('[name=weight]');
+    weight.value = '43'; weight.dispatchEvent(new Event('input', { bubbles: true }));
+    const reps = document.querySelector('[name=reps]');
+    reps.value = '7'; reps.dispatchEvent(new Event('input', { bubbles: true }));
+    await storage.updateProfileSettings({ displayName: 'Background update' });
+    if (document.querySelector('[name=weight]').value !== '43' || document.querySelector('[name=reps]').value !== '7') throw new Error('Main draft lost');
+    ui.navigate({ name: 'settings' });
+    const name = document.querySelector('#new-type-name');
+    name.value = 'Draft exercise'; name.dispatchEvent(new Event('input', { bubbles: true }));
+    name.focus(); name.setSelectionRange(2, 5);
+    await storage.updateProfileSettings({ displayName: 'Another update' });
+    const restored = document.querySelector('#new-type-name');
+    if (restored.value !== 'Draft exercise' || document.activeElement !== restored || restored.selectionStart !== 2 || restored.selectionEnd !== 5) throw new Error('Settings draft/focus lost');
+    ui.navigate({ name: 'profile-settings' });
+    const info = document.querySelector('#profile-additional-info');
+    info.value = 'Unsaved profile'; info.dispatchEvent(new Event('input', { bubbles: true }));
+    await storage.updateProfileSettings({ displayName: 'Profile background update' });
+    if (document.querySelector('#profile-additional-info').value !== 'Unsaved profile') throw new Error('Profile draft lost');
+    const staleTab = document.querySelector('[data-tab=public]');
+    ui.dispose();
+    staleTab.click();
+    if (document.querySelector('#app').childElementCount !== 0) throw new Error('Disposed UI remounted');
     storage.dispose();
     return { duration, viewerZone: Intl.DateTimeFormat().resolvedOptions().timeZone, ownerZone: storage.getTimeZone(), outbox };
-  }, compiled);
+  });
   assert.deepEqual(result.outbox, ['logs:old', 'workouts:new', 'workouts:old']);
-  console.log(JSON.stringify({ browser: 'Chromium', ...result, secondsClear: true, categorySwitch: true, implicitMove: true }));
+  console.log(JSON.stringify({ browser: 'Chromium', ...result, secondsClear: true, categorySwitch: true, implicitMove: true, mainSettingsProfileDrafts: true, disposedControls: true }));
 } finally { await browser?.close(); await server.close(); await rm(envDir, { recursive: true, force: true }); }

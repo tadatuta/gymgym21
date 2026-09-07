@@ -308,14 +308,23 @@ export class StorageService {
 
     onUpdate(callback: () => void) {
         this.onUpdateCallback = callback;
+        return () => {
+            if (this.onUpdateCallback === callback) this.onUpdateCallback = undefined;
+        };
     }
 
     onSyncStatusChange(callback: (status: SyncStatus) => void) {
         this.onSyncStatusChangeCallback = callback;
+        return () => {
+            if (this.onSyncStatusChangeCallback === callback) this.onSyncStatusChangeCallback = undefined;
+        };
     }
 
     onUnauthorized(callback: () => void) {
         this.onUnauthorizedCallback = callback;
+        return () => {
+            if (this.onUnauthorizedCallback === callback) this.onUnauthorizedCallback = undefined;
+        };
     }
 
     private setStatus(status: SyncStatus) {
