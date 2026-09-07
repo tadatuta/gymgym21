@@ -13,22 +13,40 @@
 
 Требования:
 
-- Node.js 22 LTS
+- Node.js 22.23.2 LTS (`nvm install && nvm use`, версия закреплена в `.nvmrc`)
 - npm 10+
 - Docker Desktop или совместимый `docker compose`
 
 Установка зависимостей:
 
 ```bash
+nvm install
+nvm use
 npm install
 ```
 
-Запуск по отдельности:
+Создайте корневой `.env` по `.env.example`, задайте `DATABASE_URL` для локальной
+PostgreSQL и `BETTER_AUTH_SECRET`. База должна быть запущена до старта сервера.
+Dev-команда автоматически читает только `<корень проекта>/.env`; файл
+`apps/server/.env` не используется. Уже экспортированные переменные окружения
+имеют приоритет над файлом. Если все настройки экспортированы, `.env` не нужен.
+
+Из корня можно запустить оба процесса командой `npm run dev` или по отдельности:
 
 ```bash
 npm run dev:server
 npm run dev:client
 ```
+
+Та же серверная команда доступна из workspace: `cd apps/server && npm run dev`
+(или из корня `npm run dev --workspace @gym21/server`). Во всех трёх случаях
+путь к `.env` один и тот же. После изменения `.env` перезапустите команду.
+Сервер использует `tsx watch`: запускается с чистым/отсутствующим `dist` и
+перезапускается при изменениях импортированных исходников. Ошибки преобразования
+TypeScript и запуска остаются в терминале; watcher ждёт исправления. `Ctrl+C`
+останавливает watcher и сервер. Проверка типов выполняется отдельно через
+`npm run typecheck`; production по-прежнему использует `tsc` и `node dist/server.js`.
+Production `start` ожидает окружение от оболочки/контейнера и сам `.env` не читает.
 
 В dev-режиме клиент использует Vite proxy и ходит в backend через относительные `/api`-пути.
 
@@ -165,3 +183,8 @@ IndexedDB. API подменён; проверка rate limiter и PostgreSQL в�
 `PLAYWRIGHT_MODULE_PATH` и `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, что указаны выше.
 Она проверяет настоящий IndexedDB и обработчик формы в изолированном Chromium,
 при разных зонах владельца и браузера, без `.env` и пользовательских данных.
+
+Проверка dev lifecycle: `GYM21_TEST_DATABASE_URL=<disposable-postgres-url> node audit/dev-runtime.mjs`
+на Node 22.23.2. Создаёт временную копию исходников и отдельную PostgreSQL-схему,
+проверяет root/workspace startup, env precedence, restart/error recovery и Ctrl+C
+без оставшихся дочерних процессов; удаляет временную копию и схему.

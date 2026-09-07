@@ -7,7 +7,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "start": "node dist/server.js",
-    "dev": "node --watch src/server.ts",
+    "dev": "tsx watch --clear-screen=false --env-file-if-exists=../../.env src/server.ts",
     "test": "npm run build && node --test test/*.test.js",
     "import:storage-json": "node scripts/import-storage-json.mjs"
   },
@@ -16,10 +16,11 @@
   "license": "ISC",
   "devDependencies": {
     "@types/express": "^5.0.6",
-    "@types/node": "^25.0.9",
+    "@types/node": "^22.20.1",
     "@types/pg": "^8.20.0",
     "rimraf": "^6.1.2",
     "supertest": "^7.2.2",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.3"
   },
   "dependencies": {
