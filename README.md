@@ -74,7 +74,7 @@ npm run build
 
 ## Docker Deploy
 
-1. Создать `.env` на основе `.env.example`.
+1. Создать `.env` на основе `.env.example`. Заполнить `POSTGRES_PASSWORD` и `BETTER_AUTH_SECRET` разными случайными секретами (не менее 32 символов; например, каждый отдельно через `openssl rand -hex 32`). Пустые значения блокируют Compose, короткие/старые значения блокируют запуск API. Для существующего volume изменение `.env` не меняет пароль роли PostgreSQL: сначала согласованно обновите пароль существующей роли, затем конфигурацию; volume не удаляйте.
 2. При необходимости AI положить Google credentials в `./secrets/google-application-credentials.json`.
 3. Поднять стек:
 
@@ -88,6 +88,18 @@ npm run docker:up
 - `client` — статический SPA container
 - `server` — Express API и auth
 - `postgres` — единственное runtime-хранилище данных
+
+Compose фиксирует API на `0.0.0.0:8788`, как в upstream Nginx. `PORT` и `HOST` из `.env` применяются только при нативном запуске; внешний порт меняется через `APP_PORT`. Compose строит `DATABASE_URL` из тех же `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, что использует PostgreSQL, с URL-encoding; отдельный `DATABASE_URL` применяется только при нативном запуске (там укажите `localhost` и порт БД).
+
+PostgreSQL в базовом стеке доступен только внутри Docker. Ранее локальная правка публиковала `5432:5432`; для сохранения доступа локальных инструментов теперь явно подключайте dev override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+Он публикует только `127.0.0.1:${POSTGRES_HOST_PORT:-5432}`; при занятом порте задайте `POSTGRES_HOST_PORT=5433`. Для production используйте базовый файл без override. Все `RATE_LIMIT_*`, `AI_*` и настройки Telegram из примера передаются API явно.
+
+Проверка конфигурации без запуска контейнеров и чтения рабочей `.env`: `node audit/compose-config.mjs` (нужен Docker Compose; используются временные синтетические env-файлы).
 
 Persistent data:
 
