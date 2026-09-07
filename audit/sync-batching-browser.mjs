@@ -27,6 +27,8 @@ try {
   const page = await browser.newPage();
   const seen = new Set();
   let requests = 0;
+  let attempts = 0;
+  let retryNotBefore = 0;
   let revision = 0;
   let largestBody = 0;
   const now = '2026-09-01T00:00:00.000Z';
@@ -38,6 +40,13 @@ try {
     }
     assert.equal(new URL(route.request().url()).pathname, '/api/me/storage/sync');
     assert.equal(route.request().headers()['x-expected-storage-key'], user.id);
+    assert.ok(Date.now() >= retryNotBefore - 50, 'Retry-After must not be bypassed');
+    attempts++;
+    if (attempts === 1 || attempts === 22) {
+      retryNotBefore = Date.now() + 2000;
+      await route.fulfill({ status: attempts === 1 ? 503 : 429, headers: { 'Retry-After': '2' }, json: { code: 'ROUTE_BUSY' } });
+      return;
+    }
     const body = route.request().postData();
     largestBody = Math.max(largestBody, Buffer.byteLength(body));
     assert.ok(Buffer.byteLength(body) <= 512 * 1024);
@@ -81,8 +90,8 @@ try {
     return { count: logs.length, versioned: logs.filter(x => x.version > 0).length };
   });
   assert.deepEqual(result, { count: 10001, versioned: 10001 });
-  assert.equal(seen.size, 10001); assert.equal(requests, 21);
-  console.log(JSON.stringify({ browser: 'Chromium', logs: seen.size, requests, largestBody, outbox: 0 }));
+  assert.equal(seen.size, 10001); assert.equal(requests, 21); assert.equal(attempts, 23);
+  console.log(JSON.stringify({ browser: 'Chromium', logs: seen.size, requests, attempts, largestBody, outbox: 0 }));
 } finally {
   await browser?.close();
   await server.close();

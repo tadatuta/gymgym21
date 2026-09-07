@@ -28,6 +28,7 @@ export const corsMiddleware: RequestHandler = (req, res, next) => {
   const origin = getCorsOrigin(req.header('origin') ?? undefined);
 
   res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Expose-Headers', 'Retry-After');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie, X-Telegram-Init-Data, X-Expected-Storage-Key');

@@ -30,7 +30,7 @@ export function createRequireAuthContext(dependencies: AppDependencies): Request
 
       if (req.header('X-Expected-Storage-Key') !== authContext.storageKey) {
         console.warn('[auth] Rejected private request: account context mismatch');
-        throw new HttpError(409, 'Account context mismatch');
+        throw new HttpError(409, 'Account context mismatch', { code: 'ACCOUNT_CONTEXT_MISMATCH' });
       }
 
       req.authContext = authContext;

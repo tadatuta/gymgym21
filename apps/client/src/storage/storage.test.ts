@@ -1,3 +1,4 @@
+import { SyncError } from '../services/sync-error';
 import { invalidBackupCases, validBackupData } from './backup-fixtures.test-helper';
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -169,6 +170,34 @@ describe('StorageService sync scheduling', () => {
         } finally {
             service.dispose();
         }
+    });
+
+    it('honors Retry-After across manual scheduling, resets on success, cancels on dispose', async () => {
+        Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+        const spy = vi.spyOn(SyncService, 'sync').mockRejectedValueOnce(new SyncError('busy', 'ROUTE_BUSY', true, 60000))
+            .mockResolvedValue({ cursor: 1, conflicts: 0, pushedEntities: 0, pulledEntities: 0, hasMore: false });
+        const service = new StorageService({ enableBroadcast: false });
+        await service.activate(`recovery-${Math.random()}`);
+        await db.workoutTypes.put({ id: 'existing', name: 'Existing', updatedAt: new Date().toISOString() });
+        vi.spyOn(service, 'reloadCache').mockResolvedValue();
+        vi.useFakeTimers();
+        await service.sync();
+        service.scheduleSync(0);
+        await service.sync();
+        await vi.advanceTimersByTimeAsync(59999);
+        expect(spy).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(spy).toHaveBeenCalledTimes(2);
+        expect(service.getSyncState()).toMatchObject({ retryAt: 0, error: undefined });
+        spy.mockRejectedValue(new SyncError('invalid', 'INVALID_RECORD'));
+        await service.sync();
+        await vi.advanceTimersByTimeAsync(120000);
+        expect(spy).toHaveBeenCalledTimes(3);
+        spy.mockRejectedValue(new SyncError('busy', 'ROUTE_BUSY', true));
+        await service.sync();
+        service.dispose();
+        await vi.advanceTimersByTimeAsync(120000);
+        expect(spy).toHaveBeenCalledTimes(4);
     });
 
     it('batches repeated scheduleSync calls into one sync execution', async () => {

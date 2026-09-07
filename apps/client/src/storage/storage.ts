@@ -1,3 +1,4 @@
+import { SyncError, retryDelay } from '../services/sync-error';
 import { domainSnapshot } from './domain-snapshot';
 import type { Table } from 'dexie';
 import { createBackup, readBackup, type BackupMode } from './backup';
@@ -16,7 +17,6 @@ import { SyncService } from '../services/sync';
 import { activateAccountDatabase, db, getActiveStorageKey, captureAccountContext, closeActiveDatabase } from '../db';
 import {
     authorizedApiFetch,
-    clearAuthState,
     getCurrentUser,
     hasVerifiedOnlineAccount,
     resolveApiUrl,
@@ -86,6 +86,26 @@ export class StorageService {
     private readonly syncDebounceMs: number;
     private syncTimer: ReturnType<typeof setTimeout> | undefined;
     private syncInFlight = false;
+    private syncController?: AbortController;
+    private successTimer?: ReturnType<typeof setTimeout>;
+    private retryAttempt = 0;
+    private retryAt = 0;
+    private syncFailure?: SyncError;
+    private pendingCount = 0;
+
+    getSyncState() { return { pendingCount: this.pendingCount, error: this.syncFailure, retryAt: this.retryAt }; }
+
+    private resetSyncRecovery() {
+        clearTimeout(this.successTimer);
+        this.successTimer = undefined;
+        this.syncController?.abort();
+        this.syncController = undefined;
+        this.retryAttempt = 0;
+        this.retryAt = 0;
+        this.syncFailure = undefined;
+        this.pendingCount = 0;
+    }
+
     private syncQueued = false;
     private initialized = false;
     private activeStorageKey: string | null = null;
@@ -97,6 +117,7 @@ export class StorageService {
 
     private readonly handleAuthChange = () => {
         this.clearScheduledSync();
+        this.resetSyncRecovery();
         this.disconnectBroadcastChannel();
         this.initialized = false;
         this.activeStorageKey = null;
@@ -133,6 +154,7 @@ export class StorageService {
         }
 
         this.clearScheduledSync();
+        this.resetSyncRecovery();
         this.disconnectBroadcastChannel();
         await activateAccountDatabase(storageKey);
         const context = captureAccountContext();
@@ -160,7 +182,9 @@ export class StorageService {
     }
 
     dispose() {
+        this.initialized = false;
         this.clearScheduledSync();
+        this.resetSyncRecovery();
         this.disconnectBroadcastChannel();
         if (typeof window !== 'undefined') {
             window.removeEventListener('gym21-auth-changed', this.handleAuthChange);
@@ -290,8 +314,10 @@ export class StorageService {
         this.status = status;
         this.onSyncStatusChangeCallback?.(status);
 
+        clearTimeout(this.successTimer);
+        this.successTimer = undefined;
         if (status === 'success') {
-            setTimeout(() => {
+            this.successTimer = setTimeout(() => {
                 if (this.status === 'success') {
                     this.setStatus('idle');
                 }
@@ -344,7 +370,7 @@ export class StorageService {
         this.syncTimer = setTimeout(() => {
             this.syncTimer = undefined;
             void this.sync();
-        }, delay);
+        }, Math.min(2_147_483_647, Math.max(delay, this.retryAt - Date.now())));
     }
 
     async sync() {
@@ -353,6 +379,10 @@ export class StorageService {
             return;
         }
 
+        if (Date.now() < this.retryAt) {
+            this.scheduleSync(this.retryAt - Date.now());
+            return;
+        }
         this.clearScheduledSync();
         if (this.syncInFlight) {
             this.syncQueued = true;
@@ -361,12 +391,18 @@ export class StorageService {
 
         const context = captureAccountContext();
         this.syncInFlight = true;
-        let retryDelay = 0;
+        const controller = new AbortController();
+        this.syncController = controller;
+        let nextDelay = 0;
         try {
             const lockAcquired = await this.withSyncLock(async () => {
                 context.assertCurrent();
                 this.setStatus('saving');
-                const result = await SyncService.sync();
+                const result = await SyncService.sync(controller.signal);
+                if (controller.signal.aborted) return;
+                this.retryAttempt = 0;
+                this.retryAt = 0;
+                this.syncFailure = undefined;
                 context.assertCurrent();
                 await this.reloadCache();
                 context.assertCurrent();
@@ -389,25 +425,27 @@ export class StorageService {
             });
             if (!lockAcquired) {
                 this.syncQueued = true;
-                retryDelay = 250;
+                nextDelay = 250;
             }
         } catch (error: unknown) {
-            if (!context.isCurrent()) return;
-            console.error('Sync failed', error);
-            const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-            if (message.includes('unauthorized')) {
-                clearAuthState();
-                this.setStatus('error');
-                this.onUnauthorizedCallback?.();
-                return;
+            if (!context.isCurrent() || controller.signal.aborted) return;
+            this.syncFailure = error instanceof SyncError ? error
+                : new SyncError(error instanceof Error ? error.message : 'Ошибка локальной синхронизации', 'LOCAL_ERROR');
+            this.syncQueued = false;
+            if (this.syncFailure.retryable && navigator.onLine) {
+                nextDelay = Math.max(retryDelay(this.retryAttempt++), this.syncFailure.retryAfterMs);
+                this.retryAt = Date.now() + nextDelay;
+                this.syncQueued = true;
             }
-            this.setStatus(error instanceof Error && error.message === 'Offline' ? 'idle' : 'error');
+            console.warn('Sync interrupted', { code: this.syncFailure.code, retryAt: this.retryAt, pendingCount: this.pendingCount });
+            this.setStatus(this.syncFailure.code === 'OFFLINE' ? 'idle' : 'error');
         } finally {
-            if (context.isCurrent()) {
+            if (context.isCurrent() && this.syncController === controller) {
+                this.syncController = undefined;
                 this.syncInFlight = false;
                 if (this.syncQueued) {
                     this.syncQueued = false;
-                    this.scheduleSync(retryDelay);
+                    this.scheduleSync(nextDelay);
                 }
             }
         }
@@ -471,18 +509,22 @@ export class StorageService {
         }
 
         const context = captureAccountContext();
-        const [data, conflicts] = await Promise.all([
+        const [data, conflicts, pendingCount] = await Promise.all([
             SyncService.readAll(),
             db.syncConflicts.orderBy('createdAt').reverse().toArray(),
+            db.dirtyEntities.count(),
         ]);
         if (!context.isCurrent()) return;
         const changed = this.cacheStorageKey !== context.storageKey
             || domainSnapshot(this.cache) !== domainSnapshot(data)
             || JSON.stringify(this.conflicts) !== JSON.stringify(conflicts);
+        const pendingChanged = this.pendingCount !== pendingCount;
+        this.pendingCount = pendingCount;
         this.cacheStorageKey = context.storageKey;
         this.cache = data;
         this.conflicts = conflicts;
         if (changed) this.onUpdateCallback?.();
+        if (pendingChanged) this.onSyncStatusChangeCallback?.(this.status);
     }
 
     getWorkoutTypes(): WorkoutType[] {
@@ -1029,6 +1071,7 @@ export class StorageService {
         const context = captureAccountContext();
         const database = context.database;
         const data = readBackup(input);
+        if (Date.now() < this.retryAt) throw new Error('Сервер попросил подождать. Повторите импорт после автоматической синхронизации');
         this.clearScheduledSync();
         if (this.syncInFlight) throw new Error('Дождитесь завершения синхронизации и повторите импорт');
         if (mode !== 'merge' && mode !== 'replace') throw new Error('Выберите режим импорта');

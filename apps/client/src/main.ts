@@ -2324,7 +2324,7 @@ function updateSyncStatus(status: SyncStatus) {
       syncStatusEl.textContent = 'Синхронизировано';
       break;
     case 'error':
-      syncStatusEl.textContent = 'Ошибка синхронизации';
+      syncStatusEl.textContent = storage.getSyncState().error?.message ?? 'Ошибка синхронизации';
       break;
     default:
       if (!navigator.onLine || !hasActiveSession()) {
@@ -2334,11 +2334,16 @@ function updateSyncStatus(status: SyncStatus) {
         syncStatusEl.className = 'sync-status';
       }
   }
+  const pending = storage.getSyncState().pendingCount;
+  if (pending) {
+    syncStatusEl.classList.add('visible');
+    syncStatusEl.appendChild(document.createTextNode(` · Ожидают отправки: ${pending}`));
+  }
   if (status === 'error' || !hasActiveSession()) {
     const retry = document.createElement('button');
     retry.className = 'button button_secondary';
     retry.textContent = 'Повторить подключение';
-    retry.addEventListener('click', () => { void reconnect?.retry(); });
+    retry.addEventListener('click', () => { if (hasActiveSession()) void storage.sync(); else void reconnect?.retry(); });
     syncStatusEl.appendChild(retry);
   }
 

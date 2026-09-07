@@ -29,6 +29,22 @@ describe('SyncService reliable outbox acknowledgements', () => {
     await activateAccountDatabase(`sync-test-${Math.random().toString(36).slice(2)}`);
   });
 
+  it('times out stalled body reads and ignores late transport completion', async () => {
+    let complete!: (value: unknown) => void;
+    vi.mocked(authorizedApiFetch).mockResolvedValue({ ok: true, json: () => new Promise(resolve => { complete = resolve; }) } as Response);
+    const pending = SyncService.sync();
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'TIMEOUT', retryable: true });
+    await vi.waitFor(() => expect(complete).toBeTypeOf('function'));
+    // The real deadline also covers body reads after headers arrive.
+    const signal = vi.mocked(authorizedApiFetch).mock.calls.at(-1)![1]!.signal!;
+    expect(signal.aborted).toBe(false);
+    await rejected;
+    expect(signal.aborted).toBe(true);
+    complete({ cursor: 999, changes: {}, conflicts: [] });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(await db.syncState.get('sync-cursor')).toBeUndefined();
+  }, 35000);
+
   it('drains multiple batches of logs in bounded submitted snapshots, removes missing rows', async () => {
     const logs = Array.from({ length: 501 }, (_, i) => ({ id: `L${i}`, workoutTypeId: 'T', workoutId: 'W', date: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z', reps: 1 }));
     await db.logs.bulkPut(logs);
@@ -58,7 +74,7 @@ describe('SyncService reliable outbox acknowledgements', () => {
       const sent = JSON.parse(String(init?.body));
       return jsonResponse({ cursor: 0, changes: sent.changes, conflicts: [], hasMore: false });
     });
-    await expect(SyncService.sync()).rejects.toThrow('lost response');
+    await expect(SyncService.sync()).rejects.toMatchObject({ code: 'NETWORK', retryable: true });
     expect((await SyncService.sync()).hasMore).toBe(true);
     const calls = vi.mocked(authorizedApiFetch).mock.calls;
     expect(JSON.parse(String(calls[0][1]?.body)).batchId).toBe(JSON.parse(String(calls[1][1]?.body)).batchId);
@@ -257,7 +273,7 @@ describe('SyncService reliable outbox acknowledgements', () => {
         },
       }));
 
-    await expect(SyncService.sync()).rejects.toThrow('Sync failed');
+    await expect(SyncService.sync()).rejects.toMatchObject({ code: 'HTTP_503', retryable: true });
     await SyncService.sync();
 
     const firstRequest = JSON.parse(String(vi.mocked(authorizedApiFetch).mock.calls[0][1]?.body));

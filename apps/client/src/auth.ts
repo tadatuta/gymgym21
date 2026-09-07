@@ -631,6 +631,7 @@ export async function authorizedApiFetch(path: string, init: RequestInit = {}, c
     ...init, headers, signal: init.signal ? AbortSignal.any([init.signal, context.signal]) : context.signal, credentials: 'include',
   });
   context.assertCurrent();
+  if (init.signal?.aborted) throw init.signal.reason;
   if (response.status === 401 || response.status === 409) clearAuthState({ clearOfflineAccount: true });
   return response;
 }

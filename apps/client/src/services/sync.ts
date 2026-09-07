@@ -1,3 +1,4 @@
+import { SyncError, syncResponseError } from './sync-error';
 import { authorizedApiFetch } from '../auth';
 import { captureAccountContext } from '../db';
 import {
@@ -92,37 +93,57 @@ function createBatchId(cursor: number, dirtyEntries: Map<string, DirtyEntityReco
 export class SyncService {
   private readonly context = captureAccountContext();
   private readonly db = this.context.database;
-  static sync() { return new SyncService().sync(); }
+  static sync(signal?: AbortSignal) { return new SyncService().sync(signal); }
   static markDirty(entityType: SyncEntityType, entityId: string) { return new SyncService().markDirty(entityType, entityId); }
   static markDirtyMany(changes: Array<{ entityType: SyncEntityType; entityId: string }>) { return new SyncService().markDirtyMany(changes); }
   static markAllEntitiesDirty() { return new SyncService().markAllEntitiesDirty(); }
   static bootstrapDirtyState() { return new SyncService().bootstrapDirtyState(); }
   static readAll() { return new SyncService().readAll(); }
 
-  async sync(): Promise<SyncExecutionResult> {
+  async sync(signal?: AbortSignal): Promise<SyncExecutionResult> {
     if (!navigator.onLine) {
-      throw new Error('Offline');
+      throw new SyncError('Нет подключения к сети', 'OFFLINE');
     }
 
     const snapshot = await this.createRequestSnapshot();
-    const response = await authorizedApiFetch('/me/storage/sync', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(snapshot.request),
-    }, this.context);
+    const controller = new AbortController();
+    const combined = AbortSignal.any([controller.signal, this.context.signal, ...(signal ? [signal] : [])]);
+    const timer = setTimeout(() => controller.abort(new SyncError('Сервер не ответил за 30 секунд. Повторим автоматически.', 'TIMEOUT', true)), 30_000);
+    let result: SyncResponse;
+    let onAbort: (() => void) | undefined;
+    try {
+      // Racing also releases the scheduler when a transport ignores cancellation.
+      const aborted = new Promise<never>((_, reject) => {
+        if (combined.aborted) reject(combined.reason);
+        else {
+          onAbort = () => reject(combined.reason);
+          combined.addEventListener('abort', onAbort, { once: true });
+        }
+      });
+      const request = async () => {
+        const response = await authorizedApiFetch('/me/storage/sync', {
+          signal: combined,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(snapshot.request),
+        }, this.context);
 
-    this.context.assertCurrent();
-    if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error('Unauthorized');
-      }
-      if (response.status === 413) throw new Error('Пачка синхронизации превышает лимит сервера. Проверьте JSON_BODY_LIMIT и лимит прокси');
-      throw new Error('Sync failed');
+        this.context.assertCurrent();
+        if (combined.aborted) throw combined.reason;
+        if (!response.ok) throw await syncResponseError(response);
+        return await response.json() as SyncResponse;
+      };
+      result = await Promise.race([request(), aborted]);
+    } catch (error) {
+      this.context.assertCurrent();
+      if (error instanceof SyncError || combined.aborted) throw combined.aborted ? combined.reason : error;
+      if (error instanceof SyntaxError) throw new SyncError('Некорректный ответ сервера. Повторите позже или обратитесь в поддержку.', 'INVALID_RESPONSE');
+      throw new SyncError('Не удалось связаться с сервером. Повторим автоматически.', 'NETWORK', true);
+    } finally {
+      clearTimeout(timer);
+      if (onAbort) combined.removeEventListener('abort', onAbort);
     }
-
-    const result = await response.json() as SyncResponse;
+    if (combined.aborted) throw combined.reason;
     const pulledEntities = countDeltaEntities(result.changes);
     const pushedEntities = countDeltaEntities(snapshot.request.changes);
 
@@ -272,7 +293,7 @@ export class SyncService {
           else (changes.workoutTypes ??= []).push(entity as WorkoutType);
         }
         if (!dirtyEntries.size && oversized) {
-          throw new Error(`Запись ${oversized} превышает лимит синхронизации 512 КиБ. Сократите содержимое записи и повторите синхронизацию`);
+          throw new SyncError(`Запись ${oversized} превышает лимит синхронизации 512 КиБ. Сократите содержимое записи и повторите синхронизацию`, 'RECORD_TOO_LARGE', false, 0, { recordId: oversized });
         }
         return {
           request: { cursor, changes, protocolVersion: SYNC_PROTOCOL_VERSION,
