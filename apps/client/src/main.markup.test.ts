@@ -20,7 +20,7 @@ describe('old persisted records remain text at HTML boundaries', () => {
     it('public history uses the owner zone even when the viewer zone is different', () => {
         const render = historyRenderer('America/Los_Angeles');
         const date = '2026-01-01T21:30:00Z';
-        const html = render([{ id: 'l', workoutId: '', workoutTypeId: 't', date, updatedAt: date }], [], false, 'Europe/Moscow');
+        const html = render([{ id: 'l', workoutId: '', workoutTypeId: 't', date }], [], false, 'Europe/Moscow');
         expect(html).toContain(trainingTime.dayLabel('2026-01-02'));
         expect(html).not.toContain(trainingTime.dayLabel('2026-01-01'));
     });
@@ -30,7 +30,7 @@ describe('old persisted records remain text at HTML boundaries', () => {
         for (const workoutId of ['', 'missing-workout']) for (const fields of [
             { weight: hostile as unknown as number, reps: hostile as unknown as number }, { duration: hostile as unknown as number, durationSeconds: hostile as unknown as number },
         ]) {
-            const container = parse(render([{ id: hostile, workoutTypeId: hostile, workoutId, date: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z', ...fields }], [{ id: hostile, name: hostile, updatedAt: '2026-09-01T00:00:00Z' }], true));
+            const container = parse(render([{ id: hostile, workoutTypeId: hostile, workoutId, date: '2026-09-01T00:00:00Z', ...fields }], [{ id: hostile, name: hostile }], true));
             expect(container.textContent).toContain(hostile);
             expect(container.querySelector('.log-set')?.getAttribute('data-id')).toBe(hostile);
         }

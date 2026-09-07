@@ -1,19 +1,8 @@
 import { backupDataSchema, backupEnvelopeSchema } from './backup-validation';
-import type { AppData, SyncItem, UserProfile, WorkoutSession, WorkoutSet, WorkoutType } from '../types';
+import type { AppData, SyncItem } from '../types';
 
-export type BackupMode = 'merge' | 'replace';
-type BackupEntity<T> = Omit<T, keyof SyncItem>;
-export interface BackupEnvelope {
-    format: 'gym21-backup';
-    version: 1;
-    exportedAt: string;
-    data: {
-        workoutTypes: BackupEntity<WorkoutType>[];
-        workouts: BackupEntity<WorkoutSession>[];
-        logs: BackupEntity<WorkoutSet>[];
-        profile?: Omit<BackupEntity<UserProfile>, 'username' | 'telegramUsername' | 'telegramUserId'>;
-    };
-}
+import type { BackupEnvelope } from '@gym21/contracts';
+export type { BackupMode, BackupEnvelope } from '@gym21/contracts';
 
 function stripMetadata<T extends object>(item: T): T {
     const result = { ...item } as T & Record<string, unknown>;

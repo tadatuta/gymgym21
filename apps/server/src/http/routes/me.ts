@@ -1,33 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { backupDataSchema, workoutType, log, workout, profile, number, id } from '../../backup-validation.js';
+import { backupImportSchema, syncRequestSchema, number } from '@gym21/contracts';
 import { HttpError } from '../errors.js';
 import { config } from '../../config.js';
 import type { AppDependencies } from '../app-types.js';
 import { holdRateLimitUntil, createRateLimitMiddleware, createStorageRateLimitKey } from '../middleware/rate-limit.js';
-
-const syncRequestSchema = z.object({
-  cursor: number.int(),
-  // Missing version remains supported for legacy clients until S09.
-  protocolVersion: z.literal(1).optional(),
-  limit: z.number().int().min(1).max(2000).optional(),
-  batchId: id.refine((value) => value.length <= 100).optional(),
-  changes: z.object({
-    workoutTypes: z.array(workoutType.strict()).optional(),
-    logs: z.array(log.strict()).optional(),
-    workouts: z.array(workout.strict()).optional(),
-    // Strip legacy identity fields rather than accepting them as authoritative.
-    profile: profile.extend({ id: z.literal('me') }).nullish(),
-  }).strict().superRefine((data, ctx) => {
-    for (const key of ['workoutTypes', 'logs', 'workouts'] as const) {
-      const seen = new Set<string>();
-      data[key]?.forEach((item, index) => {
-        if (seen.has(item.id)) ctx.addIssue({ code: 'custom', path: [key, index, 'id'], message: 'Duplicate ID' });
-        seen.add(item.id);
-      });
-    }
-  }),
-}).strict();
 
 const aiRequestSchema = z.object({
   expectedRevision: number.int(),
@@ -66,11 +43,7 @@ export function createMeRouter(dependencies: AppDependencies): Router {
   });
 
   router.post('/storage/backup', syncRateLimit, async (req, res) => {
-    const payload = z.object({
-      mode: z.enum(['merge', 'replace']),
-      expectedRevision: number.int(),
-      data: backupDataSchema,
-    }).strict().parse(req.body);
+    const payload = backupImportSchema.parse(req.body);
     // backupDataSchema strips all client-supplied trusted identity fields.
     const result = await dependencies.storageRepository.sync(req.authContext!.storageKey, {
       cursor: payload.expectedRevision, changes: payload.data,

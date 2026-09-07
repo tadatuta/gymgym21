@@ -1,5 +1,6 @@
+import type { PublicLog, PublicWorkoutType } from '@gym21/contracts';
 import { bindTypeahead, getTypeaheadValue, registerTypeaheadItems, renderTypeahead } from '../../components/typeahead/Typeahead';
-import { WorkoutSession, WorkoutSet, WorkoutType } from '../../types';
+import { WorkoutSession, WorkoutSet } from '../../types';
 import { formatDuration } from '../../utils/duration';
 import { getLatestLog } from '../../utils/latest-log';
 import { escapeAttribute, escapeHtml, renderOption } from '../../utils/safe-html';
@@ -449,10 +450,10 @@ export function createWorkoutPage(context: PageContext) {
   `;
   }
 
-  function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditable: boolean, timeZone = storage.getTimeZone()) {
+  function generateLogsListHtml(logs: PublicLog[], types: PublicWorkoutType[], isEditable: boolean, timeZone = storage.getTimeZone()) {
     if (logs.length === 0) return '<p class="hint">Нет записей за этот период</p>';
 
-    const logsByDay = new Map<string, WorkoutSet[]>();
+    const logsByDay = new Map<string, PublicLog[]>();
     // Sort logs by date descending
     [...logs].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).forEach(log => {
       const dateKey = dayKey(log.date, timeZone);
@@ -526,7 +527,7 @@ export function createWorkoutPage(context: PageContext) {
         }
 
         // Group by exercise within workout
-        const exerciseGroups: Map<string, WorkoutSet[]> = new Map();
+        const exerciseGroups: Map<string, PublicLog[]> = new Map();
         workoutLogs.forEach(log => {
           if (!exerciseGroups.has(log.workoutTypeId)) {
             exerciseGroups.set(log.workoutTypeId, []);
@@ -568,7 +569,7 @@ export function createWorkoutPage(context: PageContext) {
       // Render orphan logs (without workoutId)
       const orphanLogs = dayLogs.filter(l => !l.workoutId);
       if (orphanLogs.length > 0) {
-        const exerciseGroups: Map<string, WorkoutSet[]> = new Map();
+        const exerciseGroups: Map<string, PublicLog[]> = new Map();
         orphanLogs.forEach(log => {
           if (!exerciseGroups.has(log.workoutTypeId)) {
             exerciseGroups.set(log.workoutTypeId, []);

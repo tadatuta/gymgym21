@@ -7,9 +7,10 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "start": "node dist/server.js",
-    "dev": "tsx watch --clear-screen=false --env-file-if-exists=../../.env src/server.ts",
+    "dev": "tsx watch --clear-screen=false --conditions=gym21-source --env-file-if-exists=../../.env src/server.ts",
     "test": "npm run build && node --test test/*.test.js",
-    "import:storage-json": "node scripts/import-storage-json.mjs"
+    "import:storage-json": "node scripts/import-storage-json.mjs",
+    "prebuild": "npm run build --workspace @gym21/contracts"
   },
   "keywords": [],
   "author": "",
@@ -31,6 +32,7 @@
     "express": "^5.2.1",
     "kysely": "^0.28.14",
     "pg": "^8.20.0",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "@gym21/contracts": "0.0.0"
   }
 }

@@ -46,6 +46,16 @@ npm run dev:client
 TypeScript и запуска остаются в терминале; watcher ждёт исправления. `Ctrl+C`
 останавливает watcher и сервер. Проверка типов выполняется отдельно через
 `npm run typecheck`; production по-прежнему использует `tsc` и `node dist/server.js`.
+
+Общие runtime-схемы и выводимые из них wire-типы находятся в `packages/contracts`
+(`@gym21/contracts`). Клиентские записи уточняют локальные поля отдельно; SQL row-типы
+остаются на сервере. Vite читает исходники пакета через `browser` export, а `tsx watch`
+использует условие `gym21-source`, поэтому правки общих схем видны без пересборки.
+Production Node загружает `dist/*.js`; `npm run build` сервера сначала собирает
+контракты, в том числе при запуске из `apps/server`. Отдельная проверка контрактов:
+`npm run test --workspace @gym21/contracts`. Изолированная проверка чистой установки
+и package exports: `node audit/contracts-packaging.mjs` (использует npm offline cache; `--online` разрешает загрузку недостающих пакетов).
+
 Production `start` ожидает окружение от оболочки/контейнера и сам `.env` не читает.
 
 В dev-режиме клиент использует Vite proxy и ходит в backend через относительные `/api`-пути.

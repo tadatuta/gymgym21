@@ -6,8 +6,11 @@ COPY package.json package-lock.json ./
 COPY apps/client/package.json apps/client/package.json
 COPY apps/server/package.json apps/server/package.json
 
+COPY packages/contracts/package.json packages/contracts/package.json
+
 RUN npm ci
 
+COPY packages/contracts packages/contracts
 COPY apps/client apps/client
 
 RUN npm run build --workspace @gym21/client

@@ -2,6 +2,7 @@
   "name": "gym21",
   "private": true,
   "workspaces": [
+    "packages/contracts",
     "apps/client",
     "apps/server"
   ],

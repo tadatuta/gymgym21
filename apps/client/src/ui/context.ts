@@ -1,5 +1,5 @@
 import type { AppRoute } from '../router';
-import type { WorkoutSet, WorkoutType } from '../types';
+import type { PublicLog, PublicWorkoutType } from '@gym21/contracts';
 import type { UiDependencies } from './dependencies';
 import type { UiState } from './state';
 
@@ -14,7 +14,7 @@ export interface PageContext {
     showToast(message: string): void;
     withFormDrafts(update: () => void): void;
     bindRouteLinks(root?: ParentNode): void;
-    generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], editable: boolean, timeZone?: string): string;
+    generateLogsListHtml(logs: PublicLog[], types: PublicWorkoutType[], editable: boolean, timeZone?: string): string;
     getPreferredDisplayName(value?: string): string;
     loadPublicProfile(identifier: string): Promise<void>;
   };

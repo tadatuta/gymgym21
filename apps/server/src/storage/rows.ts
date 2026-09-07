@@ -1,3 +1,4 @@
+import type { WorkoutStatus } from '@gym21/contracts';
 import type { StoragePauseInterval, StorageFriend, SyncEntityType, StorageSyncResponse, PublicProfileData } from './types.js';
 
 export interface RevisionRow {
@@ -69,7 +70,7 @@ export interface StorageWorkoutRow {
   start_time: string | Date;
   end_time: string | Date | null;
   name: string | null;
-  status: string;
+  status: WorkoutStatus;
   is_manual: boolean;
   pause_intervals_json: StoragePauseInterval[] | null;
   updated_at: string | Date;
