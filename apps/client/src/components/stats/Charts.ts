@@ -9,10 +9,11 @@ import { WorkoutSet, WorkoutSession } from '../../types';
 export function renderVolumeChart(logs: WorkoutSet[], timeZone = 'UTC'): string {
     // Group volume by date
     const volumeByDate = new Map<string, number>();
-    logs.forEach(log => {
+    logs.filter(log => !log.isDeleted).forEach(log => {
         const date = dayKey(log.date, timeZone);
-        const vol = (log.weight || 0) * (log.reps || 0);
-        volumeByDate.set(date, (volumeByDate.get(date) || 0) + vol);
+        const rawVolume = (log.weight || 0) * (log.reps || 0);
+        const vol = Number.isFinite(rawVolume) ? Math.max(0, rawVolume) : 0;
+        volumeByDate.set(date, Math.min(Number.MAX_VALUE, (volumeByDate.get(date) || 0) + vol));
     });
 
     // Sort dates and take last 10 entries for readability
@@ -73,10 +74,10 @@ interface DataPoint {
 function renderBarChart(data: DataPoint[], unit: string): string {
     const height = 150;
     const width = 100; // percent
-    const maxVal = Math.max(...data.map(d => d.value)) * 1.1; // +10% padding
+    const maxVal = Math.max(1, ...data.map(d => d.value));
 
     const bars = data.map((d, i) => {
-        const barHeight = (d.value / maxVal) * 100;
+        const barHeight = (d.value / maxVal) * (100 / 1.1);
         const x = (i / data.length) * 100;
         const barWidth = (1 / data.length) * 80; // 80% of allocated slot width
 

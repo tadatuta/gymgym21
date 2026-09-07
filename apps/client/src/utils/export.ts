@@ -1,4 +1,6 @@
 import { AppData, WorkoutSet } from '../types';
+import { accountTimeZone, dayKey, dayLabel } from './training-time';
+import { formatDuration } from './duration';
 
 export function downloadFile(content: string, filename: string, mimeType: string) {
     const blob = new Blob([content], { type: mimeType });
@@ -15,6 +17,8 @@ export function downloadFile(content: string, filename: string, mimeType: string
 export function generateMarkdown(data: AppData): string {
     const { profile, workoutTypes, workouts, logs } = data;
     const lines: string[] = [];
+    const timeZone = accountTimeZone(profile?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+    const dateLabel = (date: string) => dayLabel(dayKey(date, timeZone), { year: 'numeric', month: '2-digit', day: '2-digit' });
 
     // 1. Header & Profile
     lines.push(`# История тренировок`);
@@ -23,7 +27,7 @@ export function generateMarkdown(data: AppData): string {
         lines.push(`- **Имя:** ${profile.displayName || 'Не указано'}`);
         if (profile.telegramUsername) lines.push(`- **Username:** @${profile.telegramUsername}`);
         lines.push(`- **ID:** ${profile.id}`);
-        lines.push(`- **Дата регистрации:** ${new Date(profile.createdAt).toLocaleDateString()}`);
+        lines.push(`- **Дата регистрации:** ${dateLabel(profile.createdAt)}`);
     }
 
     // 2. Workout Types
@@ -40,7 +44,7 @@ export function generateMarkdown(data: AppData): string {
     // 3. History
     lines.push(`\n## История`);
 
-    if (logs.length === 0) {
+    if (!logs.some(log => !log.isDeleted)) {
         lines.push(`_История пуста_`);
         return lines.join('\n');
     }
@@ -50,27 +54,23 @@ export function generateMarkdown(data: AppData): string {
     const sortedLogs = [...logs].filter(l => !l.isDeleted).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     sortedLogs.forEach(log => {
-        const dateKey = new Date(log.date).toLocaleDateString();
+        const dateKey = dayKey(log.date, timeZone);
         if (!logsByDay.has(dateKey)) logsByDay.set(dateKey, []);
         logsByDay.get(dateKey)!.push(log);
     });
 
     logsByDay.forEach((dayLogs, dateLabel) => {
-        lines.push(`\n### ${dateLabel}`);
+        lines.push(`\n### ${dayLabel(dateLabel, { year: 'numeric', month: '2-digit', day: '2-digit' })}`);
 
         // Group by workout within the day
-        const dayWorkoutIds = Array.from(new Set(dayLogs.map(l => l.workoutId).filter(Boolean)));
+        const dayWorkoutIds = Array.from(new Set(dayLogs.map(l => l.workoutId || '')));
 
-        // Sort workouts: explicit workouts first, then implicit (or by time)
-        // Actually, let's just group by workout ID for structure.
 
         dayWorkoutIds.forEach(workoutId => {
             const workout = workouts.find(w => w.id === workoutId);
-            const workoutLogs = dayLogs.filter(l => l.workoutId === workoutId);
+            const workoutLogs = dayLogs.filter(l => (l.workoutId || '') === workoutId);
 
-            if (workout && workout.name) {
-                lines.push(`\n#### ${workout.name}`);
-            }
+            lines.push(`\n#### ${workout?.name || (workout ? 'Тренировка' : workoutId ? 'Неизвестная тренировка' : 'Без тренировки')}`);
 
             // Group by exercise type
             const exerciseGroups = new Map<string, WorkoutSet[]>();
@@ -93,8 +93,8 @@ export function generateMarkdown(data: AppData): string {
 }
 
 function formatSet(set: WorkoutSet): string {
-    if (set.duration !== undefined) {
-        return `${set.duration} мин${set.durationSeconds ? ` ${set.durationSeconds} сек` : ''}`;
+    if (set.duration !== undefined || set.durationSeconds !== undefined) {
+        return formatDuration((set.duration ?? 0) * 60 + (set.durationSeconds ?? 0));
     }
     return `${set.weight}кг × ${set.reps}`;
 }
