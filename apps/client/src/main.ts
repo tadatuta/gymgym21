@@ -5,6 +5,8 @@ import './styles/base.css';
 import './styles/components.css';
 import './styles/profile.css';
 import './components/navigation/navigation.css';
+import { createReconnectCoordinator } from './services/reconnect';
+import { captureAccountContext } from './db';
 import { storage, SyncStatus } from './storage/storage';
 import { WorkoutSet, WorkoutSession, PublicProfileData, WorkoutType } from './types';
 import './styles/stats.css';
@@ -19,6 +21,7 @@ import {
   cacheOfflineAccount,
   canUsePasskeyInCurrentContext,
   clearAuthState,
+  getCurrentSession,
   getCurrentUser,
   getOfflineAccount,
   getMigrationStatus,
@@ -2250,6 +2253,7 @@ syncStatusEl.className = 'sync-status';
 document.body.appendChild(syncStatusEl);
 
 function updateSyncStatus(status: SyncStatus) {
+  syncStatusEl.replaceChildren();
   syncStatusEl.className = 'sync-status visible ' + status;
 
   switch (status) {
@@ -2270,6 +2274,14 @@ function updateSyncStatus(status: SyncStatus) {
         syncStatusEl.className = 'sync-status';
       }
   }
+  if (status === 'error' || !hasActiveSession()) {
+    const retry = document.createElement('button');
+    retry.className = 'button button_secondary';
+    retry.textContent = 'Повторить подключение';
+    retry.addEventListener('click', () => { void reconnect?.retry(); });
+    syncStatusEl.appendChild(retry);
+  }
+
 }
 
 storage.onUpdate(() => {
@@ -2302,7 +2314,10 @@ async function initApp() {
   const activateLocalAccount = async (account: OfflineAccount) => {
     authStatus = account.migrationStatus;
     await storage.activate(account.storageKey);
-    aiResults = await storage.readCachedAIResults();
+    const context = captureAccountContext();
+    const cachedResults = await storage.readCachedAIResults();
+    if (!context.isCurrent()) return;
+    aiResults = cachedResults;
     await routerController.start();
     updateSyncStatus('idle');
   };
@@ -2312,46 +2327,30 @@ async function initApp() {
     await activateLocalAccount(cachedAccount);
   }
 
-  const sessionState = await restoreSessionState();
-  if (sessionState.status === 'unavailable') {
-    if (!cachedAccount) {
-      showLogin('Нет подключения к серверу. Первый вход на этом устройстве требует интернет.');
-    }
-    return;
-  }
-
-  if (sessionState.status === 'unauthenticated') {
-    clearAuthState({ clearOfflineAccount: true });
-    showLogin();
-    return;
-  }
-
-  if (cachedAccount && cachedAccount.user.id !== sessionState.session.user.id) {
-    app.innerHTML = '<div class="profile-loading">Переключаем аккаунт...</div>';
-  }
-
-  let onlineStatus: MigrationStatus;
-  try {
-    onlineStatus = await getMigrationStatus();
-  } catch {
-    if (getOfflineAccount()?.user.id === sessionState.session.user.id) {
-      updateSyncStatus('idle');
-      return;
-    }
-
-    clearAuthState({ clearOfflineAccount: true });
-    showLogin('Не удалось определить локальное хранилище аккаунта.');
-    return;
-  }
-
-  if (onlineStatus.needsCompletion) {
-    showLogin();
-    return;
-  }
-
-  const onlineAccount = cacheOfflineAccount(sessionState.session.user, onlineStatus);
-  await activateLocalAccount(onlineAccount);
-  storage.scheduleSync(0);
+  reconnect = createReconnectCoordinator({
+    events: window,
+    restore: restoreSessionState,
+    verify: getMigrationStatus,
+    isSessionCurrent: (session) => getCurrentSession() === session,
+    captureGuard: () => captureAccountContext().isCurrent,
+    activate: async (session, status) => {
+      const account = cacheOfflineAccount(session.user, status);
+      await activateLocalAccount(account);
+    },
+    sync: () => storage.sync(),
+    onUnavailable: () => {
+      updateSyncStatus('error');
+      if (!getCurrentUser()) showLogin('Нет подключения к серверу. Первый вход на этом устройстве требует интернет.');
+    },
+    onUnauthenticated: () => {
+      clearAuthState({ clearOfflineAccount: true, broadcast: false });
+      showLogin();
+    },
+    onIncomplete: () => showLogin(),
+  });
+  await reconnect.retry();
 }
 
+let reconnect: ReturnType<typeof createReconnectCoordinator> | undefined;
+if (import.meta.hot) import.meta.hot.dispose(() => reconnect?.dispose());
 initApp();

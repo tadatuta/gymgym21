@@ -105,10 +105,6 @@ export class StorageService {
         this.onUnauthorizedCallback?.();
     };
 
-    private readonly handleOnline = () => {
-        this.scheduleSync(0);
-    };
-
     private readonly handleVisibilityChange = () => {
         if (document.visibilityState === 'visible') {
             this.scheduleSync(0);
@@ -165,7 +161,6 @@ export class StorageService {
         this.disconnectBroadcastChannel();
         if (typeof window !== 'undefined') {
             window.removeEventListener('gym21-auth-changed', this.handleAuthChange);
-            window.removeEventListener('online', this.handleOnline);
             document.removeEventListener('visibilitychange', this.handleVisibilityChange);
         }
     }
@@ -306,7 +301,6 @@ export class StorageService {
             return;
         }
 
-        window.addEventListener('online', this.handleOnline);
         document.addEventListener('visibilitychange', this.handleVisibilityChange);
     }
 

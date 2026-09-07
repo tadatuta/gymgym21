@@ -337,8 +337,8 @@ export function clearOfflineAccountSelection() {
   currentOfflineAccount = null;
 }
 
-export function clearAuthState(options: { clearOfflineAccount?: boolean } = {}) {
-  invalidateAuth();
+export function clearAuthState(options: { clearOfflineAccount?: boolean; broadcast?: boolean } = {}) {
+  invalidateAuth(options.broadcast ?? true);
   purgeLegacyAuthToken();
   currentSession = null;
   if (options.clearOfflineAccount ?? true) {
