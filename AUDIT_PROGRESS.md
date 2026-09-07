@@ -8,8 +8,8 @@
 
 | ID | Задача | Статус | Субагент / коммит | Проверки |
 | --- | --- | --- | --- | --- |
-| A01 | P1 — Можно переназначить чужую публичную ссылку через профиль | Завершено | audit_01_alias_ownership / текущий коммит | Node22: typecheck обоих workspaces; npm test с изолированной PostgreSQL: 28/28, без skipped; реальный auth resolver, HTTP sync, concurrent auth/public alias claims |
-| A02 | P1 — Telegram-вход доверяет совпадению с неподтверждённым техническим email | Ожидает | — | — |
+| A01 | P1 — Можно переназначить чужую публичную ссылку через профиль | Завершено | audit_01_alias_ownership / e79d9e9 | Node22: typecheck обоих workspaces; npm test с изолированной PostgreSQL: 28/28, без skipped; реальный auth resolver, HTTP sync, concurrent auth/public alias claims |
+| A02 | P1 — Telegram-вход доверяет совпадению с неподтверждённым техническим email | Завершено | audit_02_telegram_email / текущий коммит | Node22: server build; npm test с изолированной PostgreSQL: 35/35 без skipped; реальные auth endpoints signup/change/update/migration, legacy collision 409 без захвата, безопасная migration + explicit Telegram link, concurrent first login и повторный вход по provider binding |
 | A03 | P1 — Пустая синхронизация может навсегда застрять на старом ответе | Ожидает | — | — |
 | A04 | P1 — Сетевые операции не привязаны к неизменной идентичности аккаунта | Ожидает | — | — |
 | A05 | P1 — После офлайн-запуска возвращение сети не возобновляет авторизацию и sync | Ожидает | — | — |

@@ -155,7 +155,7 @@ export function createPlaceholderEmail(telegramUserId: number): string {
 }
 
 export function isPlaceholderEmail(email: string): boolean {
-    return email.toLowerCase().endsWith(`@${config.TELEGRAM_PLACEHOLDER_EMAIL_DOMAIN}`);
+    return email.trim().toLowerCase().endsWith(`@${config.TELEGRAM_PLACEHOLDER_EMAIL_DOMAIN.toLowerCase()}`);
 }
 
 /** All alias writers share a transaction lock across the auth and public registries. */

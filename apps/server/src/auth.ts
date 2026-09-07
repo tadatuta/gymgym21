@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { betterAuth, APIError } from 'better-auth';
-import { createAuthEndpoint, sessionMiddleware } from 'better-auth/api';
+import { createAuthEndpoint, createAuthMiddleware, sessionMiddleware } from 'better-auth/api';
 import { setSessionCookie } from 'better-auth/cookies';
 import { parseUserOutput } from 'better-auth/db';
 import { toNodeHandler } from 'better-auth/node';
@@ -240,7 +240,7 @@ function getTelegramDisplayName(telegramUser: TelegramUser): string {
 
 function validateEmailAddress(email: string): string {
   const normalized = email.trim().toLowerCase();
-  if (!z.email().safeParse(normalized).success) {
+  if (!z.email().safeParse(normalized).success || isPlaceholderEmail(normalized)) {
     throw APIError.fromStatus('BAD_REQUEST', { message: 'Некорректный email' });
   }
   return normalized;
@@ -577,40 +577,52 @@ function telegramPlugin() {
         let userId = await getUserIdByProviderAccount(telegramAccountId, TELEGRAM_PROVIDER_ID);
 
         if (!userId) {
-          const placeholderUser = await getUserByEmail(placeholderEmail);
-          if (placeholderUser) {
-            userId = placeholderUser.id;
-          } else {
-            const client = await getAuthPool().connect();
-            try {
-              await client.query('BEGIN');
-              userId = randomUUID();
-              await client.query(
-                `
-                  INSERT INTO "user" (
-                    id,
-                    name,
-                    email,
-                    email_verified,
-                    image,
-                    created_at,
-                    updated_at,
-                    username,
-                    display_username,
-                    migration_completed
-                  )
-                  VALUES ($1, $2, $3, FALSE, $4, NOW(), NOW(), NULL, NULL, FALSE)
-                `,
-                [userId, displayName, placeholderEmail, telegramUser.photo_url ?? null],
+          const client = await getAuthPool().connect();
+          try {
+            await client.query('BEGIN');
+            userId = randomUUID();
+            const inserted = await client.query(
+              `
+                INSERT INTO "user" (
+                  id,
+                  name,
+                  email,
+                  email_verified,
+                  image,
+                  created_at,
+                  updated_at,
+                  username,
+                  display_username,
+                  migration_completed
+                )
+                VALUES ($1, $2, $3, FALSE, $4, NOW(), NOW(), NULL, NULL, FALSE)
+                ON CONFLICT (email) DO NOTHING RETURNING id
+              `,
+              [userId, displayName, placeholderEmail, telegramUser.photo_url ?? null],
+            );
+            if (!inserted.rowCount) {
+              // A concurrent first login may have committed the provider binding.
+              // Only that binding proves identity; the email owner never does.
+              const linked = await client.query<{ user_id: string }>(
+                'SELECT user_id FROM account WHERE provider_id = $1 AND account_id = $2',
+                [TELEGRAM_PROVIDER_ID, telegramAccountId],
               );
-              await linkTelegramAccountTx(client, userId, telegramUser.id);
-              await client.query('COMMIT');
-            } catch (error) {
-              await client.query('ROLLBACK');
-              throw error;
-            } finally {
-              client.release();
+              if (!linked.rows[0]) {
+                console.warn('[auth] Telegram sign-in blocked: reserved email collision');
+                throw APIError.fromStatus('CONFLICT', {
+                  code: 'TELEGRAM_IDENTITY_CONFLICT',
+                  message: 'Технический адрес занят аккаунтом без привязки Telegram. Войдите прежним способом, укажите обычный email и привяжите Telegram в настройках. Если вход недоступен, обратитесь в поддержку; данные сохранены.',
+                });
+              }
+              userId = linked.rows[0].user_id;
             }
+            await linkTelegramAccountTx(client, userId, telegramUser.id);
+            await client.query('COMMIT');
+          } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+          } finally {
+            client.release();
           }
         } else {
           const client = await getAuthPool().connect();
@@ -935,6 +947,14 @@ function createAuthInstance() {
     secret: config.BETTER_AUTH_SECRET,
     trustedOrigins,
     database: getAuthPool(),
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        // Cover the provider's built-in write endpoints as well as our own validators.
+        const email = ctx.path === '/change-email' ? ctx.body?.newEmail
+          : ['/sign-up/email', '/update-user'].includes(ctx.path) ? ctx.body?.email : undefined;
+        if (typeof email === 'string') validateEmailAddress(email);
+      }),
+    },
     emailAndPassword: {
       enabled: true,
     },
