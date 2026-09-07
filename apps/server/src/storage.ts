@@ -36,8 +36,11 @@ interface ChangedEntityRow {
   version: string | number;
 }
 
+// Receipts record push outcomes only; cursors and entity data must always be read fresh.
+type SyncPushReceipt = Pick<StorageSyncResponse, 'conflicts' | 'acknowledged'>;
+
 interface SyncReceiptRow {
-  response_payload: StorageSyncResponse | string;
+  response_payload: SyncPushReceipt | string;
 }
 
 interface StorageProfileRow {
@@ -225,9 +228,9 @@ function validateSyncRequest(request: StorageSyncRequest) {
   validateStorageDataShape(dataForValidation);
 }
 
-function parseSyncReceiptPayload(payload: StorageSyncResponse | string): StorageSyncResponse {
+function parseSyncReceiptPayload(payload: SyncPushReceipt | string): SyncPushReceipt {
   return typeof payload === 'string'
-    ? JSON.parse(payload) as StorageSyncResponse
+    ? JSON.parse(payload) as SyncPushReceipt
     : payload;
 }
 
@@ -1232,7 +1235,9 @@ class PostgresStorageRepository implements StorageRepository {
     try {
       await client.query('BEGIN');
       let revision = await ensureStorageRoot(client, storageKey);
-      if (request.batchId) {
+      const hasPush = hasOutgoingSyncChanges(request.changes);
+      let receipt: SyncPushReceipt | undefined;
+      if (hasPush && request.batchId) {
         const receiptResult = await client.query<SyncReceiptRow>(
           `
             SELECT response_payload
@@ -1243,13 +1248,12 @@ class PostgresStorageRepository implements StorageRepository {
           [storageKey, request.batchId],
         );
         if (receiptResult.rows[0]) {
-          const storedResponse = parseSyncReceiptPayload(receiptResult.rows[0].response_payload);
-          await client.query('COMMIT');
-          return storedResponse;
+          // Legacy full-response receipts are compatible: use only their push outcome.
+          receipt = parseSyncReceiptPayload(receiptResult.rows[0].response_payload);
         }
       }
 
-      const conflicts: SyncConflict[] = [];
+      const conflicts: SyncConflict[] = receipt?.conflicts.map((conflict) => ({ ...conflict })) ?? [];
       let profileChanged = false;
       let workoutTypesChanged = false;
       let workoutsChanged = false;
@@ -1279,133 +1283,151 @@ class PostgresStorageRepository implements StorageRepository {
       );
       const existingProfile = await readExistingProfile(client, storageKey);
 
-      for (const incoming of request.changes.workoutTypes ?? []) {
-        const existing = existingWorkoutTypes.get(incoming.id);
-        const existingVersion = existing ? toNumber(existing.version) : 0;
+      if (!receipt) {
+        for (const incoming of request.changes.workoutTypes ?? []) {
+          const existing = existingWorkoutTypes.get(incoming.id);
+          const existingVersion = existing ? toNumber(existing.version) : 0;
 
-        if (existing && (incoming.version ?? 0) !== existingVersion) {
-          conflicts.push({
-            entityType: 'workoutTypes',
-            entityId: incoming.id,
-            reason: 'stale-version',
-            serverVersion: existingVersion,
-          });
-          authoritativeWorkoutTypes = mergeConflictEntity(authoritativeWorkoutTypes, mapWorkoutTypeRow(existing));
-          continue;
-        }
+          if (existing && (incoming.version ?? 0) !== existingVersion) {
+            conflicts.push({
+              entityType: 'workoutTypes',
+              entityId: incoming.id,
+              reason: 'stale-version',
+              serverVersion: existingVersion,
+            });
+            authoritativeWorkoutTypes = mergeConflictEntity(authoritativeWorkoutTypes, mapWorkoutTypeRow(existing));
+            continue;
+          }
 
-        if (!existing && incoming.isDeleted) {
-          continue;
-        }
+          if (!existing && incoming.isDeleted) {
+            continue;
+          }
 
-        revision += 1;
-        const normalized: StorageWorkoutType = {
-          ...incoming,
-          updatedAt: normalizeTimestamp(incoming.updatedAt, new Date().toISOString()),
-          isDeleted: incoming.isDeleted ?? false,
-          version: revision,
-          serverUpdatedAt: new Date().toISOString(),
-        };
-        await upsertWorkoutType(client, storageKey, normalized);
-        workoutTypesChanged = true;
-      }
-
-      for (const incoming of request.changes.workouts ?? []) {
-        const existing = existingWorkouts.get(incoming.id);
-        const existingVersion = existing ? toNumber(existing.version) : 0;
-
-        if (existing && (incoming.version ?? 0) !== existingVersion) {
-          conflicts.push({
-            entityType: 'workouts',
-            entityId: incoming.id,
-            reason: 'stale-version',
-            serverVersion: existingVersion,
-          });
-          authoritativeWorkouts = mergeConflictEntity(authoritativeWorkouts, mapWorkoutRow(existing));
-          continue;
-        }
-
-        if (!existing && incoming.isDeleted) {
-          continue;
-        }
-
-        revision += 1;
-        const normalized: StorageWorkout = {
-          ...incoming,
-          pauseIntervals: Array.isArray(incoming.pauseIntervals) ? cloneValue(incoming.pauseIntervals) : [],
-          updatedAt: normalizeTimestamp(incoming.updatedAt, incoming.startTime),
-          isDeleted: incoming.isDeleted ?? false,
-          version: revision,
-          serverUpdatedAt: new Date().toISOString(),
-        };
-        await upsertWorkout(client, storageKey, normalized);
-        workoutsChanged = true;
-      }
-
-      for (const incoming of request.changes.logs ?? []) {
-        const existing = existingLogs.get(incoming.id);
-        const existingVersion = existing ? toNumber(existing.version) : 0;
-
-        if (existing && (incoming.version ?? 0) !== existingVersion) {
-          conflicts.push({
-            entityType: 'logs',
-            entityId: incoming.id,
-            reason: 'stale-version',
-            serverVersion: existingVersion,
-          });
-          authoritativeLogs = mergeConflictEntity(authoritativeLogs, mapLogRow(existing));
-          continue;
-        }
-
-        if (!existing && incoming.isDeleted) {
-          continue;
-        }
-
-        revision += 1;
-        const normalized: StorageLogEntry = {
-          ...incoming,
-          updatedAt: normalizeTimestamp(incoming.updatedAt, incoming.date),
-          isDeleted: incoming.isDeleted ?? false,
-          version: revision,
-          serverUpdatedAt: new Date().toISOString(),
-        };
-        await upsertLog(client, storageKey, normalized);
-        logsChanged = true;
-      }
-
-      if (request.changes.profile) {
-        const incoming = normalizeProfileForWrite(request.changes.profile, {
-          existing: existingProfile,
-          authContext,
-        });
-        const existingVersion = existingProfile?.version ?? 0;
-
-        if (existingProfile && (request.changes.profile.version ?? 0) !== existingVersion) {
-          conflicts.push({
-            entityType: 'profile',
-            entityId: existingProfile.id,
-            reason: 'stale-version',
-            serverVersion: existingVersion,
-          });
-          authoritativeProfile = existingProfile;
-        } else {
           revision += 1;
-          incoming.version = revision;
-          incoming.serverUpdatedAt = incoming.updatedAt;
-          await upsertProfile(client, storageKey, incoming);
-          profileChanged = true;
+          const normalized: StorageWorkoutType = {
+            ...incoming,
+            updatedAt: normalizeTimestamp(incoming.updatedAt, new Date().toISOString()),
+            isDeleted: incoming.isDeleted ?? false,
+            version: revision,
+            serverUpdatedAt: new Date().toISOString(),
+          };
+          await upsertWorkoutType(client, storageKey, normalized);
+          workoutTypesChanged = true;
         }
-      }
 
-      await updateStorageRootRevision(client, storageKey, revision);
+        for (const incoming of request.changes.workouts ?? []) {
+          const existing = existingWorkouts.get(incoming.id);
+          const existingVersion = existing ? toNumber(existing.version) : 0;
 
-      if (profileChanged || !existingProfile) {
-        const nextProfile = await readExistingProfile(client, storageKey);
-        await refreshPublicAliases(client, storageKey, nextProfile);
-      }
+          if (existing && (incoming.version ?? 0) !== existingVersion) {
+            conflicts.push({
+              entityType: 'workouts',
+              entityId: incoming.id,
+              reason: 'stale-version',
+              serverVersion: existingVersion,
+            });
+            authoritativeWorkouts = mergeConflictEntity(authoritativeWorkouts, mapWorkoutRow(existing));
+            continue;
+          }
 
-      if (profileChanged || workoutTypesChanged || logsChanged) {
-        await invalidatePublicProfileCache(client, storageKey);
+          if (!existing && incoming.isDeleted) {
+            continue;
+          }
+
+          revision += 1;
+          const normalized: StorageWorkout = {
+            ...incoming,
+            pauseIntervals: Array.isArray(incoming.pauseIntervals) ? cloneValue(incoming.pauseIntervals) : [],
+            updatedAt: normalizeTimestamp(incoming.updatedAt, incoming.startTime),
+            isDeleted: incoming.isDeleted ?? false,
+            version: revision,
+            serverUpdatedAt: new Date().toISOString(),
+          };
+          await upsertWorkout(client, storageKey, normalized);
+          workoutsChanged = true;
+        }
+
+        for (const incoming of request.changes.logs ?? []) {
+          const existing = existingLogs.get(incoming.id);
+          const existingVersion = existing ? toNumber(existing.version) : 0;
+
+          if (existing && (incoming.version ?? 0) !== existingVersion) {
+            conflicts.push({
+              entityType: 'logs',
+              entityId: incoming.id,
+              reason: 'stale-version',
+              serverVersion: existingVersion,
+            });
+            authoritativeLogs = mergeConflictEntity(authoritativeLogs, mapLogRow(existing));
+            continue;
+          }
+
+          if (!existing && incoming.isDeleted) {
+            continue;
+          }
+
+          revision += 1;
+          const normalized: StorageLogEntry = {
+            ...incoming,
+            updatedAt: normalizeTimestamp(incoming.updatedAt, incoming.date),
+            isDeleted: incoming.isDeleted ?? false,
+            version: revision,
+            serverUpdatedAt: new Date().toISOString(),
+          };
+          await upsertLog(client, storageKey, normalized);
+          logsChanged = true;
+        }
+
+        if (request.changes.profile) {
+          const incoming = normalizeProfileForWrite(request.changes.profile, {
+            existing: existingProfile,
+            authContext,
+          });
+          const existingVersion = existingProfile?.version ?? 0;
+
+          if (existingProfile && (request.changes.profile.version ?? 0) !== existingVersion) {
+            conflicts.push({
+              entityType: 'profile',
+              entityId: existingProfile.id,
+              reason: 'stale-version',
+              serverVersion: existingVersion,
+            });
+            authoritativeProfile = existingProfile;
+          } else {
+            revision += 1;
+            incoming.version = revision;
+            incoming.serverUpdatedAt = incoming.updatedAt;
+            await upsertProfile(client, storageKey, incoming);
+            profileChanged = true;
+          }
+        }
+
+        await updateStorageRootRevision(client, storageKey, revision);
+
+        if (profileChanged || !existingProfile) {
+          const nextProfile = await readExistingProfile(client, storageKey);
+          await refreshPublicAliases(client, storageKey, nextProfile);
+        }
+
+        if (profileChanged || workoutTypesChanged || logsChanged) {
+          await invalidatePublicProfileCache(client, storageKey);
+        }
+      } else {
+        // Include current submitted entities even if the caller advanced its cursor.
+        // Clients need their server versions to rebase edits made while the push was in flight.
+        authoritativeProfile = request.changes.profile ? existingProfile ?? null : null;
+        authoritativeWorkoutTypes = [...existingWorkoutTypes.values()].map(mapWorkoutTypeRow);
+        authoritativeWorkouts = [...existingWorkouts.values()].map(mapWorkoutRow);
+        authoritativeLogs = [...existingLogs.values()].map(mapLogRow);
+        for (const conflict of conflicts) {
+          const current = conflict.entityType === 'profile' ? authoritativeProfile
+            : conflict.entityType === 'workoutTypes' ? existingWorkoutTypes.get(conflict.entityId)
+            : conflict.entityType === 'workouts' ? existingWorkouts.get(conflict.entityId)
+            : existingLogs.get(conflict.entityId);
+          if (current) {
+            conflict.serverVersion = toNumber(current.version);
+          }
+        }
       }
 
       let pulled: Pick<StorageSyncResponse, 'cursor' | 'changes' | 'hasMore'>;
@@ -1446,7 +1468,7 @@ class PostgresStorageRepository implements StorageRepository {
         cursor: pulled.cursor,
         changes: pulled.changes,
         conflicts,
-        acknowledged: listSyncAcknowledgements(request.changes),
+        acknowledged: receipt?.acknowledged ?? listSyncAcknowledgements(request.changes),
         protocolVersion: 1,
         hasMore: pulled.hasMore,
       };
@@ -1464,14 +1486,14 @@ class PostgresStorageRepository implements StorageRepository {
         response.changes.logs = mergeConflictEntity(response.changes.logs, entry);
       }
 
-      if (request.batchId) {
+      if (hasPush && request.batchId && !receipt) {
         await client.query(
           `
             INSERT INTO storage_sync_receipts (storage_key, batch_id, response_payload)
             VALUES ($1, $2, $3::jsonb)
             ON CONFLICT (storage_key, batch_id) DO NOTHING
           `,
-          [storageKey, request.batchId, JSON.stringify(response)],
+          [storageKey, request.batchId, JSON.stringify({ conflicts: response.conflicts, acknowledged: response.acknowledged } satisfies SyncPushReceipt)],
         );
         await client.query(
           `
