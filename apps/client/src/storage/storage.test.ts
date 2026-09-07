@@ -369,3 +369,23 @@ it.each(['ai', 'public'] as const)('discards delayed %s cache response after acc
     storage.dispose();
     vi.unstubAllGlobals();
 });
+
+it('loads guest public profiles without opening IndexedDB, including after auth generation changes', async () => {
+    const { closeActiveDatabase, invalidateAccountOperations } = await import('../db');
+    closeActiveDatabase();
+    const service = new StorageService({ autoInit: false, enableBroadcast: false });
+    const put = vi.spyOn(db.publicProfileCache, 'put');
+    let finish!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { finish = resolve; })));
+    const pending = service.getPublicProfile('guest');
+    invalidateAccountOperations();
+    finish(new Response(JSON.stringify({ identifier: 'guest', displayName: 'Guest' })));
+    expect((await pending)?.displayName).toBe('Guest');
+    expect(put).not.toHaveBeenCalled();
+    expect(db.isOpen()).toBe(false);
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    await expect(service.getPublicProfile('guest')).rejects.toThrow('Не удалось загрузить профиль');
+    service.dispose();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+});

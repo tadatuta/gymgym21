@@ -80,6 +80,10 @@ type PublicProfileWithCacheMetadata = PublicProfileData & {
     };
 };
 
+export class PublicProfileUnavailableError extends Error {
+    constructor() { super('Не удалось загрузить профиль. Проверьте подключение и попробуйте ещё раз.'); }
+}
+
 export class StorageService {
     private onUpdateCallback?: () => void;
     private onSyncStatusChangeCallback?: (status: SyncStatus) => void;
@@ -928,20 +932,23 @@ export class StorageService {
     }
 
     async getPublicProfile(identifier: string): Promise<PublicProfileWithCacheMetadata | null> {
-        this.assertActive();
         const context = captureAccountContext();
-        const db = context.database;
+        const db = context.storageKey ? context.database : null;
         const normalizedIdentifier = identifier.trim().replace(/^@/, '').toLowerCase();
         if (!normalizedIdentifier) return null;
 
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        if (db) context.signal.addEventListener('abort', cancel, { once: true });
+        const timeout = setTimeout(cancel, 10000);
         try {
-            const response = await fetch(resolveApiUrl(`/profiles/${encodeURIComponent(identifier)}`), { signal: context.signal });
-            context.assertCurrent();
+            const response = await fetch(resolveApiUrl(`/profiles/${encodeURIComponent(identifier)}`), { signal: controller.signal });
+            if (db) context.assertCurrent();
             if (response.ok) {
                 const payload = await response.json() as PublicProfileData;
-                context.assertCurrent();
+                if (db) context.assertCurrent();
                 const cachedAt = new Date().toISOString();
-                await db.publicProfileCache.put({
+                await db?.publicProfileCache.put({
                     identifier: normalizedIdentifier,
                     payload,
                     cachedAt,
@@ -952,17 +959,21 @@ export class StorageService {
                 };
             }
             if (response.status === 404 || response.status === 403) {
-                await db.publicProfileCache.delete(normalizedIdentifier);
+                await db?.publicProfileCache.delete(normalizedIdentifier);
                 return null;
             }
             throw new Error('Public profile request failed');
         } catch {
             // Fall through to the account-scoped IndexedDB cache.
+        } finally {
+            clearTimeout(timeout);
+            context.signal.removeEventListener('abort', cancel);
         }
+        if (!db) throw new PublicProfileUnavailableError();
 
-        context.assertCurrent();
-        const cached = await db.publicProfileCache.get(normalizedIdentifier);
-        context.assertCurrent();
+        if (db) context.assertCurrent();
+        const cached = await db?.publicProfileCache.get(normalizedIdentifier);
+        if (db) context.assertCurrent();
         return cached
             ? {
                 ...cached.payload,

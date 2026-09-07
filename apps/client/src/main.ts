@@ -13,7 +13,7 @@ import { createReconnectCoordinator } from './services/reconnect';
 import { captureAccountContext } from './db';
 import { getLatestLog } from './utils/latest-log';
 import { FormDrafts } from './utils/form-drafts';
-import { storage, SyncStatus } from './storage/storage';
+import { storage, SyncStatus, PublicProfileUnavailableError } from './storage/storage';
 import { WorkoutSet, WorkoutSession, PublicProfileData, WorkoutType } from './types';
 import './styles/stats.css';
 import { getOneRepMaxByDate, getDurationStats } from './utils/statistics';
@@ -107,6 +107,9 @@ let editingLogId: string | null = null;
 let loadedPublicProfile: PublicProfileData | null = null;
 let loadedPublicProfileIdentifier: string | null = null;
 let profileLoadFailed = false;
+let publicProfileLoadError: string | null = null;
+let guestLoginRequested = false;
+let guestLoginHost: HTMLElement | null = null;
 let lastAddedLogId: string | null = null;
 let editingTypeId: string | null = null;
 let currentStatsTab: 'overview' | 'progress' = 'overview';
@@ -141,6 +144,7 @@ function clearPublicProfileState() {
   loadedPublicProfile = null;
   loadedPublicProfileIdentifier = null;
   profileLoadFailed = false;
+  publicProfileLoadError = null;
 }
 
 function shouldReloadPublicProfile(route: AppRoute) {
@@ -158,9 +162,20 @@ async function loadPublicProfile(identifier: string) {
   loadedPublicProfile = null;
   loadedPublicProfileIdentifier = identifier;
   profileLoadFailed = false;
+  publicProfileLoadError = null;
   render();
 
-  const profile = await storage.getPublicProfile(identifier);
+  let profile: PublicProfileData | null;
+  try {
+    profile = await storage.getPublicProfile(identifier);
+  } catch (error) {
+    if (requestId === publicProfileRequestId && currentRoute.name === 'public-profile' &&
+      currentRoute.identifier === identifier && error instanceof PublicProfileUnavailableError) {
+      publicProfileLoadError = error.message;
+      render();
+    }
+    return;
+  }
   if (requestId !== publicProfileRequestId) {
     return;
   }
@@ -177,6 +192,7 @@ async function loadPublicProfile(identifier: string) {
 async function handleRouteChange(route: AppRoute, previousRoute: AppRoute) {
   const routeChanged = !isSameRoute(previousRoute, route);
   currentRoute = route;
+  guestLoginRequested = false;
 
   if (route.name === 'public-profile') {
     if (shouldReloadPublicProfile(route)) {
@@ -244,17 +260,59 @@ function render() {
   withFormDrafts(renderContent);
 }
 
+function disposeMainLogin(app: HTMLElement) {
+  disposeLogin(app);
+  if (guestLoginHost) disposeLogin(guestLoginHost);
+  guestLoginHost = null;
+}
+
+function showGuestLogin(error?: string) {
+  if (guestLoginHost?.isConnected) return;
+  const app = document.getElementById('app');
+  if (!app) return;
+  formDrafts?.dispose();
+  formDrafts = null;
+  disposeMainLogin(app);
+  app.replaceChildren();
+  guestLoginHost = document.createElement('div');
+  app.append(guestLoginHost);
+  void renderLogin(guestLoginHost, () => location.reload(), error);
+  if (currentRoute.name === 'public-profile') {
+    const back = document.createElement('button');
+    back.className = 'button button_secondary';
+    back.textContent = 'Назад к профилю';
+    back.id = 'guest-profile-back';
+    back.addEventListener('click', () => { guestLoginRequested = false; render(); });
+    app.prepend(back);
+  }
+}
+
 function renderContent() {
   const app = document.getElementById('app');
   if (!app) return;
 
   if (!getCurrentUser()) {
+    if (currentRoute.name !== 'public-profile' || guestLoginRequested) {
+      showGuestLogin();
+      return;
+    }
+    disposeMainLogin(app);
+    app.innerHTML = `<main class="content">${renderPublicProfilePage()}
+      <button class="button" id="guest-sign-in">Войти в свой аккаунт</button></main>`;
+    app.querySelector('#public-profile-retry')?.addEventListener('click', () => {
+      if (currentRoute.name === 'public-profile') void loadPublicProfile(currentRoute.identifier);
+    });
+    app.querySelector('#guest-sign-in')?.addEventListener('click', () => {
+      guestLoginRequested = true;
+      window.history.pushState(null, '', window.location.href);
+      showGuestLogin();
+    });
     return;
   }
 
   const currentPage = getCurrentPage();
 
-  disposeLogin(app);
+  disposeMainLogin(app);
   app.innerHTML = `
     <main class="content">
       ${renderPage()}
@@ -1803,6 +1861,8 @@ function renderPublicProfilePage() {
   }
 
   if (!loadedPublicProfile) {
+    if (publicProfileLoadError) return `<div class="page-content"><p role="alert">${escapeHtml(publicProfileLoadError)}</p>
+      <button class="button button_secondary" id="public-profile-retry">Повторить</button></div>`;
     if (profileLoadFailed) {
       return `
         <div class="page-content">
@@ -1840,6 +1900,7 @@ function renderPublicProfilePage() {
         <div class="profile-name">${safeDisplayName}</div>
         ${profile.identifier.startsWith('id_') ? '' : `<div class="profile-subtitle">@${safeIdentifier}</div>`}
 	        ${(function () {
+          if (!getCurrentUser()) return '';
 	      const myProfile = storage.getProfile();
 	      const isMe = myProfile && (
 	        myProfile.username === profile.identifier ||
@@ -2265,7 +2326,10 @@ function bindPageEvents() {
     bindStatsPageEvents();
   }
 
-  if (currentPage === 'public-profile') {
+  if (currentPage === 'public-profile' && getCurrentUser()) {
+    document.getElementById('public-profile-retry')?.addEventListener('click', () => {
+      if (currentRoute.name === 'public-profile') void loadPublicProfile(currentRoute.identifier);
+    });
     const friendBtn = document.getElementById('friend-action-btn');
     friendBtn?.addEventListener('click', async () => {
       const id = friendBtn.getAttribute('data-id');
@@ -2358,14 +2422,15 @@ storage.onSyncStatusChange(updateSyncStatus);
 
 async function initApp() {
   void loadTelegramWebApp();
-  const app = document.getElementById('app')!;
   const showLogin = (error?: string) => {
-    formDrafts?.dispose();
-    formDrafts = null;
-    void renderLogin(app, () => {
-      location.reload();
-    }, error);
+    if (currentRoute.name === 'public-profile' && !guestLoginRequested) {
+      render();
+      return;
+    }
+    showGuestLogin(error);
   };
+  // Public routes must work without opening a personal database or restoring a session.
+  if (routerController.getCurrentRoute().name === 'public-profile') void routerController.start();
   const activateLocalAccount = async (account: OfflineAccount) => {
     authStatus = account.migrationStatus;
     await storage.activate(account.storageKey);
@@ -2374,6 +2439,8 @@ async function initApp() {
     if (!context.isCurrent()) return;
     aiResults = cachedResults;
     await routerController.start();
+    if (currentRoute.name === 'public-profile') await loadPublicProfile(currentRoute.identifier);
+    else render();
     updateSyncStatus('idle');
   };
 

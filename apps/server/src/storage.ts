@@ -4,7 +4,7 @@ import type { PoolClient } from 'pg';
 import { config } from './config.js';
 import { ensureDatabaseReady, getDatabasePool } from './database.js';
 import type { AuthenticatedRequestContext } from './auth.js';
-import { ensureAuthDatabaseSchema } from './auth-meta.js';
+import { AuthMetaService, ensureAuthDatabaseSchema } from './auth-meta.js';
 import { HttpError } from './http/errors.js';
 
 const ARRAY_ENTITY_TYPES = ['workoutTypes', 'logs', 'workouts'] as const;
@@ -1676,11 +1676,17 @@ class PostgresStorageRepository implements StorageRepository {
       return null;
     }
 
+    const authoritativeAlias = await AuthMetaService.getAlias(normalizedIdentifier);
     const result = await getDatabasePool().query<AliasRow>(
       'SELECT storage_key FROM public_profile_aliases WHERE alias_lower = $1 LIMIT 1',
       [normalizedIdentifier],
     );
-    const storageKey = result.rows[0]?.storage_key;
+    const publicStorageKey = result.rows[0]?.storage_key;
+    // An owned alias without a binding, or conflicting historical ownership,
+    // must never resolve to somebody else's public profile.
+    if (authoritativeAlias && (!authoritativeAlias.storageKey ||
+      (publicStorageKey && publicStorageKey !== authoritativeAlias.storageKey))) return null;
+    const storageKey = authoritativeAlias?.storageKey ?? publicStorageKey;
     if (!storageKey) {
       return null;
     }
