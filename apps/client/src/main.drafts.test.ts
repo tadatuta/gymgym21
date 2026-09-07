@@ -1,3 +1,5 @@
+import * as trainingTime from './utils/training-time';
+import { formatDuration } from './utils/duration';
 import { getDurationStats } from './utils/statistics';
 import { getTrainingActivity } from './utils/training-activity';
 import { getLatestLog } from './utils/latest-log';
@@ -43,7 +45,7 @@ function setup(page = 'main', manyTypes = false) {
     const storage = {
         getWorkoutTypes: () => types, getLogs: () => logs, getWorkouts: () => workouts,
         getActiveWorkout: () => active ? { ...workouts[0], status: 'active' } : null, getWorkoutDuration: () => 0, getProfile: () => profile, getProfileIdentifier: () => '',
-        getConflicts: () => [], getStorageKey: () => account,
+        getTimeZone: () => 'UTC', getConflicts: () => [], getStorageKey: () => account,
         onUpdate: (fn: () => void) => { refresh = fn; },
         addLog: vi.fn(async (data) => { logs.push({ ...logs[0], ...data, id: 'l2' }); refresh(); return logs.at(-1)!; }),
         updateLog: vi.fn(async (data) => { Object.assign(logs[0], data); refresh(); }),
@@ -55,7 +57,7 @@ function setup(page = 'main', manyTypes = false) {
         updateProfileSettings: vi.fn(async (data) => { Object.assign(profile, data); refresh(); }),
     };
     const context = {
-        getDurationStats, getTrainingActivity, getLatestLog, ...safeHtml, ...typeahead, FormDrafts, storage, renderProfileStats,
+        ...trainingTime, formatDuration, getDurationStats, getTrainingActivity, getLatestLog, ...safeHtml, ...typeahead, FormDrafts, storage, renderProfileStats,
         captureAccountContext: () => ({ storageKey: account }),
         createInternalRoute: (name: string) => ({ name }), getCurrentUser: () => ({ name: 'User' }),
         hasVerifiedOnlineAccount: () => true, canUsePasskeyInCurrentContext: () => false,
@@ -83,6 +85,19 @@ describe('production UI drafts across storage updates', () => {
         expect(document.querySelector('.stat-value')?.textContent).toBe('1');
         app.ui.route('stats');
         expect(document.querySelector('.stat-metric__label')?.textContent).toBe('Тренировочных дней');
+        expect(document.querySelector('.stat-metric__value')?.textContent).toBe('1');
+    });
+
+    it('own preview and statistics use the stored owner zone across UTC midnight', () => {
+        const app = setup('profile-settings');
+        app.storage.getTimeZone = () => 'Europe/Moscow';
+        app.logs.splice(0, app.logs.length,
+            { id: 'a', workoutTypeId: 'missing', workoutId: '', weight: 10, reps: 2, date: '2026-01-01T21:30:00Z' },
+            { id: 'b', workoutTypeId: 't0', workoutId: '', weight: 10, reps: 2, date: '2026-01-02T01:00:00Z' });
+        app.ui.tab('public');
+        expect(document.querySelector('.stat-value')?.textContent).toBe('1');
+        expect(document.body.textContent).toContain(trainingTime.dayLabel('2026-01-02'));
+        app.ui.route('stats');
         expect(document.querySelector('.stat-metric__value')?.textContent).toBe('1');
     });
 

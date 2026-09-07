@@ -65,6 +65,26 @@ test('PostgreSQL public HTTP statistics count all historical training days and p
     assert.equal(next.body.logs.length, 23);
     assert.ok(next.body.logs.some(x => x.id === 'orphan'));
     assert.ok(next.body.logs.some(x => x.id === 'same'));
+    // Owner-zone midnight merges two UTC dates and survives persisted cache hits.
+    data.profile.timeZone = 'Europe/Moscow';
+    data.logs = [{ id: 'midnight', workoutTypeId: 'live', date: '2026-01-01T21:30:00Z' }, { id: 'morning', workoutTypeId: 'live', date: '2026-01-02T01:00:00Z' }];
+    await repository.replaceSnapshot('stats', data);
+    const zoned = (await request(app).get('/api/profiles/id_stats').expect(200)).body;
+    assert.equal(zoned.timeZone, 'Europe/Moscow');
+    assert.equal(zoned.stats.totalWorkouts, 1);
+    assert.deepEqual(zoned.recentActivity, [{ date: '2026-01-02', exerciseCount: 2 }]);
+    assert.equal((await repository.readSnapshot('stats')).profile.timeZone, 'Europe/Moscow');
+    assert.deepEqual((await request(app).get('/api/profiles/id_stats').expect(200)).body, zoned);
+    data.profile.timeZone = 'America/Los_Angeles';
+    await repository.replaceSnapshot('stats', data);
+    const changedZone = (await request(app).get('/api/profiles/id_stats').expect(200)).body;
+    assert.equal(changedZone.timeZone, 'America/Los_Angeles');
+    assert.deepEqual(changedZone.recentActivity, [{ date: '2026-01-01', exerciseCount: 2 }]);
+    await getDatabasePool().query("UPDATE public_profile_cache SET payload = jsonb_set(payload, '{timeZone}', '\"UTC\"') WHERE storage_key = 'stats'");
+    await getDatabasePool().query("DELETE FROM app_migrations WHERE name = '004_training_time_zone.sql'");
+    await closeDatabasePool(); await ensureDatabaseReady();
+    assert.equal((await repository.getPublicProfileByStorageKey('stats')).timeZone, 'America/Los_Angeles');
+
   } finally {
     await closeDatabasePool();
     await closeAuthResources();

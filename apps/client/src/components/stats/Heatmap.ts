@@ -1,16 +1,17 @@
+import { dayKey } from '../../utils/training-time';
 import { escapeAttribute } from '../../utils/safe-html';
 /**
  * Renders a contribution heatmap similar to GitHub's.
  * @param dateSet Set of date strings (YYYY-MM-DD) where workouts occurred.
  * @param months Number of months to show (default 6).
  */
-export function renderHeatmap(dateSet: Set<string>, months: number = 6): string {
-    const today = new Date();
+export function renderHeatmap(dateSet: Set<string>, months: number = 6, timeZone = 'UTC'): string {
+    const today = new Date(`${dayKey(Date.now(), timeZone)}T12:00:00Z`);
     // Start from 'months' ago
     const startDate = new Date(today);
-    startDate.setMonth(today.getMonth() - months);
+    startDate.setUTCMonth(today.getUTCMonth() - months);
     // Align to the previous Sunday to keep the grid aligned
-    startDate.setDate(startDate.getDate() - startDate.getDay());
+    startDate.setUTCDate(startDate.getUTCDate() - startDate.getUTCDay());
 
     let html = '<div class="heatmap-container"><div class="heatmap-grid">';
 
@@ -32,7 +33,7 @@ export function renderHeatmap(dateSet: Set<string>, months: number = 6): string 
         html += `<div class="${escapeAttribute(cssClass)}" title="${escapeAttribute(title)}"></div>`;
 
         // Next day
-        currentDate.setDate(currentDate.getDate() + 1);
+        currentDate.setUTCDate(currentDate.getUTCDate() + 1);
     }
 
     html += '</div>';

@@ -38,6 +38,7 @@ export interface WorkoutSet extends SyncItem {
 }
 
 export interface UserProfile extends SyncItem {
+    timeZone?: string;
     id: string; // 'me' or telegram user id
     isPublic: boolean;
     showFullHistory?: boolean;
@@ -72,6 +73,7 @@ export interface ProfileStats {
 }
 
 export interface PublicProfileData {
+    timeZone?: string;
     displayName: string;
     photoUrl?: string;
     identifier: string; // username или id_123456

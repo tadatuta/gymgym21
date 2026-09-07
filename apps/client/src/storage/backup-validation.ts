@@ -1,3 +1,4 @@
+import { validTimeZone } from '../utils/training-time';
 import { z } from 'zod';
 
 // Backup rules are intentionally independent of the more permissive incremental sync contract.
@@ -33,6 +34,7 @@ const workout = z.object({
     { message: 'End precedes start', path: ['endTime'] });
 const profile = z.object({
     ...metadata, isPublic: z.boolean(), showFullHistory: z.boolean().optional(),
+    timeZone: z.string().max(100).refine(validTimeZone, { message: 'Invalid IANA time zone' }).optional(),
     displayName: text.optional(), photoUrl: text.optional(), createdAt: timestamp,
     gender: z.enum(['male', 'female', 'other']).optional(),
     birthDate: z.union([z.iso.date().refine((value) => !value.startsWith('0000'), 'Invalid year'), z.literal('')]).optional().transform((value) => value || undefined),

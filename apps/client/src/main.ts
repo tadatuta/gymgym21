@@ -1,3 +1,5 @@
+import { accountTimeZone, dayKey, dayLabel, validTimeZone, datetimeValue, parseDatetimeValue } from './utils/training-time';
+import { formatDuration } from './utils/duration';
 import { getTrainingActivity } from './utils/training-activity';
 
 import './components/typeahead/typeahead.css';
@@ -478,27 +480,13 @@ let currentWeekOffset = 0;
 let lastCalendarValue = '';
 
 function getWeekRange(offset: number) {
-  const now = new Date();
-  // Adjust to start of today (00:00:00)
-  now.setHours(0, 0, 0, 0);
-
-  // Calculate start of the "current" week window based on offset
-  // offset 0: last 7 days (today - 6 days) to today
-  // offset 1: (today - 13 days) to (today - 7 days)
-  const end = new Date(now);
-  end.setDate(now.getDate() - (offset * 7));
-  // Set end time to end of day
-  end.setHours(23, 59, 59, 999);
-
+  // Calendar-only UTC arithmetic avoids viewer-zone and DST shifts of account day keys.
+  const end = new Date(`${dayKey(Date.now(), storage.getTimeZone())}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() - offset * 7);
   const start = new Date(end);
-  start.setDate(end.getDate() - 6); // 7 day window
-  start.setHours(0, 0, 0, 0);
+  start.setUTCDate(start.getUTCDate() - 6);
+  return { start, end, label: `${dayLabel(dayKey(start), { day: 'numeric', month: 'short' })} - ${dayLabel(dayKey(end), { day: 'numeric', month: 'short' })}` };
 
-  return {
-    start,
-    end,
-    label: `${start.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })} - ${end.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}`
-  };
 }
 
 function renderMainPage() {
@@ -612,8 +600,8 @@ function renderLogsList() {
   const { start, end } = getWeekRange(currentWeekOffset);
 
   let weekLogs = allLogs.filter(log => {
-    const logDate = new Date(log.date);
-    return logDate >= start && logDate <= end;
+    const key = dayKey(log.date, storage.getTimeZone());
+    return key >= dayKey(start) && key <= dayKey(end);
   });
 
   // Apply filter by selected exercise type if enabled
@@ -711,8 +699,11 @@ function bindLogItemEvents() {
       const endTimeLocal = formData.get('endTime') as string;
 
       const updates: { name?: string; startTime?: string; endTime?: string } = { name };
-      if (startTimeLocal) updates.startTime = new Date(startTimeLocal).toISOString();
-      if (endTimeLocal) updates.endTime = new Date(endTimeLocal).toISOString();
+      const original = storage.getWorkouts().find(w => w.id === editingWorkoutId);
+      try {
+        if (startTimeLocal) updates.startTime = parseDatetimeValue(startTimeLocal, storage.getTimeZone(), original?.startTime);
+        if (endTimeLocal) updates.endTime = parseDatetimeValue(endTimeLocal, storage.getTimeZone(), original?.endTime);
+      } catch (error) { showToast((error as Error).message); return; }
 
       await storage.updateWorkout(editingWorkoutId, updates);
       if (!saved?.()) return;
@@ -797,9 +788,7 @@ function setWorkoutTypeInForm(typeId: string) {
 }
 
 function toLocalDatetimeValue(isoString: string): string {
-  const d = new Date(isoString);
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return datetimeValue(isoString, storage.getTimeZone());
 }
 
 function renderWorkoutEditForm(workout: WorkoutSession): string {
@@ -832,23 +821,22 @@ function renderWorkoutEditForm(workout: WorkoutSession): string {
   `;
 }
 
-function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditable: boolean) {
+function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditable: boolean, timeZone = storage.getTimeZone()) {
   if (logs.length === 0) return '<p class="hint">Нет записей за этот период</p>';
 
   const logsByDay = new Map<string, WorkoutSet[]>();
   // Sort logs by date descending
   [...logs].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).forEach(log => {
-    const d = new Date(log.date);
-    const dateKey = d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+    const dateKey = dayKey(log.date, timeZone);
     if (!logsByDay.has(dateKey)) logsByDay.set(dateKey, []);
     logsByDay.get(dateKey)!.push(log);
   });
 
-  const workouts = storage.getWorkouts();
+  const workouts = isEditable ? storage.getWorkouts() : [];
   let html = '';
 
-  logsByDay.forEach((dayLogs, dateLabel) => {
-    const dayDateStr = dayLogs[0]?.date.split('T')[0] || '';
+  logsByDay.forEach((dayLogs, dayDateStr) => {
+    const dateLabel = dayLabel(dayDateStr);
 
     // Identify workouts in this day
     const dayWorkouts = new Set<string>();
@@ -869,11 +857,11 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
     const singleWorkoutId = sortedWorkoutIds.length === 1 ? sortedWorkoutIds[0] : null;
     const singleWorkout = singleWorkoutId ? workouts.find(w => w.id === singleWorkoutId) : null;
     const showNameInHeader = singleWorkout && singleWorkout.name;
-    const singleWorkoutDuration = singleWorkout ? Math.round(storage.getWorkoutDuration(singleWorkout)) : 0;
+    const singleWorkoutDuration = singleWorkout ? formatDuration(storage.getWorkoutDuration(singleWorkout) * 60) : 0;
 
     html += `<div class="log-day">`;
     html += `<div class="log-day__header">
-      <span>${escapeHtml(dateLabel)}${showNameInHeader ? ` • ${escapeHtml(singleWorkout.name || '')}` : ''}${singleWorkout ? ` • ${escapeHtml(singleWorkoutDuration)} мин` : ''}</span>
+      <span>${escapeHtml(dateLabel)}${showNameInHeader ? ` • ${escapeHtml(singleWorkout.name || '')}` : ''}${singleWorkout ? ` • ${escapeHtml(singleWorkoutDuration)}` : ''}</span>
       <div class="log-day__header-actions">
         ${isEditable && singleWorkout ? `<button class="workout-header__edit" data-workout-id="${escapeAttribute(singleWorkout.id)}" title="Редактировать тренировку">✏️</button>` : ''}
         ${isEditable ? `<button class="share-btn" data-date="${escapeAttribute(dayDateStr)}" title="Поделиться">📤</button>` : ''}
@@ -893,12 +881,12 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
       const hideSubheader = sortedWorkoutIds.length === 1 && (showNameInHeader || !workout?.name);
 
       if (!hideSubheader) {
-        const duration = workout ? Math.round(storage.getWorkoutDuration(workout)) : 0;
+        const duration = workout ? formatDuration(storage.getWorkoutDuration(workout) * 60) : 0;
 
         html += `<h3 class="workout-subheader">
                 <span>${escapeHtml(workout?.name || 'Тренировка')}</span>
                 <div class="workout-subheader__actions">
-                  <span class="workout-subheader__time">${escapeHtml(duration)} мин</span>
+                  <span class="workout-subheader__time">${escapeHtml(duration)}</span>
                   ${isEditable && workout ? `<button class="workout-header__edit" data-workout-id="${escapeAttribute(workout.id)}" title="Редактировать тренировку">✏️</button>` : ''}
                 </div>
             </h3>`;
@@ -1109,6 +1097,9 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
       </div>
 
       <div class="settings-section">
+        <label class="label" for="profile-time-zone">Часовой пояс тренировок</label>
+        <input class="input" id="profile-time-zone" value="${escapeAttribute(storage.getTimeZone())}" placeholder="Europe/Paris">
+        <p class="hint">История и публичная статистика используют этот часовой пояс.</p>
         <div class="settings-section-title">Имя</div>
         <input class="input" type="text" id="profile-display-name" value="${safeDisplayName}" placeholder="Ваше имя">
       </div>
@@ -1134,7 +1125,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
 
         // Calculate stats
         const totalVolume = logs.reduce((acc, l) => acc + ((l.weight || 0) * (l.reps || 0)), 0);
-        const uniqueDaysSet = new Set(getTrainingActivity(logs).keys());
+        const uniqueDaysSet = new Set(getTrainingActivity(logs, storage.getTimeZone()).keys());
         const totalWorkouts = uniqueDaysSet.size;
 
         const lastWorkoutDate = logs.length > 0 ? [...logs].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0].date : undefined;
@@ -1161,7 +1152,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
           lastWorkoutDate
         };
 
-        return renderProfileStats(stats, uniqueDaysSet);
+        return renderProfileStats(stats, uniqueDaysSet, storage.getTimeZone());
       })()}
       </div>
 
@@ -1611,6 +1602,11 @@ function bindProfileSettingsEvents() {
     if (publicToggle) updates.isPublic = publicToggle.checked;
     if (historyToggle) updates.showFullHistory = historyToggle.checked;
     if (nameInput) updates.displayName = nameInput.value;
+    const timeZoneInput = document.getElementById('profile-time-zone') as HTMLInputElement | null;
+    if (timeZoneInput) {
+      if (!validTimeZone(timeZoneInput.value)) { showToast('Укажите часовой пояс IANA, например Europe/Paris'); return; }
+      updates.timeZone = timeZoneInput.value;
+    }
 
     if (genderInput) updates.gender = genderInput.value || undefined;
     if (birthDateInput) updates.birthDate = birthDateInput.value;
@@ -1860,8 +1856,8 @@ function renderPublicProfilePage() {
       </div>
 
       ${(function () {
-      const logDates = profile.logs ? new Set(profile.logs.map(l => l.date.split('T')[0])) : new Set<string>();
-      return renderProfileStats(profile.stats, logDates);
+      const logDates = profile.logs ? new Set(getTrainingActivity(profile.logs, accountTimeZone(profile.timeZone)).keys()) : new Set<string>();
+      return renderProfileStats(profile.stats, logDates, accountTimeZone(profile.timeZone));
     })()}
 
       ${profile.recentActivity.length > 0 ? `
@@ -1869,7 +1865,7 @@ function renderPublicProfilePage() {
           <h2 class="subtitle">Недавняя активность</h2>
           ${profile.recentActivity.map(a => `
             <div class="activity-item">
-              <span class="activity-date">${escapeHtml(new Date(a.date).toLocaleDateString())}</span>
+              <span class="activity-date">${escapeHtml(dayLabel(a.date))}</span>
               <span class="activity-count">${escapeHtml(a.exerciseCount)} упражнений</span>
             </div>
           `).join('')}
@@ -1880,7 +1876,7 @@ function renderPublicProfilePage() {
         <div class="recent-logs">
           <h2 class="subtitle">История тренировок</h2>
           <div id="logs-list">
-            ${generateLogsListHtml(profile.logs, profile.workoutTypes, false)}
+            ${generateLogsListHtml(profile.logs, profile.workoutTypes, false, accountTimeZone(profile.timeZone))}
           </div>
         </div>
       ` : ''}
@@ -1904,7 +1900,7 @@ function renderStatsPage() {
   // Calculate generic stats
   const totalVolume = logs.reduce((acc, l) => acc + ((l.weight || 0) * (l.reps || 0)), 0);
   const totalReps = logs.reduce((acc, l) => acc + (l.reps || 0), 0);
-  const durationStats = getDurationStats(workouts);
+  const durationStats = getDurationStats(workouts, logs);
 
   let html = `
     <div class="page-content">
@@ -1915,12 +1911,12 @@ function renderStatsPage() {
   `;
 
   if (currentStatsTab === 'overview') {
-    const dates = new Set(getTrainingActivity(logs).keys());
+    const dates = new Set(getTrainingActivity(logs, storage.getTimeZone()).keys());
 
     html += `
         <div class="stats-section">
             <h2 class="subtitle">Активность</h2>
-            ${renderHeatmap(dates)}
+            ${renderHeatmap(dates, 6, storage.getTimeZone())}
         </div>
 
         <div class="stats-summary">
@@ -1930,7 +1926,7 @@ function renderStatsPage() {
             </div>
             <div class="stat-metric">
                 <div class="stat-metric__label">Сред. длительность</div>
-                <div class="stat-metric__value">${escapeHtml(durationStats.averageMinutes)}<span class="stat-metric__unit">мин</span></div>
+                <div class="stat-metric__value">${escapeHtml(formatDuration(durationStats.averageSeconds))}</div>
             </div>
              <div class="stat-metric">
                 <div class="stat-metric__label">Общий объем</div>
@@ -1945,7 +1941,7 @@ function renderStatsPage() {
         <div class="charts-section">
             <h2 class="subtitle">Длительность тренировок</h2>
             <div class="chart-container">
-                ${renderDurationChart(workouts)}
+                ${renderDurationChart(workouts, logs, storage.getTimeZone())}
             </div>
         </div>
      `;
@@ -1966,13 +1962,13 @@ function renderStatsPage() {
             <div class="charts-section">
                 <h2 class="subtitle">Общий объем по дням</h2>
                 <div class="chart-container">
-                    ${renderVolumeChart(logs)}
+                    ${renderVolumeChart(logs, storage.getTimeZone())}
                 </div>
             </div>
         `;
     } else {
       const typeLogs = logs.filter(l => l.workoutTypeId === selectedStatType);
-      const oneRepMaxData = getOneRepMaxByDate(typeLogs, selectedStatType);
+      const oneRepMaxData = getOneRepMaxByDate(typeLogs, selectedStatType, storage.getTimeZone());
 
       html += `
              <div class="charts-section">
@@ -1985,7 +1981,7 @@ function renderStatsPage() {
             <div class="charts-section" style="margin-top: 24px;">
                 <h2 class="subtitle">Объем нагрузки</h2>
                  <div class="chart-container">
-                    ${renderVolumeChart(typeLogs)}
+                    ${renderVolumeChart(typeLogs, storage.getTimeZone())}
                 </div>
             </div>
         `;
@@ -2002,12 +1998,11 @@ function formatWorkoutForShare(dateStr: string): string {
   const types = storage.getWorkoutTypes();
 
   // Get logs for the specific date
-  const dayLogs = allLogs.filter(log => log.date.startsWith(dateStr));
+  const dayLogs = allLogs.filter(log => dayKey(log.date, storage.getTimeZone()) === dateStr);
   if (dayLogs.length === 0) return '';
 
   // Format the date for display
-  const dateObj = new Date(dayLogs[0].date);
-  const dateLabel = dateObj.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+  const dateLabel = dayLabel(dateStr);
 
   // Group by exercise
   const exerciseGroups: Map<string, WorkoutSet[]> = new Map();
@@ -2137,25 +2132,14 @@ function bindPageEvents() {
         if (existingLog) {
           const dateStr = formData.get('date') as string;
           let newDate = existingLog.date;
-          if (dateStr) {
-            if (dateStr.includes('T')) {
-              // datetime-local input provides 'YYYY-MM-DDTHH:mm'
-              const localDate = new Date(dateStr);
-              // preserve seconds and ms from original date
-              const oldDate = new Date(existingLog.date);
-              localDate.setSeconds(oldDate.getSeconds(), oldDate.getMilliseconds());
-              newDate = localDate.toISOString();
-            } else {
-              // fallback for simple date input
-              const oldDate = new Date(existingLog.date);
-              const [year, month, day] = dateStr.split('-').map(Number);
-              oldDate.setFullYear(year, month - 1, day);
-              newDate = oldDate.toISOString();
-            }
-          }
+          try {
+            if (dateStr) newDate = parseDatetimeValue(dateStr, storage.getTimeZone(), existingLog.date);
+          } catch (error) { showToast((error as Error).message); return; }
+
 
           await storage.updateLog({
             ...existingLog,
+            reps: undefined, weight: undefined, duration: undefined, durationSeconds: undefined,
             ...logData,
             date: newDate
           });
@@ -2226,8 +2210,7 @@ function bindPageEvents() {
       lastCalendarValue = calendarInput.value;
 
       const selectedDate = new Date(calendarInput.value);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const today = new Date(`${dayKey(Date.now(), storage.getTimeZone())}T00:00:00Z`);
 
       // Calculate the week offset for the selected date
       const diffTime = today.getTime() - selectedDate.getTime();

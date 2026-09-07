@@ -1,8 +1,9 @@
+import { dayKey, dayLabel } from '../../utils/training-time';
 import { ProfileStats } from '../../types';
 import { escapeHtml } from '../../utils/safe-html';
 import { renderHeatmap } from '../stats/Heatmap';
 
-export function renderProfileStats(stats: ProfileStats, logDates?: Set<string>): string {
+export function renderProfileStats(stats: ProfileStats, logDates?: Set<string>, timeZone = 'UTC'): string {
   const totalVolume = stats.totalVolume;
   let volumeDisplay = '';
 
@@ -32,7 +33,7 @@ export function renderProfileStats(stats: ProfileStats, logDates?: Set<string>):
         ` : ''}
         ${stats.lastWorkoutDate ? `
           <div class="stat-card">
-            <div class="stat-value" style="font-size: 1rem;">${escapeHtml(new Date(stats.lastWorkoutDate).toLocaleDateString())}</div>
+            <div class="stat-value" style="font-size: 1rem;">${escapeHtml(dayLabel(dayKey(stats.lastWorkoutDate, timeZone)))}</div>
             <div class="stat-label">Последняя тренировка</div>
           </div>
         ` : ''}
@@ -41,7 +42,7 @@ export function renderProfileStats(stats: ProfileStats, logDates?: Set<string>):
       ${logDates && logDates.size > 0 ? `
         <div class="activity-list">
           <h2 class="subtitle">Активность</h2>
-          ${renderHeatmap(logDates)}
+          ${renderHeatmap(logDates, 6, timeZone)}
         </div>
       ` : ''}
     `;

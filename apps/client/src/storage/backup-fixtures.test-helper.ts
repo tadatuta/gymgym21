@@ -5,6 +5,7 @@ export const validBackupData = () => ({
     profile: { id: 'me', isPublic: false, createdAt: '2026-09-01T12:00:00Z', birthDate: '', friends: [] },
 });
 export const invalidBackupCases: [string, unknown][] = [
+    ...['Mars/Olympus', '', 123, '+03:00'].map((timeZone): [string, unknown] => ['profile.timeZone', { ...validBackupData(), profile: { ...validBackupData().profile, timeZone } }]),
     ...['<img src=x onerror=alert(1)>', NaN, Infinity, -1, null, {}, 1e30].map((weight): [string, unknown] => ['logs.0.weight', { ...validBackupData(), logs: [{ ...validBackupData().logs[0], weight }] }]),
     ...['2026-02-30T00:00:00Z', '2025-02-29T00:00:00Z', '2026-09-01', '2026-09-01T25:00:00Z', '0000-01-01T00:00:00Z'].map((date): [string, unknown] => ['logs.0.date', { ...validBackupData(), logs: [{ ...validBackupData().logs[0], date }] }]),
     ['logs.0.reps', { ...validBackupData(), logs: [{ ...validBackupData().logs[0], reps: 1.5 }] }],

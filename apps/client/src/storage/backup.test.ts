@@ -43,3 +43,8 @@ it('roundtrips orphan IDs and legacy missing workouts without synthesizing delet
     expect(restored.workoutTypes).toEqual([]);
     expect(restored.workouts).toEqual([]);
 });
+
+it('roundtrips the owner time zone in portable backups', () => {
+    const data = readBackup({ ...validBackupData(), profile: { ...validBackupData().profile, timeZone: 'Europe/Berlin' } });
+    expect(readBackup(createBackup(data)).profile?.timeZone).toBe('Europe/Berlin');
+});

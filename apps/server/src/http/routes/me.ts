@@ -1,3 +1,4 @@
+import { validTimeZone } from '../../training-time.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { backupDataSchema } from '../../backup-validation.js';
@@ -48,6 +49,7 @@ const profileSyncSchema = z.object({
   ...syncMetadataSchema,
   isPublic: z.boolean(),
   showFullHistory: z.boolean().optional(),
+    timeZone: z.string().max(100).refine(validTimeZone, { message: 'Invalid IANA time zone' }).optional(),
   displayName: z.string().optional(),
   username: z.string().optional(),
   telegramUsername: z.string().optional(),

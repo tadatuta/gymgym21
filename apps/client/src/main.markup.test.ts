@@ -1,3 +1,5 @@
+import * as trainingTime from './utils/training-time';
+import { formatDuration } from './utils/duration';
 import { getLatestLog } from './utils/latest-log';
 import source from './main.ts?raw';
 import ts from 'typescript';
@@ -12,6 +14,7 @@ const ast = ts.createSourceFile('main.ts', source, ts.ScriptTarget.Latest, true)
 function renderer(name: string, context: Record<string, unknown>): (...args: unknown[]) => string {
     const declaration = ast.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
     if (!declaration) throw new Error(`Missing renderer: ${name}`);
+    context = { ...trainingTime, formatDuration, ...context };
     const compiled = ts.transpileModule(declaration.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText;
     return new Function(...Object.keys(context), `${compiled}; return ${name};`)(...Object.values(context));
 }
@@ -24,9 +27,17 @@ function parse(markup: string) {
 }
 
 describe('old persisted records remain text at HTML boundaries', () => {
+    it('public history uses the owner zone even when the viewer zone is different', () => {
+        const render = renderer('generateLogsListHtml', { ...safeHtml, storage: { getTimeZone: () => 'America/Los_Angeles', getWorkouts: () => [] }, editingWorkoutId: null, editingLogId: null, lastAddedLogId: null });
+        const date = '2026-01-01T21:30:00Z';
+        const html = render([{ id: 'l', workoutId: '', workoutTypeId: 't', date }], [], false, 'Europe/Moscow');
+        expect(html).toContain(trainingTime.dayLabel('2026-01-02'));
+        expect(html).not.toContain(trainingTime.dayLabel('2026-01-01'));
+    });
+
     it('escapes log numeric fields and IDs for assigned and orphan sets', () => {
         const render = renderer('generateLogsListHtml', {
-            getLatestLog, ...safeHtml, storage: { getWorkouts: () => [] }, editingWorkoutId: null, editingLogId: null, lastAddedLogId: null,
+            getLatestLog, ...safeHtml, storage: { getTimeZone: () => 'UTC', getWorkouts: () => [] }, editingWorkoutId: null, editingLogId: null, lastAddedLogId: null,
         });
         for (const workoutId of ['', 'missing-workout']) for (const fields of [
             { weight: hostile, reps: hostile }, { duration: hostile, durationSeconds: hostile },

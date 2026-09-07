@@ -1,3 +1,5 @@
+import { accountTimeZone, dayKey } from '../utils/training-time';
+import { sessionDurationSeconds } from '../utils/duration';
 import { SyncError, retryDelay } from '../services/sync-error';
 import { domainSnapshot } from './domain-snapshot';
 import type { Table } from 'dexie';
@@ -406,6 +408,8 @@ export class StorageService {
                 context.assertCurrent();
                 await this.reloadCache();
                 context.assertCurrent();
+                if (!result.hasMore) await this.ensureProfileTimeZoneAfterBootstrap();
+                context.assertCurrent();
                 const seededDefaults = result.hasMore
                     ? false
                     : await this.ensureDefaultWorkoutTypesAfterBootstrap();
@@ -469,6 +473,29 @@ export class StorageService {
                 return false;
             },
         );
+    }
+
+    private async ensureProfileTimeZoneAfterBootstrap(): Promise<void> {
+        // Run only after the complete pull. Recheck inside the transaction so another tab's choice wins.
+        if (!this.cache.profile || this.cache.profile.timeZone) return;
+        const context = captureAccountContext();
+        const database = context.database;
+        const sync = new SyncService();
+        const timeZone = this.getTimeZone();
+        let changed = false;
+        await database.transaction('rw', [database.profile, database.dirtyEntities], async () => {
+            context.assertCurrent();
+            const profile = await database.profile.get(PROFILE_ID);
+            context.assertCurrent();
+            if (!profile || profile.timeZone || profile.isDeleted) return;
+            await database.profile.put({ ...profile, timeZone, updatedAt: new Date().toISOString() });
+            context.assertCurrent();
+            await sync.markDirtyMany([{ entityType: 'profile', entityId: PROFILE_ID }]);
+            context.assertCurrent();
+            changed = true;
+        });
+        context.assertCurrent();
+        if (changed) { await this.reloadCache(); context.assertCurrent(); this.syncQueued = true; }
     }
 
     private async ensureDefaultWorkoutTypesAfterBootstrap(): Promise<boolean> {
@@ -549,6 +576,10 @@ export class StorageService {
 
     getProfile(): UserProfile | undefined {
         return this.cache.profile;
+    }
+
+    getTimeZone(): string {
+        return accountTimeZone(this.cache.profile?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
     }
 
     getConflicts(): SyncConflictRecord[] {
@@ -707,56 +738,21 @@ export class StorageService {
     }
 
     getWorkoutDuration(workout: WorkoutSession): number {
-        const start = new Date(workout.startTime).getTime();
-        const end = workout.endTime ? new Date(workout.endTime).getTime() : Date.now();
-        let sessionDuration = end - start;
-
-        workout.pauseIntervals.forEach((interval) => {
-            const pauseStart = new Date(interval.start).getTime();
-            const pauseEnd = interval.end
-                ? new Date(interval.end).getTime()
-                : (workout.status === 'paused' ? Date.now() : end);
-            if (pauseEnd > pauseStart) {
-                sessionDuration -= pauseEnd - pauseStart;
-            }
-        });
-
-        const sessionMinutes = Math.floor(Math.max(0, sessionDuration) / 60000);
-        const exercisesDuration = this.cache.logs
-            .filter((log) => log.workoutId === workout.id && !log.isDeleted)
-            .reduce((total, log) => total + (log.duration || 0), 0);
-        return Math.max(sessionMinutes, exercisesDuration);
+        return sessionDurationSeconds(workout, this.cache.logs) / 60;
     }
 
-    private async ensureActiveWorkoutInTransaction(now: string): Promise<string> {
-        const active = await db.workouts.where('status').anyOf('active', 'paused').first();
-        if (active) return active.id;
-
-        const today = now.slice(0, 10);
+    private async ensureActiveWorkoutInTransaction(now: string, useActive = true): Promise<string> {
         const workouts = await db.workouts.toArray();
-        const lastWorkout = workouts
-            .filter((workout) => !workout.isDeleted && workout.startTime.startsWith(today))
-            .sort((left, right) => right.startTime.localeCompare(left.startTime))[0];
-
-        if (lastWorkout && !lastWorkout.isManual && lastWorkout.status === 'finished') {
-            await db.workouts.put({
-                ...cloneWorkout(lastWorkout),
-                endTime: now,
-                updatedAt: now,
-            });
-            return lastWorkout.id;
-        }
-
+        const active = workouts.find(w => !w.isDeleted && (w.status === 'active' || w.status === 'paused'));
+        if (useActive && active) return active.id;
+        const today = dayKey(now, this.getTimeZone());
+        const existing = workouts.filter(w => !w.isDeleted && !w.isManual && w.status === 'finished'
+            && dayKey(w.startTime, this.getTimeZone()) === today)
+            .sort((a, b) => a.id.localeCompare(b.id))[0];
+        if (existing) return existing.id;
         const id = createEntityId();
-        await db.workouts.put({
-            id,
-            startTime: now,
-            endTime: now,
-            status: 'finished',
-            isManual: false,
-            pauseIntervals: [],
-            updatedAt: now,
-        });
+        await db.workouts.put({ id, startTime: now, endTime: now, status: 'finished', isManual: false,
+            pauseIntervals: [], updatedAt: new Date().toISOString() });
         return id;
     }
 
@@ -765,8 +761,11 @@ export class StorageService {
         if (!workout || workout.isManual) return;
         const activeLogs = (await db.logs.where('workoutId').equals(workoutId).toArray())
             .filter((log) => !log.isDeleted)
-            .sort((left, right) => left.date.localeCompare(right.date));
-        if (activeLogs.length === 0) return;
+            .sort((left, right) => Date.parse(left.date) - Date.parse(right.date));
+        if (activeLogs.length === 0) {
+            await db.workouts.put({ ...workout, isDeleted: true, updatedAt: new Date().toISOString() });
+            return;
+        }
 
         await db.workouts.put({
             ...cloneWorkout(workout),
@@ -826,13 +825,23 @@ export class StorageService {
     }
 
     async updateLog(updatedLog: WorkoutSet): Promise<void> {
-        await this.commitMutation([db.logs], async () => {
+        await this.commitMutation([db.logs, db.workouts], async () => {
+            const existing = await db.logs.get(updatedLog.id);
+            if (!existing || existing.isDeleted) return { value: undefined, dirty: [] };
             const next = { ...updatedLog, updatedAt: new Date().toISOString() };
+            const oldWorkout = existing.workoutId ? await db.workouts.get(existing.workoutId) : undefined;
+            const affected = new Set<string>();
+            if (!oldWorkout?.isManual && existing.date !== next.date) {
+                next.workoutId = await this.ensureActiveWorkoutInTransaction(next.date, false);
+                if (oldWorkout) affected.add(oldWorkout.id);
+                affected.add(next.workoutId);
+            } else if (oldWorkout && !oldWorkout.isManual) affected.add(oldWorkout.id);
             await db.logs.put(next);
-            return {
-                value: undefined,
-                dirty: [{ entityType: 'logs', entityId: next.id }],
-            };
+            for (const id of affected) await this.updateImplicitWorkoutBoundsInTransaction(id);
+            return { value: undefined, dirty: [
+                { entityType: 'logs', entityId: next.id },
+                ...[...affected].map(entityId => ({ entityType: 'workouts' as const, entityId })),
+            ] };
         });
     }
 
@@ -853,6 +862,7 @@ export class StorageService {
                 : {
                     id: PROFILE_ID,
                     isPublic: false,
+                    timeZone: this.getTimeZone(),
                     showFullHistory: false,
                     username: authUser?.username ?? undefined,
                     photoUrl: authUser?.image || undefined,

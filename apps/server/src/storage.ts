@@ -1,3 +1,4 @@
+import { accountTimeZone } from './training-time.js';
 import { getTrainingActivity } from './training-activity.js';
 import type { PoolClient } from 'pg';
 import { config } from './config.js';
@@ -46,6 +47,7 @@ interface SyncReceiptRow {
 
 interface StorageProfileRow {
   profile_id: string;
+  time_zone: string | null;
   is_public: boolean;
   show_full_history: boolean;
   display_name: string | null;
@@ -307,6 +309,7 @@ function mapProfileRow(row: StorageProfileRow | undefined): StorageProfile | und
 
   return {
     id: row.profile_id,
+    timeZone: row.time_zone ?? undefined,
     isPublic: row.is_public,
     showFullHistory: row.show_full_history,
     displayName: row.display_name ?? undefined,
@@ -568,15 +571,17 @@ async function upsertProfile(client: PoolClient, storageKey: string, profile: St
         additional_info,
         friends_json,
         version,
-        server_updated_at
+        server_updated_at,
+        time_zone
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9,
-        $10::timestamptz, $11::timestamptz, $12, $13, $14::date, $15, $16, $17, $18::jsonb, $19, $20::timestamptz
+        $10::timestamptz, $11::timestamptz, $12, $13, $14::date, $15, $16, $17, $18::jsonb, $19, $20::timestamptz, $21
       )
       ON CONFLICT (storage_key)
       DO UPDATE SET
         profile_id = EXCLUDED.profile_id,
+        time_zone = EXCLUDED.time_zone,
         is_public = EXCLUDED.is_public,
         show_full_history = EXCLUDED.show_full_history,
         display_name = EXCLUDED.display_name,
@@ -617,6 +622,7 @@ async function upsertProfile(client: PoolClient, storageKey: string, profile: St
       JSON.stringify(profile.friends ?? []),
       profile.version ?? 0,
       toIsoString(profile.serverUpdatedAt, profile.updatedAt),
+      profile.timeZone ?? null,
     ],
   );
 }
@@ -781,7 +787,7 @@ function buildPublicProfile(
     ? visibleWorkoutTypes.find((entry) => entry.id === favoriteExercise)?.name
     : undefined;
 
-  const recentActivityMap = getTrainingActivity(visibleLogs);
+  const recentActivityMap = getTrainingActivity(visibleLogs, accountTimeZone(profile.timeZone));
 
   const recentActivity = [...recentActivityMap.entries()]
     .sort((left, right) => left[0].localeCompare(right[0]))
@@ -789,6 +795,7 @@ function buildPublicProfile(
     .map(([date, exerciseCount]) => ({ date, exerciseCount }));
 
   return {
+    timeZone: accountTimeZone(profile.timeZone),
     displayName: profile.displayName || profile.username || profile.telegramUsername || fallbackIdentifier,
     identifier: profile.username || profile.telegramUsername || fallbackIdentifier,
     photoUrl: profile.photoUrl,
@@ -1047,6 +1054,7 @@ export interface StorageFriend {
 }
 
 export interface StorageProfile {
+  timeZone?: string;
   id: string;
   isPublic: boolean;
   showFullHistory?: boolean;
@@ -1119,6 +1127,7 @@ export interface StorageSyncResponse {
 }
 
 export interface PublicProfileData {
+  timeZone?: string;
   displayName: string;
   identifier: string;
   photoUrl?: string;
