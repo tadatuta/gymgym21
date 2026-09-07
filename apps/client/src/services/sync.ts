@@ -136,6 +136,30 @@ export class SyncService {
     };
   }
 
+  async importBackup(data: AppData, mode: 'merge' | 'replace'): Promise<void> {
+    if (!navigator.onLine) throw new Error('Для замены данных необходимо подключение к серверу');
+    // Finish the entire pull before choosing the revision the user is replacing.
+    let result: SyncExecutionResult;
+    do {
+      result = await this.sync();
+      if (result.conflicts) throw new Error('Сначала разрешите конфликты синхронизации');
+    } while (result.hasMore);
+    const snapshot = await this.createRequestSnapshot();
+    if (snapshot.dirtyEntries.size || await this.db.syncConflicts.count()) throw new Error('Есть несинхронизированные изменения или конфликты. Повторите импорт после синхронизации');
+    this.context.assertCurrent();
+    const response = await authorizedApiFetch('/me/storage/backup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, expectedRevision: snapshot.request.cursor, data }),
+    }, this.context);
+    this.context.assertCurrent();
+    if (response.status === 409) throw new Error('Данные изменились на другом устройстве. Синхронизируйте и повторите импорт');
+    if (!response.ok) throw new Error('Не удалось подтвердить импорт на сервере. Синхронизируйте данные перед повторной попыткой');
+    const imported = await response.json() as SyncResponse;
+    this.context.assertCurrent();
+    await this.applySyncResponse(imported, snapshot);
+    this.context.assertCurrent();
+  }
+
   async markDirty(entityType: SyncEntityType, entityId: string) {
     await this.markDirtyMany([{ entityType, entityId }]);
   }

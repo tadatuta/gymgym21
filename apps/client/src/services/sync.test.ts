@@ -29,6 +29,41 @@ describe('SyncService reliable outbox acknowledgements', () => {
     await activateAccountDatabase(`sync-test-${Math.random().toString(36).slice(2)}`);
   });
 
+  it('imports after full fresh pull and preserves a newer local generation during replace', async () => {
+    const original = { id: 'A', name: 'original', updatedAt: '2026-09-01T00:00:00Z', version: 2 };
+    await db.workoutTypes.put(original);
+    await db.syncState.put({ key: 'sync-cursor', cursor: 2, updatedAt: original.updatedAt });
+    let finish: ((response: Response) => void) | undefined;
+    vi.mocked(authorizedApiFetch)
+      .mockResolvedValueOnce(jsonResponse({ cursor: 2, changes: {}, conflicts: [], hasMore: true }))
+      .mockResolvedValueOnce(jsonResponse({ cursor: 3, changes: {}, conflicts: [], hasMore: false }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const importing = new SyncService().importBackup({ workoutTypes: [{ ...original, name: 'backup' }], workouts: [], logs: [] }, 'replace');
+    await vi.waitFor(() => expect(authorizedApiFetch).toHaveBeenCalledTimes(3));
+    expect(JSON.parse(String(vi.mocked(authorizedApiFetch).mock.calls[2][1]?.body))).toMatchObject({ mode: 'replace', expectedRevision: 3 });
+    await db.workoutTypes.put({ ...original, name: 'new local edit' });
+    await SyncService.markDirty('workoutTypes', 'A');
+    const generation = (await db.dirtyEntities.get('workoutTypes:A'))!.generation;
+    finish!(jsonResponse({ cursor: 5, changes: { workoutTypes: [{ ...original, name: 'backup', version: 4 }, { ...original, id: 'B', isDeleted: true, version: 5 }] }, conflicts: [], acknowledged: [] }));
+    await importing;
+    expect(await db.workoutTypes.get('A')).toMatchObject({ name: 'new local edit', version: 4 });
+    expect((await db.dirtyEntities.get('workoutTypes:A'))!.generation).toBe(generation);
+    expect(await db.workoutTypes.get('B')).toMatchObject({ isDeleted: true, version: 5 });
+  });
+
+  it('does not modify local data on revision conflict or offline replace', async () => {
+    const original = { id: 'A', name: 'original', updatedAt: '2026-09-01T00:00:00Z', version: 2 };
+    await db.workoutTypes.put(original);
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce(jsonResponse({ cursor: 2, changes: {}, conflicts: [] }))
+      .mockResolvedValueOnce(new Response('{}', { status: 409 }));
+    const backup = { workoutTypes: [], workouts: [], logs: [] };
+    await expect(new SyncService().importBackup(backup, 'replace')).rejects.toThrow('Данные изменились');
+    expect(await db.workoutTypes.get('A')).toEqual(original);
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+    await expect(new SyncService().importBackup(backup, 'replace')).rejects.toThrow('подключение');
+    expect(await db.workoutTypes.get('A')).toEqual(original);
+  });
+
   it('preserves and rebases an edit made while a sync request is in flight', async () => {
     const id = 'exercise-1';
     await db.workoutTypes.put({

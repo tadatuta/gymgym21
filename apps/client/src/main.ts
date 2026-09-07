@@ -1270,7 +1270,12 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
         <div style="display: flex; flex-direction: column; gap: 12px;">
           <button class="button button_secondary" id="export-json-btn">Экспорт JSON (Backup)</button>
           <button class="button button_secondary" id="export-md-btn">Экспорт Markdown</button>
-          <button class="button button_secondary" id="import-json-btn">Импорт JSON (Restore)</button>
+          <button class="button button_secondary" id="import-json-btn">Импорт JSON</button>
+          <label for="import-mode">Режим импорта</label>
+          <select id="import-mode">
+            <option value="merge">Объединить: обновить записи из файла, сохранить остальные</option>
+            <option value="replace">Заменить: удалить отсутствующие в файле записи на всех устройствах (онлайн)</option>
+          </select>
           <input type="file" id="import-file-input" style="display: none" accept=".json">
         </div>
       </div>
@@ -1682,7 +1687,7 @@ function bindProfileSettingsEvents() {
   // Export/Import Logic
   document.getElementById('export-json-btn')?.addEventListener('click', async () => {
     try {
-      const data = await storage.exportData();
+      const data = await storage.exportBackup();
       const filename = `gym_backup_${new Date().toISOString().split('T')[0]}.json`;
       downloadFile(JSON.stringify(data, null, 2), filename, 'application/json');
       showToast('Экспорт выполнен');
@@ -1719,14 +1724,15 @@ function bindProfileSettingsEvents() {
         const json = event.target?.result as string;
         const data = JSON.parse(json);
 
-        if (confirm('Внимание! Все текущие данные будут заменены данными из файла. Продолжить?')) {
-          await storage.importData(data);
-          showToast('Данные успешно импортированы');
-          setTimeout(() => location.reload(), 1000);
+        const mode = (document.getElementById('import-mode') as HTMLSelectElement).value === 'replace' ? 'replace' : 'merge';
+        if (mode === 'merge' || confirm('Заменить данные на всех устройствах? Записи, которых нет в файле, будут удалены. Записи с совпадающими ID будут перезаписаны.')) {
+          await storage.importData(data, mode);
+          showToast(navigator.onLine ? 'Данные импортированы' : 'Объединено локально. После подключения проверьте конфликты синхронизации');
+          updateProfileTabContent();
         }
       } catch (err) {
         console.error(err);
-        showToast('Ошибка импорта: Неверный формат файла');
+        showToast(err instanceof Error ? err.message : 'Ошибка импорта');
       }
     };
     reader.readAsText(file);

@@ -33,6 +33,46 @@ describe('StorageService sync scheduling', () => {
         vi.unstubAllGlobals();
     });
 
+    it('offline merge rebases on local versions, keeps other records, and offline replace is non-destructive', async () => {
+        Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+        const service = new StorageService({ enableBroadcast: false });
+        try {
+            await service.activate(`offline-backup-${Math.random()}`);
+            await db.workoutTypes.clear();
+            await db.dirtyEntities.clear();
+            await db.workoutTypes.bulkPut([
+                { id: 'A', name: 'original', version: 7, updatedAt: 'old' },
+                { id: 'B', name: 'keep', version: 8, updatedAt: 'old' },
+            ]);
+            const input = { workoutTypes: [{ id: 'A', name: 'modified', version: 99999 }], logs: [], workouts: [] };
+            await service.importData(input, 'merge');
+            expect(await db.workoutTypes.get('A')).toMatchObject({ name: 'modified', version: 7 });
+            expect(await db.workoutTypes.get('B')).toMatchObject({ name: 'keep', version: 8 });
+            expect(await db.dirtyEntities.get('workoutTypes:A')).toBeDefined();
+            const before = await db.workoutTypes.toArray();
+            await expect(service.importData(input, 'replace')).rejects.toThrow('подключения');
+            expect(await db.workoutTypes.toArray()).toEqual(before);
+        } finally {
+            service.dispose();
+            Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+        }
+    });
+
+    it('refreshes cache after a failed online import preflight and releases the sync guard', async () => {
+        Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+        const service = new StorageService({ enableBroadcast: false });
+        try {
+            await service.activate(`failed-backup-${Math.random()}`);
+            const reload = vi.spyOn(service, 'reloadCache');
+            vi.spyOn(SyncService.prototype, 'importBackup').mockRejectedValue(new Error('revision conflict'));
+            await expect(service.importData({ workoutTypes: [], workouts: [], logs: [] }, 'replace')).rejects.toThrow('revision conflict');
+            expect(reload).toHaveBeenCalled();
+            await expect(service.importData({ workoutTypes: [], workouts: [], logs: [] }, 'replace')).rejects.toThrow('revision conflict');
+        } finally {
+            service.dispose();
+        }
+    });
+
     it('batches repeated scheduleSync calls into one sync execution', async () => {
         const syncSpy = vi.spyOn(SyncService, 'sync').mockResolvedValue({
             cursor: 1,

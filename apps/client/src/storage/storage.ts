@@ -1,4 +1,5 @@
 import type { Table } from 'dexie';
+import { createBackup, readBackup, type BackupMode } from './backup';
 import {
     AppData,
     PublicProfileData,
@@ -1013,53 +1014,60 @@ export class StorageService {
         return SyncService.readAll();
     }
 
-    async importData(data: AppData): Promise<void> {
+    async exportBackup() {
+        return createBackup(await this.exportData());
+    }
+
+    async importData(input: unknown, mode: BackupMode): Promise<void> {
         this.assertActive();
-        if (!data.logs || !data.workoutTypes) {
-            throw new Error('Invalid data format');
+        const context = captureAccountContext();
+        const database = context.database;
+        const data = readBackup(input);
+        this.clearScheduledSync();
+        if (this.syncInFlight) throw new Error('Дождитесь завершения синхронизации и повторите импорт');
+        if (mode !== 'merge' && mode !== 'replace') throw new Error('Выберите режим импорта');
+        if (navigator.onLine) {
+            this.syncInFlight = true;
+            try {
+                const acquired = await this.withSyncLock(() => new SyncService().importBackup(data, mode));
+                if (!acquired) throw new Error('Синхронизация выполняется в другой вкладке. Повторите импорт');
+            } finally {
+                if (context.isCurrent()) {
+                    this.syncInFlight = false;
+                    // Preflight may have pulled changes even if the import itself failed.
+                    await this.reloadCache();
+                    context.assertCurrent();
+                    this.broadcastUpdate();
+                    if (this.syncQueued) {
+                        this.syncQueued = false;
+                        this.scheduleSync(0);
+                    }
+                }
+            }
+        } else {
+            if (mode === 'replace') throw new Error('Замена данных требует подключения к серверу. Объединение доступно офлайн');
+            const sync = new SyncService();
+            await database.transaction('rw', [database.workouts, database.logs, database.workoutTypes, database.profile, database.dirtyEntities], async () => {
+                for (const entityType of ['workouts', 'logs', 'workoutTypes', 'profile'] as const) {
+                    const table = database[entityType] as Table<WorkoutSession | WorkoutSet | WorkoutType | UserProfile, string>;
+                    const entries = entityType === 'profile' ? (data.profile ? [data.profile] : []) : data[entityType];
+                    for (const entry of entries) {
+                        const current = await table.get(entry.id);
+                        await table.put({ ...entry, version: current?.version, serverUpdatedAt: current?.serverUpdatedAt });
+                        await sync.markDirty(entityType, entry.id);
+                    }
+                }
+                context.assertCurrent();
+            });
         }
-
-        await db.transaction(
-            'rw',
-            [
-                db.workouts,
-                db.logs,
-                db.workoutTypes,
-                db.profile,
-                db.dirtyEntities,
-                db.syncState,
-                db.syncConflicts,
-                db.aiResultCache,
-            ],
-            async () => {
-                await Promise.all([
-                    db.workouts.clear(),
-                    db.logs.clear(),
-                    db.workoutTypes.clear(),
-                    db.profile.clear(),
-                    db.dirtyEntities.clear(),
-                    db.syncState.clear(),
-                    db.syncConflicts.clear(),
-                    db.aiResultCache.clear(),
-                ]);
-
-                if (data.workouts.length > 0) await db.workouts.bulkAdd(data.workouts);
-                if (data.logs.length > 0) await db.logs.bulkAdd(data.logs);
-                if (data.workoutTypes.length > 0) await db.workoutTypes.bulkAdd(data.workoutTypes);
-                if (data.profile) await db.profile.put({ ...data.profile, id: PROFILE_ID });
-                await SyncService.markDirtyMany([
-                    ...data.workouts.map((entry) => ({ entityType: 'workouts' as const, entityId: entry.id })),
-                    ...data.logs.map((entry) => ({ entityType: 'logs' as const, entityId: entry.id })),
-                    ...data.workoutTypes.map((entry) => ({ entityType: 'workoutTypes' as const, entityId: entry.id })),
-                    ...(data.profile ? [{ entityType: 'profile' as const, entityId: PROFILE_ID }] : []),
-                ]);
-            },
-        );
-
+        context.assertCurrent();
+        await database.aiResultCache.clear();
+        context.assertCurrent();
         await this.reloadCache();
         this.broadcastUpdate();
         this.scheduleSync(0);
     }
+
 }
 
 export const storage = new StorageService({ autoInit: false });

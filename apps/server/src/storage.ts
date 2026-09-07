@@ -1135,7 +1135,7 @@ export interface AIStorageContext {
 export interface StorageRepository {
   readSnapshot(storageKey: string | number): Promise<StorageData>;
   replaceSnapshot(storageKey: string | number, data: StorageData): Promise<void>;
-  sync(storageKey: string | number, request: StorageSyncRequest, authContext: AuthenticatedRequestContext): Promise<StorageSyncResponse>;
+  sync(storageKey: string | number, request: StorageSyncRequest, authContext: AuthenticatedRequestContext, backup?: { mode: 'merge' | 'replace'; expectedRevision: number }): Promise<StorageSyncResponse>;
   updateProfileFromAuth(storageKey: string | number, data: {
     username?: string | null;
     name?: string | null;
@@ -1226,6 +1226,7 @@ class PostgresStorageRepository implements StorageRepository {
     storageKeyInput: string | number,
     request: StorageSyncRequest,
     authContext: AuthenticatedRequestContext,
+    backup?: { mode: 'merge' | 'replace'; expectedRevision: number },
   ): Promise<StorageSyncResponse> {
     await ensureDatabaseReady();
     validateSyncRequest(request);
@@ -1235,6 +1236,34 @@ class PostgresStorageRepository implements StorageRepository {
     try {
       await client.query('BEGIN');
       let revision = await ensureStorageRoot(client, storageKey);
+      if (backup) {
+        if (backup.expectedRevision !== revision) {
+          throw new HttpError(409, 'Storage changed; synchronize and review the backup import again', { code: 'backup_revision_conflict' });
+        }
+        // The root lock covers the revision check, rebasing and every tombstone write.
+        // Backup versions never participate in sync conflict detection.
+        const normalize = <T extends { id: string; version?: number; serverUpdatedAt?: string; updatedAt?: string; isDeleted?: boolean }>(incoming: T[], existing: T[]): T[] => {
+          const versions = new Map(existing.map((item) => [item.id, item.version]));
+          const active = incoming.filter((item) => !item.isDeleted).map((item) => ({
+            ...item, version: versions.get(item.id) ?? 0, serverUpdatedAt: undefined,
+            updatedAt: new Date().toISOString(), isDeleted: false,
+          }));
+          const ids = new Set(active.map((item) => item.id));
+          return backup.mode === 'merge' ? active : [...active, ...existing.filter((item) => !item.isDeleted && !ids.has(item.id)).map((item) => ({
+            ...item, isDeleted: true, updatedAt: new Date().toISOString(),
+          }))];
+        };
+        const types = await client.query<StorageWorkoutTypeRow>('SELECT * FROM storage_workout_types WHERE storage_key = $1', [storageKey]);
+        const workouts = await client.query<StorageWorkoutRow>('SELECT * FROM storage_workouts WHERE storage_key = $1', [storageKey]);
+        const logs = await client.query<StorageLogRow>('SELECT * FROM storage_logs WHERE storage_key = $1', [storageKey]);
+        const profile = await readExistingProfile(client, storageKey);
+        request = { cursor: request.cursor, changes: {
+          workoutTypes: normalize(request.changes.workoutTypes ?? [], types.rows.map(mapWorkoutTypeRow)),
+          workouts: normalize(request.changes.workouts ?? [], workouts.rows.map(mapWorkoutRow)),
+          logs: normalize(request.changes.logs ?? [], logs.rows.map(mapLogRow)),
+          profile: normalize(request.changes.profile ? [{ ...request.changes.profile, id: STORAGE_PROFILE_ID }] : [], profile ? [profile] : [])[0],
+        } };
+      }
       const hasPush = hasOutgoingSyncChanges(request.changes);
       let receipt: SyncPushReceipt | undefined;
       if (hasPush && request.batchId) {
