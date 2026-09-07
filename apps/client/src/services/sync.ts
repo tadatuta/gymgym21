@@ -94,8 +94,8 @@ function createBatchId(cursor: number, dirtyEntries: Map<string, DirtyEntityReco
 }
 
 export class SyncService {
-  private readonly context = captureAccountContext();
-  private readonly db = this.context.database;
+  private readonly db;
+  constructor(private readonly context = captureAccountContext()) { this.db = context.database; }
   static sync(signal?: AbortSignal) { return new SyncService().sync(signal); }
   static markDirty(entityType: SyncEntityType, entityId: string) { return new SyncService().markDirty(entityType, entityId); }
   static markDirtyMany(changes: Array<{ entityType: SyncEntityType; entityId: string }>) { return new SyncService().markDirtyMany(changes); }
@@ -195,6 +195,7 @@ export class SyncService {
   }
 
   async markDirtyMany(changes: Array<{ entityType: SyncEntityType; entityId: string }>) {
+    this.context.assertCurrent();
     const uniqueChanges = new Map(
       changes.map((change) => [dirtyKey(change.entityType, change.entityId), change]),
     );
@@ -219,11 +220,14 @@ export class SyncService {
   }
 
   async bootstrapDirtyState() {
+    this.context.assertCurrent();
     await this.db.transaction(
       'rw',
       [this.db.workouts, this.db.logs, this.db.workoutTypes, this.db.profile, this.db.dirtyEntities, this.db.syncState],
       async () => {
+        this.context.assertCurrent();
         const dirtyEntries = await this.db.dirtyEntities.toArray();
+        this.context.assertCurrent();
         const entriesWithoutGeneration = dirtyEntries.filter((entry) => !entry.generation);
         if (entriesWithoutGeneration.length > 0) {
           await this.db.dirtyEntities.bulkPut(
@@ -235,6 +239,7 @@ export class SyncService {
         }
 
         const cursor = await this.getCursor();
+        this.context.assertCurrent();
         if (cursor > 0 || dirtyEntries.length > 0) {
           return;
         }
@@ -243,6 +248,7 @@ export class SyncService {
         if (unsyncedEntities.length > 0) {
           await this.markDirtyMany(unsyncedEntities);
         }
+        this.context.assertCurrent();
       },
     );
   }

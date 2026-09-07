@@ -1,7 +1,10 @@
+import 'fake-indexeddb/auto';
+import { AccountRepository } from './account-repository';
+import { AccountReads } from './account-reads';
+import { ensureProfileTimeZoneAfterBootstrap } from './bootstrap';
 import { createWorkoutPage } from '../ui/pages/workout';
 import { createUiState } from '../ui/state';
 import type { PageContext } from '../ui/context';
-import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '../db';
 import { SyncService } from '../services/sync';
@@ -27,14 +30,18 @@ describe('transactional training dates and actual form measurement updates', () 
     it('persists browser fallback once after bootstrap and preserves a newer explicit choice', async () => {
         await db.profile.update('me', { timeZone: undefined });
         await service.reloadCache();
+        const repository = new AccountRepository();
+        const reads = new AccountReads(repository, () => {});
+        await reads.reload();
         const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
         expect(service.getTimeZone()).toBe(browserZone);
-        await service['ensureProfileTimeZoneAfterBootstrap']();
+        await ensureProfileTimeZoneAfterBootstrap(repository, reads);
         expect((await db.profile.get('me'))?.timeZone).toBe(browserZone);
         expect((await db.dirtyEntities.toArray()).map(x => x.key)).toEqual(['profile:me']);
         await db.profile.update('me', { timeZone: undefined }); await service.reloadCache();
+        await reads.reload();
         await db.profile.update('me', { timeZone: 'Pacific/Auckland' });
-        await service['ensureProfileTimeZoneAfterBootstrap']();
+        await ensureProfileTimeZoneAfterBootstrap(repository, reads);
         expect((await db.profile.get('me'))?.timeZone).toBe('Pacific/Auckland');
     });
 
@@ -62,7 +69,7 @@ describe('transactional training dates and actual form measurement updates', () 
     it('rolls back logs and both session bounds when the outbox write fails', async () => {
         await seed();
         const before = { logs: await db.logs.toArray(), workouts: await db.workouts.toArray() };
-        vi.spyOn(SyncService, 'markDirtyMany').mockRejectedValue(new Error('outbox failure'));
+        vi.spyOn(SyncService.prototype, 'markDirtyMany').mockRejectedValue(new Error('outbox failure'));
         await expect(service.updateLog({ ...service.getLogs()[0], date: '2026-03-01T12:00:00Z' })).rejects.toThrow('outbox failure');
         expect(await db.logs.toArray()).toEqual(before.logs);
         expect(await db.workouts.toArray()).toEqual(before.workouts);

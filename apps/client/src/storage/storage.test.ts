@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '../db';
 import { authorizedApiFetch } from '../auth';
 import { SyncService } from '../services/sync';
+import { AccountReads } from './account-reads';
 import { StorageService } from './storage';
 
 vi.mock('../auth', () => ({
@@ -191,10 +192,12 @@ describe('StorageService sync scheduling', () => {
         const service = new StorageService({ enableBroadcast: false });
         try {
             await service.activate(`failed-backup-${Math.random()}`);
-            const reload = vi.spyOn(service, 'reloadCache');
-            vi.spyOn(SyncService.prototype, 'importBackup').mockRejectedValue(new Error('revision conflict'));
+            vi.spyOn(SyncService.prototype, 'importBackup').mockImplementation(async () => {
+                await db.workoutTypes.put({ id: 'pulled', name: 'Preflight pull', updatedAt: '2026-09-01T00:00:00Z' });
+                throw new Error('revision conflict');
+            });
             await expect(service.importData({ workoutTypes: [], workouts: [], logs: [] }, 'replace')).rejects.toThrow('revision conflict');
-            expect(reload).toHaveBeenCalled();
+            expect(service.getWorkoutTypes().map(type => type.id)).toEqual(['pulled']);
             await expect(service.importData({ workoutTypes: [], workouts: [], logs: [] }, 'replace')).rejects.toThrow('revision conflict');
         } finally {
             service.dispose();
@@ -203,12 +206,12 @@ describe('StorageService sync scheduling', () => {
 
     it('honors Retry-After across manual scheduling, resets on success, cancels on dispose', async () => {
         Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
-        const spy = vi.spyOn(SyncService, 'sync').mockRejectedValueOnce(new SyncError('busy', 'ROUTE_BUSY', true, 60000))
+        const spy = vi.spyOn(SyncService.prototype, 'sync').mockRejectedValueOnce(new SyncError('busy', 'ROUTE_BUSY', true, 60000))
             .mockResolvedValue({ cursor: 1, conflicts: 0, pushedEntities: 0, pulledEntities: 0, hasMore: false });
         const service = new StorageService({ enableBroadcast: false });
         await service.activate(`recovery-${Math.random()}`);
         await db.workoutTypes.put({ id: 'existing', name: 'Existing', updatedAt: new Date().toISOString() });
-        vi.spyOn(service, 'reloadCache').mockResolvedValue();
+        vi.spyOn(AccountReads.prototype, 'reload').mockResolvedValue();
         vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
         await service.sync();
         service.scheduleSync(0);
@@ -231,7 +234,7 @@ describe('StorageService sync scheduling', () => {
     });
 
     it('batches repeated scheduleSync calls into one sync execution', async () => {
-        const syncSpy = vi.spyOn(SyncService, 'sync').mockResolvedValue({
+        const syncSpy = vi.spyOn(SyncService.prototype, 'sync').mockResolvedValue({
             cursor: 1,
             conflicts: 0,
             pushedEntities: 1,
@@ -242,7 +245,7 @@ describe('StorageService sync scheduling', () => {
         const storage = new StorageService({ autoInit: false, syncDebounceMs: 50, enableBroadcast: false });
         await storage.activate('sync-scheduling-test');
         await db.workoutTypes.put({ id: 'existing', name: 'Existing', updatedAt: new Date().toISOString() });
-        vi.spyOn(storage, 'reloadCache').mockResolvedValue();
+        vi.spyOn(AccountReads.prototype, 'reload').mockResolvedValue();
         vi.useFakeTimers();
 
         storage.scheduleSync();
@@ -258,7 +261,7 @@ describe('StorageService sync scheduling', () => {
 
     it('queues a follow-up sync when a new flush is requested while one is in flight', async () => {
         let resolveSync: (() => void) | undefined;
-        const syncSpy = vi.spyOn(SyncService, 'sync').mockImplementation(() => new Promise((resolve) => {
+        const syncSpy = vi.spyOn(SyncService.prototype, 'sync').mockImplementation(() => new Promise((resolve) => {
             resolveSync = () => resolve({
                 cursor: 2,
                 conflicts: 0,
@@ -271,7 +274,7 @@ describe('StorageService sync scheduling', () => {
         const storage = new StorageService({ autoInit: false, syncDebounceMs: 10, enableBroadcast: false });
         await storage.activate('sync-scheduling-test');
         await db.workoutTypes.put({ id: 'existing', name: 'Existing', updatedAt: new Date().toISOString() });
-        vi.spyOn(storage, 'reloadCache').mockResolvedValue();
+        vi.spyOn(AccountReads.prototype, 'reload').mockResolvedValue();
         vi.useFakeTimers();
 
         storage.scheduleSync();
