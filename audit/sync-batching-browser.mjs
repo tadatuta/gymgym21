@@ -51,13 +51,14 @@ try {
     largestBody = Math.max(largestBody, Buffer.byteLength(body));
     assert.ok(Buffer.byteLength(body) <= 512 * 1024);
     const sent = JSON.parse(body);
+    assert.equal(sent.protocolVersion, 1);
     assert.ok(sent.changes.logs.length > 0 && sent.changes.logs.length <= 500);
     const logs = sent.changes.logs.map((log) => {
       assert.equal(seen.has(log.id), false); seen.add(log.id);
       return { ...log, version: ++revision, serverUpdatedAt: now };
     });
     requests++;
-    await route.fulfill({ json: { cursor: revision, changes: { logs }, conflicts: [],
+    await route.fulfill({ json: { protocolVersion: 1, cursor: revision, changes: { logs }, conflicts: [],
       acknowledged: logs.map(({ id }) => ({ entityType: 'logs', entityId: id })), hasMore: false } });
   });
   await page.goto(`${server.resolvedUrls.local[0]}a11-test`);
@@ -69,7 +70,7 @@ try {
     const restored = await auth.restoreSessionState();
     if (restored.status !== 'authenticated') throw new Error(`Auth fixture failed: ${restored.status}`);
     auth.cacheOfflineAccount(user, { storageKey: user.id });
-    const storage = new StorageService({ autoInit: false, enableBroadcast: false, syncDebounceMs: 0 });
+    const storage = new StorageService({ enableBroadcast: false, syncDebounceMs: 0 });
     await storage.activate(user.id);
     const db = database.db;
     await db.workoutTypes.put({ id: 'T', name: 'Synthetic', updatedAt: user.updatedAt, version: 1 });

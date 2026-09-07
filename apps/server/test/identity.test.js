@@ -109,20 +109,20 @@ test('PostgreSQL: HTTP sync and concurrent alias writers preserve identity owner
         for (const route of ['storage/sync', 'ai/recommendations']) {
           let call = request(app).post(`/api/me/${route}`).set('Cookie', cookie);
           if (expected) call = call.set('X-Expected-Storage-Key', expected);
-          await call.send(route === 'storage/sync' ? { cursor: 0, changes: { profile } } : { type: 'general' }).expect(409);
+          await call.send(route === 'storage/sync' ? { protocolVersion: 1, cursor: 0, changes: { profile } } : { type: 'general' }).expect(409);
         }
       }
       assert.equal(aiCalls, 0);
       assert.deepEqual(await repository.readSnapshot('victim-user'), beforeA);
       assert.deepEqual(await repository.readSnapshot('attacker-user'), beforeB);
       await request(app).post('/api/me/storage/sync').set('Cookie', cookie)
-        .set('X-Expected-Storage-Key', 'attacker-user').send({ cursor: 0, changes: {} }).expect(200);
+        .set('X-Expected-Storage-Key', 'attacker-user').send({ protocolVersion: 1, cursor: 0, changes: {} }).expect(200);
     });
     await t.test('HTTP cookie sync cannot forge any identity or steal an existing public alias', async () => {
       const context = { kind: 'better-auth', storageKey: 'attacker-user', authUser: { id: 'attacker-user', username: null } };
       const app = createApp({ authHandler: async () => {}, resolveRequestContext: async () => context,
         generateRecommendation: async () => '', findPublicProfile: async () => null, storageRepository: repository });
-      await request(app).post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'attacker-user').send({ cursor: 0, changes: { profile } }).expect(200);
+      await request(app).post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'attacker-user').send({ protocolVersion: 1, cursor: 0, changes: { profile } }).expect(200);
       const saved = (await repository.readSnapshot('attacker-user')).profile;
       assert.equal(saved.username, undefined);
       assert.equal(saved.telegramUsername, undefined);
@@ -131,7 +131,7 @@ test('PostgreSQL: HTTP sync and concurrent alias writers preserve identity owner
       assert.equal(owner.rows[0].storage_key, 'victim-user');
     });
     await t.test('Telegram sync rejects forged username and removes stale Telegram username', async () => {
-      await repository.sync('telegram_123', { cursor: 0, changes: { profile } }, {
+      await repository.sync('telegram_123', { protocolVersion: 1, cursor: 0, changes: { profile } }, {
         kind: 'telegram', storageKey: 'telegram_123', telegramUser: { id: 123, first_name: 'Test' },
       });
       const saved = (await repository.readSnapshot('telegram_123')).profile;

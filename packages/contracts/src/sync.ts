@@ -3,8 +3,7 @@ import { id, number, workoutType, log, workout, profile, identityProfile, backup
 
 export const syncRequestSchema = z.object({
   cursor: number.int(),
-  // Missing version remains supported for legacy clients until S09.
-  protocolVersion: z.literal(1).optional(),
+  protocolVersion: z.literal(1),
   limit: z.number().int().min(1).max(2000).optional(),
   batchId: id.refine((value) => value.length <= 100).optional(),
   changes: z.object({
@@ -29,10 +28,9 @@ const reference = z.object({
   entityType: z.enum(['workoutTypes', 'logs', 'workouts', 'profile']), entityId: id,
 }).refine((value) => value.entityType !== 'profile' || value.entityId === 'me', 'Invalid profile ID');
 export const syncResponseSchema = z.object({
-  // Explicit legacy compatibility until S09 removes optional protocol/ack fields.
-  protocolVersion: z.literal(1).optional(),
+  protocolVersion: z.literal(1),
   cursor: number.int(), hasMore: z.boolean().optional(),
-  acknowledged: z.array(reference).optional(),
+  acknowledged: z.array(reference),
   conflicts: z.array(z.object({
     entityType: reference.shape.entityType, entityId: id,
     reason: z.literal('stale-version'), serverVersion: number.int(),

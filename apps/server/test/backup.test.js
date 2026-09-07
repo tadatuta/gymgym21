@@ -24,7 +24,7 @@ const { closeAuthResources } = await import('../dist/auth.js');
 const entity = (id, name = id, version = 0) => ({ id, name, version, category: 'time', updatedAt: '2026-09-01T00:00:00.000Z' });
 function client(storageKey) {
   const context = { kind: 'better-auth', storageKey, authUser: { id: storageKey, username: null } };
-  return (batchId, cursor = 0, changes = {}, limit) => repository.sync(storageKey, { batchId, cursor, changes, limit }, context);
+  return (batchId, cursor = 0, changes = {}, limit) => repository.sync(storageKey, { protocolVersion: 1, batchId, cursor, changes, limit }, context);
 }
 
 const { createApp } = await import('../dist/app.js');
@@ -72,8 +72,14 @@ test('PostgreSQL backup import is atomic and revision guarded', { skip: !testUrl
       const badJson = await request(app).post('/api/me/storage/sync').set('Content-Type', 'application/json').send('{"invalid":');
       assert.equal(badJson.status, 400);
       assert.equal(badJson.body.code, 'INVALID_JSON');
-      assert.equal((await send({ protocolVersion: 2, cursor: revision, changes: {} })).status, 409);
-      assert.equal((await send({ cursor: Number.MAX_SAFE_INTEGER + 1, changes: {} })).status, 400);
+      const beforeProtocol = await repository.readSnapshot(storageKey);
+      for (const protocolVersion of [undefined, 2]) {
+        const rejected = await send({ protocolVersion, cursor: revision, changes: { workoutTypes: [entity('protocol-must-not-write')] } });
+        assert.equal(rejected.status, protocolVersion === undefined ? 400 : 409);
+        assert.equal(rejected.body.code, protocolVersion === undefined ? 'INVALID_REQUEST' : 'UNSUPPORTED_PROTOCOL');
+        assert.deepEqual(await repository.readSnapshot(storageKey), beforeProtocol);
+      }
+      assert.equal((await send({ protocolVersion: 1, cursor: Number.MAX_SAFE_INTEGER + 1, changes: {} })).status, 400);
       assert.equal((await client(storageKey)('final', revision)).cursor, revision);
     });
     await t.test('atomic HTTP backup accepts 10001 valid logs and reports body limit without truncation', async () => {

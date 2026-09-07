@@ -67,8 +67,6 @@ export const config = {
   RATE_LIMIT_AUTH_MAX: parsePositiveInteger(process.env.RATE_LIMIT_AUTH_MAX, 10),
   RATE_LIMIT_AUTH_USERNAME_CHECK_WINDOW_MS: parsePositiveInteger(process.env.RATE_LIMIT_AUTH_USERNAME_CHECK_WINDOW_MS, 60_000),
   RATE_LIMIT_AUTH_USERNAME_CHECK_MAX: parsePositiveInteger(process.env.RATE_LIMIT_AUTH_USERNAME_CHECK_MAX, 30),
-  RATE_LIMIT_STORAGE_WINDOW_MS: parsePositiveInteger(process.env.RATE_LIMIT_STORAGE_WINDOW_MS, 60_000),
-  RATE_LIMIT_STORAGE_MAX: parsePositiveInteger(process.env.RATE_LIMIT_STORAGE_MAX, 60),
   RATE_LIMIT_SYNC_WINDOW_MS: parsePositiveInteger(process.env.RATE_LIMIT_SYNC_WINDOW_MS, 60_000),
   RATE_LIMIT_SYNC_MAX: parsePositiveInteger(process.env.RATE_LIMIT_SYNC_MAX, 20),
   RATE_LIMIT_SYNC_MAX_CONCURRENT: parsePositiveInteger(process.env.RATE_LIMIT_SYNC_MAX_CONCURRENT, 1),

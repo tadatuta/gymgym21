@@ -23,8 +23,8 @@ export type SyncConflict = SyncResponse['conflicts'][number];
 export type SyncAcknowledgement = NonNullable<SyncResponse['acknowledged']>[number];
 export type SyncEntityType = SyncAcknowledgement['entityType'];
 
-// Current servers always emit every collection and protocol field. The wire
-// reader above still accepts legacy omissions until compatibility removal (S09).
+// Current servers always emit every collection and hasMore. The wire reader
+// permits their omission; protocolVersion and acknowledged are always required.
 export type CompleteSyncResponse = Required<Omit<SyncResponse, 'changes'>> & {
     changes: { workoutTypes: WorkoutType[]; logs: WorkoutSet[]; workouts: WorkoutSession[]; profile: UserProfile | null };
 };

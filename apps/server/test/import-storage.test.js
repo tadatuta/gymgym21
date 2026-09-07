@@ -59,7 +59,7 @@ async function state() {
   return result;
 }
 const context = { kind: 'better-auth', storageKey: 'existing', authUser: { id: 'account', username: null } };
-const sync = (batchId, cursor, changes = {}) => repository.sync('existing', { batchId, cursor, changes }, context);
+const sync = (batchId, cursor, changes = {}) => repository.sync('existing', { protocolVersion: 1, batchId, cursor, changes }, context);
 
 test('CLI validates first, commits one plan, and preserves client cursors', { skip: !testUrl }, async (t) => {
   try {

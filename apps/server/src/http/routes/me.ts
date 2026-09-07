@@ -46,7 +46,7 @@ export function createMeRouter(dependencies: AppDependencies): Router {
     const payload = backupImportSchema.parse(req.body);
     // backupDataSchema strips all client-supplied trusted identity fields.
     const result = await dependencies.storageRepository.sync(req.authContext!.storageKey, {
-      cursor: payload.expectedRevision, changes: payload.data,
+      protocolVersion: 1, cursor: payload.expectedRevision, changes: payload.data,
     }, req.authContext!, payload);
     console.info('Backup import completed', { mode: payload.mode, revision: result.cursor });
     res.json(result);

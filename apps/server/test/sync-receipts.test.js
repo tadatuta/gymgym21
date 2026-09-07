@@ -23,7 +23,7 @@ const { closeAuthResources } = await import('../dist/auth.js');
 const entity = (id, name = id, version = 0) => ({ id, name, version, category: 'time', updatedAt: '2026-09-01T00:00:00.000Z' });
 function client(storageKey) {
   const context = { kind: 'better-auth', storageKey, authUser: { id: storageKey, username: null } };
-  return (batchId, cursor = 0, changes = {}, limit) => repository.sync(storageKey, { batchId, cursor, changes, limit }, context);
+  return (batchId, cursor = 0, changes = {}, limit) => repository.sync(storageKey, { protocolVersion: 1, batchId, cursor, changes, limit }, context);
 }
 
 test('PostgreSQL: push receipts do not cache pull freshness', { skip: !testUrl }, async (t) => {

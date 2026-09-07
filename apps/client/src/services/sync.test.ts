@@ -40,7 +40,7 @@ describe('SyncService reliable outbox acknowledgements', () => {
     expect(signal.aborted).toBe(false);
     await rejected;
     expect(signal.aborted).toBe(true);
-    complete({ cursor: 999, changes: {}, conflicts: [] });
+    complete({ protocolVersion: 1, cursor: 999, changes: {}, conflicts: [], acknowledged: [] });
     await new Promise(resolve => setTimeout(resolve, 5));
     expect(await db.syncState.get('sync-cursor')).toBeUndefined();
   }, 35000);
@@ -56,7 +56,7 @@ describe('SyncService reliable outbox acknowledgements', () => {
       const sent = JSON.parse(body);
       expect(sent.changes.logs.length).toBeLessThanOrEqual(SYNC_PUSH_LIMIT);
       for (const log of sent.changes.logs) { expect(seen.has(log.id)).toBe(false); seen.add(log.id); }
-      return jsonResponse({ cursor: seen.size, changes: sent.changes, conflicts: [], acknowledged: sent.changes.logs.map((log: { id: string }) => ({ entityType: 'logs', entityId: log.id })), hasMore: false });
+      return jsonResponse({ protocolVersion: 1, cursor: seen.size, changes: sent.changes, conflicts: [], acknowledged: sent.changes.logs.map((log: { id: string }) => ({ entityType: 'logs', entityId: log.id })), hasMore: false });
     });
     let rounds = 0;
     while ((await SyncService.sync()).hasMore) { expect(++rounds).toBeLessThan(25); }
@@ -72,7 +72,7 @@ describe('SyncService reliable outbox acknowledgements', () => {
     vi.mocked(authorizedApiFetch).mockRejectedValueOnce(new Error('lost response')).mockImplementation(async (_url, init) => {
       expect(new TextEncoder().encode(String(init?.body)).length).toBeLessThanOrEqual(SYNC_PUSH_BYTES);
       const sent = JSON.parse(String(init?.body));
-      return jsonResponse({ cursor: 0, changes: sent.changes, conflicts: [], hasMore: false });
+      return jsonResponse({ protocolVersion: 1, cursor: 0, changes: sent.changes, conflicts: [], acknowledged: (sent.changes.workouts ?? []).map(({ id }: { id: string }) => ({ entityType: 'workouts', entityId: id })), hasMore: false });
     });
     await expect(SyncService.sync()).rejects.toMatchObject({ code: 'NETWORK', retryable: true });
     expect((await SyncService.sync()).hasMore).toBe(true);
@@ -110,32 +110,47 @@ describe('SyncService reliable outbox acknowledgements', () => {
     expect(await db.dirtyEntities.count()).toBe(0);
   });
 
+  it('keeps sent entries pending when the server explicitly acknowledges nothing', async () => {
+    await db.workoutTypes.put({ id: 'A', name: 'Local', updatedAt: '2026-09-01T00:00:00Z' });
+    await SyncService.markDirty('workoutTypes', 'A');
+    const pending = await db.dirtyEntities.toArray();
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce(jsonResponse({
+      protocolVersion: 1, cursor: 1, changes: {}, conflicts: [], acknowledged: [],
+    }));
+    expect((await SyncService.sync()).hasMore).toBe(true);
+    expect(await db.dirtyEntities.toArray()).toEqual(pending);
+    expect((await db.syncState.get('sync-cursor'))!.cursor).toBe(1);
+  });
+
   it('validates every response before entity, cursor, conflict or acknowledgement writes', async () => {
     const now = '2026-09-01T00:00:00Z';
     await db.workoutTypes.put({ id: 'A', name: 'Local', updatedAt: now });
     await SyncService.markDirty('workoutTypes', 'A');
     await SyncService.markDirty('logs', 'missing');
-    const before = await db.dirtyEntities.toArray();
+    await db.logs.put({ id: 'L', workoutTypeId: 'A', workoutId: 'W', date: now, updatedAt: now });
+    await db.workouts.put({ id: 'W', startTime: now, updatedAt: now, status: 'active', isManual: false, pauseIntervals: [] });
+    await db.profile.put({ id: 'me', createdAt: now, updatedAt: now, isPublic: false });
+    await db.syncState.put({ key: 'sync-cursor', cursor: 1, updatedAt: now });
+    await db.syncConflicts.put({ key: 'workoutTypes:A', entityType: 'workoutTypes', entityId: 'A', reason: 'stale-version', serverVersion: 1, createdAt: now });
+    const tables = [db.workoutTypes, db.logs, db.workouts, db.profile, db.syncState, db.syncConflicts, db.dirtyEntities];
+    const before = await Promise.all(tables.map(table => table.toArray()));
     const good = { protocolVersion: 1, cursor: 2, changes: {}, conflicts: [], acknowledged: [{ entityType: 'workoutTypes', entityId: 'A' }] };
-    for (const value of [null, {}, { ...good, protocolVersion: 2 }, { ...good, cursor: 1.5 }, { ...good, hasMore: 'yes' },
+    for (const value of [null, {}, { ...good, protocolVersion: undefined }, { ...good, acknowledged: undefined }, { ...good, protocolVersion: 2 }, { ...good, cursor: 1.5 }, { ...good, hasMore: 'yes' },
       { ...good, changes: { workouts: [{ id: 'W', status: 'bogus' }] } }, { ...good, acknowledged: [{ entityType: 'alien', entityId: 'A' }] },
       { ...good, conflicts: [{ entityType: 'logs', entityId: '', reason: 'other', serverVersion: 2 }] },
       { ...good, changes: { workoutTypes: [{ id: 'A', name: 'one' }, { id: 'A', name: 'two' }] } }]) {
       vi.mocked(authorizedApiFetch).mockResolvedValueOnce(jsonResponse(value));
       await expect(SyncService.sync()).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
-      expect(await db.dirtyEntities.toArray()).toEqual(before);
-      expect((await db.workoutTypes.get('A'))!.name).toBe('Local');
-      expect(await db.syncState.count()).toBe(0);
-      expect(await db.syncConflicts.count()).toBe(0);
+      expect(await Promise.all(tables.map(table => table.toArray()))).toEqual(before);
     }
   });
 
-  it('rejects malformed backup response without applying imported changes', async () => {
+  it.each([undefined, 2, 'missing-ack'])('rejects malformed backup response (%s) without applying imported changes', async (invalid) => {
     const original = { id: 'A', name: 'Local', updatedAt: '2026-09-01T00:00:00Z' };
     await db.workoutTypes.put(original);
     vi.mocked(authorizedApiFetch)
-      .mockResolvedValueOnce(jsonResponse({ protocolVersion: 1, cursor: 1, changes: {}, conflicts: [] }))
-      .mockResolvedValueOnce(jsonResponse({ protocolVersion: 2, cursor: 2, changes: { workoutTypes: [{ ...original, name: 'Corrupt' }] }, conflicts: [] }));
+      .mockResolvedValueOnce(jsonResponse({ protocolVersion: 1, cursor: 1, changes: {}, conflicts: [], acknowledged: [] }))
+      .mockResolvedValueOnce(jsonResponse({ protocolVersion: invalid === 'missing-ack' ? 1 : invalid, acknowledged: invalid === 'missing-ack' ? undefined : [], cursor: 2, changes: { workoutTypes: [{ ...original, name: 'Corrupt' }] }, conflicts: [] }));
     await expect(new SyncService().importBackup({ workoutTypes: [original], workouts: [], logs: [] }, 'replace')).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
     expect(await db.workoutTypes.get('A')).toEqual(original);
     expect((await db.syncState.get('sync-cursor'))!.cursor).toBe(1);
@@ -148,8 +163,8 @@ describe('SyncService reliable outbox acknowledgements', () => {
     await db.syncState.put({ key: 'sync-cursor', cursor: 2, updatedAt: original.updatedAt });
     let finish: ((response: Response) => void) | undefined;
     vi.mocked(authorizedApiFetch)
-      .mockResolvedValueOnce(jsonResponse({ cursor: 2, changes: {}, conflicts: [], hasMore: true }))
-      .mockResolvedValueOnce(jsonResponse({ cursor: 3, changes: {}, conflicts: [], hasMore: false }))
+      .mockResolvedValueOnce(jsonResponse({ protocolVersion: 1, cursor: 2, changes: {}, conflicts: [], acknowledged: [], hasMore: true }))
+      .mockResolvedValueOnce(jsonResponse({ protocolVersion: 1, cursor: 3, changes: {}, conflicts: [], acknowledged: [], hasMore: false }))
       .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     const importing = new SyncService().importBackup({ workoutTypes: [{ ...original, name: 'backup' }], workouts: [], logs: [] }, 'replace');
     await vi.waitFor(() => expect(authorizedApiFetch).toHaveBeenCalledTimes(3));
@@ -157,7 +172,7 @@ describe('SyncService reliable outbox acknowledgements', () => {
     await db.workoutTypes.put({ ...original, name: 'new local edit' });
     await SyncService.markDirty('workoutTypes', 'A');
     const generation = (await db.dirtyEntities.get('workoutTypes:A'))!.generation;
-    finish!(jsonResponse({ cursor: 5, changes: { workoutTypes: [{ ...original, name: 'backup', version: 4 }, { ...original, id: 'B', isDeleted: true, version: 5 }] }, conflicts: [], acknowledged: [] }));
+    finish!(jsonResponse({ protocolVersion: 1, cursor: 5, changes: { workoutTypes: [{ ...original, name: 'backup', version: 4 }, { ...original, id: 'B', isDeleted: true, version: 5 }] }, conflicts: [], acknowledged: [] }));
     await importing;
     expect(await db.workoutTypes.get('A')).toMatchObject({ name: 'new local edit', version: 4 });
     expect((await db.dirtyEntities.get('workoutTypes:A'))!.generation).toBe(generation);
@@ -167,7 +182,7 @@ describe('SyncService reliable outbox acknowledgements', () => {
   it('does not modify local data on revision conflict or offline replace', async () => {
     const original = { id: 'A', name: 'original', updatedAt: '2026-09-01T00:00:00Z', version: 2 };
     await db.workoutTypes.put(original);
-    vi.mocked(authorizedApiFetch).mockResolvedValueOnce(jsonResponse({ cursor: 2, changes: {}, conflicts: [] }))
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce(jsonResponse({ protocolVersion: 1, cursor: 2, changes: {}, conflicts: [], acknowledged: [] }))
       .mockResolvedValueOnce(new Response('{}', { status: 409 }));
     const backup = { workoutTypes: [], workouts: [], logs: [] };
     await expect(new SyncService().importBackup(backup, 'replace')).rejects.toThrow('Данные изменились');
@@ -353,7 +368,7 @@ it('discards delayed sync from A after activating B, preserving both databases a
   await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
   await activateAccountDatabase(`isolation-b-${Math.random()}`);
   await db.workoutTypes.put({ id: 'b', name: 'B', updatedAt: '2026-09-01T00:00:00Z' });
-  finish(jsonResponse({ cursor: 3, conflicts: [], acknowledged: [{ entityType: 'workoutTypes', entityId: 'a' }], changes: { workoutTypes: [{ id: 'a', name: 'SERVER A', version: 3 }] } }));
+  finish(jsonResponse({ protocolVersion: 1, cursor: 3, conflicts: [], acknowledged: [{ entityType: 'workoutTypes', entityId: 'a' }], changes: { workoutTypes: [{ id: 'a', name: 'SERVER A', version: 3 }] } }));
   await rejected;
   expect((await db.workoutTypes.toArray()).map(x => x.id)).toEqual(['b']);
   await a.open();

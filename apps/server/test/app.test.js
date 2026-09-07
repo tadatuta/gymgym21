@@ -25,8 +25,6 @@ const defaultGuardrailConfig = {
   RATE_LIMIT_AUTH_MAX: config.RATE_LIMIT_AUTH_MAX,
   RATE_LIMIT_AUTH_USERNAME_CHECK_WINDOW_MS: config.RATE_LIMIT_AUTH_USERNAME_CHECK_WINDOW_MS,
   RATE_LIMIT_AUTH_USERNAME_CHECK_MAX: config.RATE_LIMIT_AUTH_USERNAME_CHECK_MAX,
-  RATE_LIMIT_STORAGE_WINDOW_MS: config.RATE_LIMIT_STORAGE_WINDOW_MS,
-  RATE_LIMIT_STORAGE_MAX: config.RATE_LIMIT_STORAGE_MAX,
   RATE_LIMIT_SYNC_WINDOW_MS: config.RATE_LIMIT_SYNC_WINDOW_MS,
   RATE_LIMIT_SYNC_MAX: config.RATE_LIMIT_SYNC_MAX,
   RATE_LIMIT_SYNC_MAX_CONCURRENT: config.RATE_LIMIT_SYNC_MAX_CONCURRENT,
@@ -486,7 +484,7 @@ test('POST /api/me/storage/sync writes delta records and returns cursor metadata
   const response = await request(app)
     .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'sync-user')
     .send({
-      cursor: 0,
+      protocolVersion: 1, cursor: 0,
       changes: {
         workoutTypes: [
           {
@@ -521,7 +519,7 @@ test('POST /api/me/storage/sync returns authoritative entities on stale updates'
   const initial = await request(app)
     .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'conflict-user')
     .send({
-      cursor: 0,
+      protocolVersion: 1, cursor: 0,
       changes: {
         workoutTypes: [{ id: 'bench', name: 'Bench Press', updatedAt: '2026-03-01T10:00:00.000Z' }],
       },
@@ -530,7 +528,7 @@ test('POST /api/me/storage/sync returns authoritative entities on stale updates'
   const accepted = await request(app)
     .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'conflict-user')
     .send({
-      cursor: initial.body.cursor,
+      protocolVersion: 1, cursor: initial.body.cursor,
       changes: {
         workoutTypes: [{
           id: 'bench',
@@ -544,7 +542,7 @@ test('POST /api/me/storage/sync returns authoritative entities on stale updates'
   const stale = await request(app)
     .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'conflict-user')
     .send({
-      cursor: initial.body.cursor,
+      protocolVersion: 1, cursor: initial.body.cursor,
       changes: {
         workoutTypes: [{
           id: 'bench',
@@ -574,7 +572,7 @@ test('POST /api/me/storage/sync propagates soft deletions incrementally', async 
   const created = await request(app)
     .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'deletion-user')
     .send({
-      cursor: 0,
+      protocolVersion: 1, cursor: 0,
       changes: {
         logs: [{
           id: 'log-1',
@@ -591,7 +589,7 @@ test('POST /api/me/storage/sync propagates soft deletions incrementally', async 
   const deletion = await request(app)
     .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'deletion-user')
     .send({
-      cursor: created.body.cursor,
+      protocolVersion: 1, cursor: created.body.cursor,
       changes: {
         logs: [{
           id: 'log-1',
@@ -610,7 +608,7 @@ test('POST /api/me/storage/sync propagates soft deletions incrementally', async 
   const bootstrap = await request(app)
     .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'deletion-user')
     .send({
-      cursor: 0,
+      protocolVersion: 1, cursor: 0,
       changes: {},
     });
 
@@ -673,7 +671,7 @@ test('unauthorized requests to protected routes return 401', async () => {
     resolveRequestContext: async () => null,
   });
 
-  const response = await request(app).post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'test-user').send({ cursor: 0, changes: {} });
+  const response = await request(app).post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'test-user').send({ protocolVersion: 1, cursor: 0, changes: {} });
 
   assert.equal(response.status, 401);
 });
@@ -703,7 +701,7 @@ test('Telegram Mini App auth headers can still be transformed into a request con
   const response = await request(app)
     .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'mini-user')
     .set('x-telegram-init-data', initData)
-    .send({ cursor: 0, changes: {} });
+    .send({ protocolVersion: 1, cursor: 0, changes: {} });
 
   assert.equal(response.status, 200);
 });

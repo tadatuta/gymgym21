@@ -131,7 +131,7 @@ export async function sync(
         }))];
       };
       const existing = await readImportEntities(client, storageKey);
-      request = { cursor: request.cursor, changes: {
+      request = { protocolVersion: 1, cursor: request.cursor, changes: {
         workoutTypes: normalize(request.changes.workoutTypes ?? [], existing.workoutTypes),
         workouts: normalize(request.changes.workouts ?? [], existing.workouts),
         logs: normalize(request.changes.logs ?? [], existing.logs),

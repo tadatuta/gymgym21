@@ -12,8 +12,8 @@ const log = { id: 'log', workoutTypeId: 'deleted-type', date, weight: 0, reps: 0
 const workout = { id: 'workout', startTime: date, status: 'active', isManual: false, pauseIntervals: [] };
 const profile = { id: 'me', isPublic: false, createdAt: date, birthDate: '' };
 const data = () => ({ workoutTypes: [type], logs: [log], workouts: [workout], profile });
-const request = changes => ({ cursor: 0, changes });
-const response = changes => ({ cursor: 0, changes, conflicts: [] });
+const request = changes => ({ protocolVersion: 1, cursor: 0, changes });
+const response = changes => ({ protocolVersion: 1, acknowledged: [], cursor: 0, changes, conflicts: [] });
 
 // These fixtures execute the same exported runtime schemas used by the HTTP
 // routes and browser validators, including the intentional boundary differences.
@@ -81,15 +81,19 @@ test('duplicate IDs are rejected in each collection at every transport boundary'
   }
 });
 
-test('strict request shape and permissive legacy response remain distinct', () => {
+test('strict request shape and permissive response entity fields remain distinct', () => {
   assert(!syncRequestSchema.safeParse({ ...request({}), extra: true }).success);
   assert(!syncRequestSchema.safeParse(request({ unknown: [] })).success);
   assert(!syncRequestSchema.safeParse(request({ logs: [{ ...log, extra: true }] })).success);
   assert(syncResponseSchema.safeParse(response({ logs: [{ ...log, extra: true }] })).success);
   assert(syncRequestSchema.safeParse(request({ profile: null })).success);
   assert(syncResponseSchema.safeParse(response({ profile: null })).success);
-  assert(syncResponseSchema.safeParse(response({})).success); // no protocol/ack/hasMore until S09
-  assert(!syncResponseSchema.safeParse({ ...response({}), protocolVersion: 2 }).success);
+  assert(syncResponseSchema.safeParse(response({})).success); // collections and hasMore may be omitted
+  for (const protocolVersion of [undefined, null, 2, '1']) {
+    assert(!syncResponseSchema.safeParse({ ...response({}), protocolVersion }).success);
+    assert(!syncRequestSchema.safeParse({ ...request({}), protocolVersion }).success);
+  }
+  assert(!syncResponseSchema.safeParse({ ...response({}), acknowledged: undefined }).success);
   assert(!syncRequestSchema.safeParse({ ...request({}), protocolVersion: 2 }).success);
   assert(!syncRequestSchema.safeParse({ ...request({}), cursor: -1 }).success);
   assert(!syncRequestSchema.safeParse({ ...request({}), limit: 2001 }).success);

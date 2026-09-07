@@ -39,7 +39,7 @@ describe('StorageService sync scheduling', () => {
 
     it('shows remote pulls with invalid local records, stops retries and syncs a corrected profile', async () => {
         Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
-        const service = new StorageService({ autoInit: false, enableBroadcast: false, syncDebounceMs: 0 });
+        const service = new StorageService({ enableBroadcast: false, syncDebounceMs: 0 });
         try {
             await service.activate(`invalid-local-${Math.random()}`);
             const now = '2026-09-01T00:00:00Z';
@@ -47,7 +47,7 @@ describe('StorageService sync scheduling', () => {
             await SyncService.markDirty('profile', 'me');
             vi.mocked(authorizedApiFetch).mockImplementation(async (_url, init) => {
                 const sent = JSON.parse(String(init?.body));
-                return new Response(JSON.stringify({ protocolVersion: 1, cursor: 1, conflicts: [], changes: {
+                return new Response(JSON.stringify({ protocolVersion: 1, cursor: 1, conflicts: [], acknowledged: sent.changes.profile ? [{ entityType: 'profile', entityId: 'me' }] : [], changes: {
                     ...sent.changes, logs: [{ id: 'remote', workoutTypeId: 'orphan', workoutId: '', date: now, updatedAt: now }],
                     workoutTypes: [{ id: 'T', name: 'Existing', updatedAt: now, version: 1 }],
                 } }), { status: 200 });
@@ -68,7 +68,7 @@ describe('StorageService sync scheduling', () => {
 
     it('automatically schedules remaining real outbox batches without another user flush', async () => {
         Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
-        const service = new StorageService({ autoInit: false, enableBroadcast: false, syncDebounceMs: 0 });
+        const service = new StorageService({ enableBroadcast: false, syncDebounceMs: 0 });
         try {
             await service.activate(`real-batches-${Math.random()}`);
             await db.workoutTypes.put({ id: 'T', name: 'Existing', updatedAt: '2026-09-01T00:00:00Z', version: 1 });
@@ -79,7 +79,7 @@ describe('StorageService sync scheduling', () => {
             vi.mocked(authorizedApiFetch).mockImplementation(async (_url, init) => {
                 requests++;
                 const sent = JSON.parse(String(init?.body));
-                return new Response(JSON.stringify({ cursor: requests, changes: sent.changes, conflicts: [], hasMore: false }), { status: 200 });
+                return new Response(JSON.stringify({ protocolVersion: 1, cursor: requests, changes: sent.changes, conflicts: [], acknowledged: sent.changes.logs.map(({ id }: { id: string }) => ({ entityType: 'logs', entityId: id })), hasMore: false }), { status: 200 });
             });
             await service.sync();
             await vi.waitFor(async () => expect(await db.dirtyEntities.count()).toBe(0), { timeout: 30000, interval: 100 });
@@ -242,7 +242,7 @@ describe('StorageService sync scheduling', () => {
             hasMore: false
         });
 
-        const storage = new StorageService({ autoInit: false, syncDebounceMs: 50, enableBroadcast: false });
+        const storage = new StorageService({ syncDebounceMs: 50, enableBroadcast: false });
         await storage.activate('sync-scheduling-test');
         await db.workoutTypes.put({ id: 'existing', name: 'Existing', updatedAt: new Date().toISOString() });
         vi.spyOn(AccountReads.prototype, 'reload').mockResolvedValue();
@@ -271,7 +271,7 @@ describe('StorageService sync scheduling', () => {
             });
         }));
 
-        const storage = new StorageService({ autoInit: false, syncDebounceMs: 10, enableBroadcast: false });
+        const storage = new StorageService({ syncDebounceMs: 10, enableBroadcast: false });
         await storage.activate('sync-scheduling-test');
         await db.workoutTypes.put({ id: 'existing', name: 'Existing', updatedAt: new Date().toISOString() });
         vi.spyOn(AccountReads.prototype, 'reload').mockResolvedValue();
@@ -293,7 +293,6 @@ describe('StorageService sync scheduling', () => {
 
     it('keeps account databases isolated and writes entity plus outbox together', async () => {
         const storage = new StorageService({
-            autoInit: false,
             syncDebounceMs: 60_000,
             enableBroadcast: false,
         });
@@ -318,7 +317,7 @@ describe('StorageService sync scheduling', () => {
     });
 
     it('assigns legacy localStorage data to only the first activated account', async () => {
-        const storage = new StorageService({ autoInit: false, enableBroadcast: false });
+        const storage = new StorageService({ enableBroadcast: false });
         const suffix = Math.random().toString(36).slice(2);
         const firstAccount = `legacy-a-${suffix}`;
         const secondAccount = `legacy-b-${suffix}`;
@@ -342,7 +341,7 @@ describe('StorageService sync scheduling', () => {
     });
 
     it('uses an account-scoped public profile cache when the network is unavailable', async () => {
-        const storage = new StorageService({ autoInit: false, enableBroadcast: false });
+        const storage = new StorageService({ enableBroadcast: false });
         const suffix = Math.random().toString(36).slice(2);
         const firstAccount = `profile-cache-a-${suffix}`;
         const secondAccount = `profile-cache-b-${suffix}`;
@@ -413,7 +412,7 @@ it.each(['ai', 'public'] as const)('discards delayed %s cache response after acc
 it('loads guest public profiles without opening IndexedDB, including after auth generation changes', async () => {
     const { closeActiveDatabase, invalidateAccountOperations } = await import('../db');
     closeActiveDatabase();
-    const service = new StorageService({ autoInit: false, enableBroadcast: false });
+    const service = new StorageService({ enableBroadcast: false });
     const put = vi.spyOn(db.publicProfileCache, 'put');
     let finish!: (response: Response) => void;
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { finish = resolve; })));
@@ -443,8 +442,8 @@ describe('AI fresh synchronized context', () => {
     });
     afterEach(() => { service.dispose(); vi.restoreAllMocks(); });
 
-    function syncResponse(sent: { changes: unknown }, cursor = 1) {
-        return new Response(JSON.stringify({ cursor, changes: sent.changes, conflicts: [], hasMore: false }), { status: 200 });
+    function syncResponse(sent: { changes: unknown }, cursor = 1, acknowledged: Array<{ entityType: string; entityId: string }> = []) {
+        return new Response(JSON.stringify({ protocolVersion: 1, acknowledged, cursor, changes: sent.changes, conflicts: [], hasMore: false }), { status: 200 });
     }
 
     it('pushes the fresh profile before sending AI and retains changes made during AI', async () => {
@@ -455,7 +454,7 @@ describe('AI fresh synchronized context', () => {
             const sent = JSON.parse(String(init?.body));
             if (url.endsWith('/storage/sync')) {
                 if (calls.length === 1) expect(sent.changes.profile.displayName).toBe('Fresh profile');
-                return syncResponse(sent, calls.length);
+                return syncResponse(sent, calls.length, sent.changes.profile ? [{ entityType: 'profile', entityId: 'me' }] : []);
             }
             expect(sent.expectedRevision).toBeGreaterThan(0);
             expect(await db.dirtyEntities.count()).toBe(0);

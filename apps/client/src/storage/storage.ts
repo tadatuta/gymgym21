@@ -12,7 +12,7 @@ import { accountTimeZone } from '../utils/training-time';
 import { sessionDurationSeconds } from '../utils/duration';
 export { PublicProfileUnavailableError } from './remote-reads';
 export type { SyncStatus } from './sync-coordinator';
-interface StorageServiceOptions { autoInit?: boolean; syncDebounceMs?: number; enableBroadcast?: boolean; }
+interface StorageServiceOptions { syncDebounceMs?: number; enableBroadcast?: boolean; }
 interface AccountServices {
     repository: AccountRepository;
     reads: AccountReads;
@@ -35,7 +35,6 @@ export class StorageService {
     };
     constructor(private readonly options: StorageServiceOptions = {}) {
         if (typeof window !== 'undefined') window.addEventListener('gym21-auth-changed', this.handleAuthChange);
-        if (options.autoInit) console.warn('StorageService now requires activate(storageKey); autoInit is ignored.');
     }
     private releaseAccount() {
         this.activation += 1;
@@ -155,4 +154,4 @@ export class StorageService {
         return importAccountBackup(repository, reads, coordinator, input, mode);
     }
 }
-export const storage = new StorageService({ autoInit: false });
+export const storage = new StorageService({});

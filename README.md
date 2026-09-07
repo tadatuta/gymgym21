@@ -147,6 +147,7 @@ npm run import:storage-json --workspace @gym21/server -- --dir ./data/storage --
 - Browser-сессия опирается на secure Better Auth cookies; клиент не хранит bearer token в `localStorage` и не использует его как источник истины для auth.
 - AI endpoint работает только при наличии корректного Vertex AI конфига и credentials; без них backend отвечает явной конфигурационной ошибкой.
 - При превышении rate limit сервер возвращает `429 RATE_LIMIT_EXCEEDED`, а при конкурирующих дорогих запросах вроде AI/sync может вернуть `503 ROUTE_BUSY`.
+- Sync-запросы и ответы требуют `protocolVersion: 1`; каждый ответ sync/backup требует явный массив `acknowledged` (пустой массив ничего не подтверждает). Запрос без версии получает `400 INVALID_REQUEST` с полем `protocolVersion`, неподдерживаемая версия — `409 UNSUPPORTED_PROTOCOL`, до записи данных. Клиент отклоняет ответы без версии/подтверждений или с другой версией до изменения IndexedDB, cursor, конфликтов и outbox. Миграции реальных старых данных IndexedDB/localStorage и legacy backup сохраняются независимо от wire-протокола.
 - После обновления sync wire contract клиент и backend должны деплоиться вместе. Если браузер удерживает старый PWA shell, может понадобиться одноразовый refresh.
 
 ### Размеры синхронизации и резервных копий

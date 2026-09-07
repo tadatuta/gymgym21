@@ -372,10 +372,7 @@ export class SyncService {
   }
 
   private async applySyncResponse(response: SyncResponse, snapshot: SyncRequestSnapshot) {
-    const fallbackAcknowledgements = [
-      ...snapshot.dirtyEntries.values(),
-    ].map(({ entityType, entityId }) => ({ entityType, entityId }));
-    const acknowledged = acknowledgementKeys(response.acknowledged ?? fallbackAcknowledgements);
+    const acknowledged = acknowledgementKeys(response.acknowledged);
     const conflicts = conflictKeys(response);
 
     await this.db.transaction(

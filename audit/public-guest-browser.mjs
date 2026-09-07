@@ -40,7 +40,7 @@ try {
         : { user, session: { id: 'synthetic', userId: user.id, expiresAt: '2099-01-01T00:00:00Z' } };
       return route.fulfill({ status: authUnavailable ? 503 : 200, contentType: 'application/json', body: JSON.stringify(body) });
     }
-    if (url.pathname.includes('/api/me/')) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ cursor: 0, changes: {}, conflicts: [], hasMore: false }) });
+    if (url.pathname.includes('/api/me/')) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ protocolVersion: 1, acknowledged: [], cursor: 0, changes: {}, conflicts: [], hasMore: false }) });
     if (url.pathname.includes('/api/profiles/')) {
       const name = url.pathname.split('/').at(-1);
       if (name === 'activation' && ++activationCalls === 1) await new Promise(resolve => { releaseActivation = resolve; });
