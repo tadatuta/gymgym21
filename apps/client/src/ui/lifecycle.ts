@@ -19,7 +19,9 @@ export function createLifecycle() {
     }
   }
   return {
-    listen, sweep, dispose() {
+    listen, sweep, own(target: Node, dispose: () => void) {
+      subscriptions.add({ target, dispose });
+    }, dispose() {
       subscriptions.forEach(subscription => subscription.dispose());
       subscriptions.clear();
     }

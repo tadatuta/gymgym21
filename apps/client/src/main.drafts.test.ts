@@ -254,3 +254,30 @@ describe('production latest-set selection and repeat binding', () => {
         expect(document.querySelector('#duplicate-last-btn')).toBeNull();
     });
 });
+
+
+it('releases old typeahead on refresh and navigation while keeping the newest selection working', () => {
+    const app = setup('main', true);
+    const oldInput = input('[data-typeahead-input]', 'Ex');
+    oldInput.dispatchEvent(new Event('blur'));
+    app.refresh();
+    expect(document.querySelector<HTMLInputElement>('[data-typeahead-input]')!.value).toBe('Ex');
+    oldInput.value = 'detached draft';
+    document.body.click();
+    expect(oldInput.value).toBe('detached draft');
+    const current = input('[data-typeahead-input]', 'rnn');
+    click('[data-typeahead-option-index="0"]');
+    expect(current.value).toBe('Running');
+    expect(document.querySelector<HTMLInputElement>('[data-typeahead-value]')!.value).toBe('t1');
+    expect(document.querySelector<HTMLElement>('#time-inputs')!.style.display).toBe('block');
+    app.ui.navigate({ name: 'settings' });
+    current.value = 'after navigation';
+    current.dispatchEvent(new Event('input'));
+    document.body.click();
+    expect(current.value).toBe('after navigation');
+    app.ui.navigate({ name: 'main' });
+    const last = input('[data-typeahead-input]', 'final draft');
+    app.ui.dispose();
+    document.body.click();
+    expect(last.value).toBe('final draft');
+});

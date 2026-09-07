@@ -778,7 +778,7 @@ export function createWorkoutPage(context: PageContext) {
     const typeaheadEl = form?.querySelector('[data-typeahead]');
     if (typeaheadEl) {
       registerTypeaheadItems(form, storage.getWorkoutTypes().map(t => ({ id: t.id, name: t.name })));
-      bindTypeahead(form);
+      lifecycle.own(typeaheadEl, bindTypeahead(form));
     }
     const typeSelect = document.getElementById('workout-type-select');
     lifecycle.listen(typeSelect, 'change', updateFormVisibility);

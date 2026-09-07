@@ -106,13 +106,23 @@ export function getTypeaheadValue(container: Element | Document = document): str
     return select?.value || '';
 }
 
+const bindings = new WeakMap<Element, () => void>();
+
 /**
- * Binds all event listeners for the typeahead component.
- * Must be called after rendering.
+ * Binds after rendering, replacing an earlier binding on the same wrapper.
+ * The owner must dispose before removing the component.
  */
-export function bindTypeahead(container: Element | Document = document): void {
+export function bindTypeahead(container: Element | Document = document): () => void {
     const wrapper = container.querySelector('[data-typeahead]') as HTMLElement | null;
-    if (!wrapper) return;
+    if (!wrapper) return () => {};
+    bindings.get(wrapper)?.();
+    const listeners: (() => void)[] = [];
+    let blurTimer: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+    function listen(target: EventTarget, type: string, handler: EventListener) {
+        target.addEventListener(type, handler);
+        listeners.push(() => target.removeEventListener(type, handler));
+    }
 
     const input = wrapper.querySelector('[data-typeahead-input]') as HTMLInputElement;
     const hidden = wrapper.querySelector('[data-typeahead-value]') as HTMLInputElement;
@@ -190,18 +200,19 @@ export function bindTypeahead(container: Element | Document = document): void {
     }
 
     // Events
-    input.addEventListener('focus', () => {
+    listen(input, 'focus', () => {
         input.select();
         openDropdown();
     });
 
-    input.addEventListener('input', () => {
+    listen(input, 'input', () => {
         activeIndex = -1;
         openDropdown();
         renderDropdown(input.value);
     });
 
-    input.addEventListener('keydown', (e: KeyboardEvent) => {
+    listen(input, 'keydown', (event: Event) => {
+        const e = event as KeyboardEvent;
         if (!isOpen) {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                 openDropdown();
@@ -241,10 +252,12 @@ export function bindTypeahead(container: Element | Document = document): void {
     });
 
     // Handle blur — restore display value if nothing was selected
-    input.addEventListener('blur', () => {
+    listen(input, 'blur', () => {
         // Delay to allow click on option to fire first
-        setTimeout(() => {
-            if (!isOpen) return;
+        clearTimeout(blurTimer);
+        blurTimer = setTimeout(() => {
+            blurTimer = undefined;
+            if (disposed || !isOpen) return;
             // Restore the displayed name for the current hidden value
             const currentItem = items.find(i => i.id === hidden.value);
             if (currentItem) {
@@ -255,7 +268,7 @@ export function bindTypeahead(container: Element | Document = document): void {
     });
 
     // Click on option
-    dropdown.addEventListener('click', (e: Event) => {
+    listen(dropdown, 'click', (e: Event) => {
         const target = (e.target as HTMLElement).closest('[data-typeahead-option-index]') as HTMLElement | null;
         if (!target) return;
 
@@ -266,7 +279,7 @@ export function bindTypeahead(container: Element | Document = document): void {
     });
 
     // Close on outside click
-    document.addEventListener('click', (e: Event) => {
+    listen(document, 'click', (e: Event) => {
         if (!wrapper.contains(e.target as Node)) {
             const currentItem = items.find(i => i.id === hidden.value);
             if (currentItem) {
@@ -275,6 +288,16 @@ export function bindTypeahead(container: Element | Document = document): void {
             closeDropdown();
         }
     });
+    const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        clearTimeout(blurTimer);
+        listeners.forEach(remove => remove());
+        closeDropdown();
+        if (bindings.get(wrapper) === dispose) bindings.delete(wrapper);
+    };
+    bindings.set(wrapper, dispose);
+    return dispose;
 }
 
 /**

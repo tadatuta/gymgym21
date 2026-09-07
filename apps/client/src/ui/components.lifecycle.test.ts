@@ -1,0 +1,64 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import Sortable from 'sortablejs';
+import { bindTypeahead, registerTypeaheadItems, renderTypeahead } from '../components/typeahead/Typeahead';
+import { createLifecycle } from './lifecycle';
+import { createSettingsPage } from './pages/settings';
+import type { PageContext } from './context';
+
+afterEach(() => { document.body.replaceChildren(); vi.useRealTimers(); vi.restoreAllMocks(); });
+
+it('rebinds typeahead once and releases detached listeners and pending blur work', () => {
+  vi.useFakeTimers();
+  const items = [{ id: 'a', name: 'Alpha' }, { id: 'b', name: 'Beta' }];
+  document.body.innerHTML = renderTypeahead({ items, name: 'typeId' });
+  registerTypeaheadItems(document, items);
+  const input = document.querySelector<HTMLInputElement>('[data-typeahead-input]')!;
+  const hidden = document.querySelector<HTMLInputElement>('[data-typeahead-value]')!;
+  const dropdown = document.querySelector<HTMLElement>('[data-typeahead-dropdown]')!;
+  const changed = vi.fn(); hidden.addEventListener('change', changed);
+  const first = bindTypeahead();
+  input.dispatchEvent(new Event('focus')); vi.advanceTimersByTime(0);
+  input.dispatchEvent(new Event('blur'));
+  expect(vi.getTimerCount()).toBe(1);
+  const dispose = bindTypeahead(); first();
+  expect(vi.getTimerCount()).toBe(0);
+  input.value = 'bt'; input.dispatchEvent(new Event('input'));
+  dropdown.querySelector<HTMLElement>('[data-id=b]')!.click();
+  expect(hidden.value).toBe('b'); expect(input.value).toBe('Beta'); expect(changed).toHaveBeenCalledTimes(1);
+  input.value = 'unfinished'; input.dispatchEvent(new Event('input')); input.dispatchEvent(new Event('blur'));
+  const lifecycle = createLifecycle(); lifecycle.own(input.closest('[data-typeahead]')!, dispose);
+  lifecycle.sweep(); expect(vi.getTimerCount()).toBe(1);
+  document.body.replaceChildren(); lifecycle.sweep(); dispose(); lifecycle.dispose();
+  expect(vi.getTimerCount()).toBe(0);
+  const markup = dropdown.innerHTML;
+  input.dispatchEvent(new Event('focus')); input.dispatchEvent(new Event('input')); input.dispatchEvent(new Event('blur'));
+  document.body.click(); vi.runAllTimers();
+  expect(input.value).toBe('unfinished'); expect(dropdown.innerHTML).toBe(markup); expect(vi.getTimerCount()).toBe(0);
+});
+
+it('destroys Sortable before replacement, repeated mount and disposal and rejects stale drag callbacks', async () => {
+  const updateWorkoutTypeOrder = vi.fn(async () => {});
+  const page = createSettingsPage({ state: {}, dependencies: { storage: { getWorkoutTypes: () => [{ id: 'a', name: 'Alpha' }, { id: 'b', name: 'Beta' }], updateWorkoutTypeOrder } }, actions: { withFormDrafts: (fn: () => void) => fn() } } as unknown as PageContext);
+  document.body.innerHTML = `<main class="content">${page.render()}</main>`;
+  const create = vi.spyOn(Sortable, 'create');
+  page.mount();
+  const first = create.mock.results[0].value as Sortable;
+  const oldEnd = first.options.onEnd!;
+  const destroy = vi.spyOn(first, 'destroy');
+  page.mount(); expect(destroy).toHaveBeenCalledTimes(1);
+  await oldEnd.call(first, {} as Sortable.SortableEvent); expect(updateWorkoutTypeOrder).not.toHaveBeenCalled();
+  const second = create.mock.results[1].value as Sortable;
+  const secondDestroy = vi.spyOn(second, 'destroy');
+  const oldList = second.el;
+  secondDestroy.mockImplementation(() => { expect(oldList.isConnected).toBe(true); Sortable.prototype.destroy.call(second); });
+  page.refresh(); expect(secondDestroy).toHaveBeenCalledTimes(1);
+  const current = create.mock.results[2].value as Sortable;
+  current.el.prepend(current.el.lastElementChild!);
+  await current.options.onEnd!.call(current, {} as Sortable.SortableEvent);
+  expect(updateWorkoutTypeOrder).toHaveBeenCalledWith(['b', 'a']);
+  const end = current.options.onEnd!;
+  const currentDestroy = vi.spyOn(current, 'destroy');
+  page.dispose(); page.dispose();
+  await end.call(current, {} as Sortable.SortableEvent);
+  expect(currentDestroy).toHaveBeenCalledTimes(1); expect(updateWorkoutTypeOrder).toHaveBeenCalledTimes(1);
+});

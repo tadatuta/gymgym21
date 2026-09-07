@@ -60,11 +60,13 @@ export function createSettingsPage(context: PageContext) {
   function renderSettingsTypeUpdate() {
     const content = document.querySelector('.content');
     if (!content) return;
+    lifecycle.dispose();
     content.innerHTML = renderSettingsPage();
     bindSettingsPageEvents();
   }
 
   function bindSettingsPageEvents() {
+    lifecycle.dispose();
     const form = document.getElementById('add-type-form') as HTMLFormElement;
     lifecycle.listen(form, 'submit', async (e) => {
       e.preventDefault();
@@ -118,13 +120,19 @@ export function createSettingsPage(context: PageContext) {
     // Sortable for type list
     const typeList = document.getElementById('workout-type-list');
     if (typeList) {
-      Sortable.create(typeList, {
+      let active = true;
+      const sortable = Sortable.create(typeList, {
         animation: 150,
         handle: '.drag-handle',
         onEnd: async () => {
+          if (!active || !typeList.isConnected) return;
           const newOrder = Array.from(typeList.children).map(child => child.getAttribute('data-id') || '').filter(Boolean);
           await storage.updateWorkoutTypeOrder(newOrder);
         }
+      });
+      lifecycle.own(typeList, () => {
+        active = false;
+        sortable.destroy();
       });
     }
   }
