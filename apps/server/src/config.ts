@@ -82,6 +82,7 @@ export const config = {
   PASSKEY_RP_NAME: process.env.PASSKEY_RP_NAME || 'Gym Gym 21',
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
   TELEGRAM_PLACEHOLDER_EMAIL_DOMAIN: process.env.TELEGRAM_PLACEHOLDER_EMAIL_DOMAIN || 'telegram.local.invalid',
+  AI_MODEL: process.env.AI_MODEL?.trim() || 'gemini-3-flash-preview',
   AI_TIMEOUT_MS: parsePositiveInteger(process.env.AI_TIMEOUT_MS, 12_000),
   AI_MAX_OUTPUT_TOKENS: parsePositiveInteger(process.env.AI_MAX_OUTPUT_TOKENS, 1_200),
   AI_MAX_CONTEXT_CHARS: parsePositiveInteger(process.env.AI_MAX_CONTEXT_CHARS, 8_000),

@@ -2,6 +2,14 @@ import { createHash } from 'node:crypto';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { config } from '../../config.js';
 
+// Response completion and the actual operation are separate lifetimes.
+const operationHolds = new WeakMap<Response, Set<Promise<unknown>>>();
+export function holdRateLimitUntil(res: Response, operation: Promise<unknown>): void {
+  let holds = operationHolds.get(res);
+  if (!holds) { holds = new Set(); operationHolds.set(res, holds); }
+  holds.add(operation);
+}
+
 interface RateLimitEntry {
   windowStartedAt: number;
   requestCount: number;
@@ -153,8 +161,16 @@ export function createRateLimitMiddleware(policy: RateLimitPolicy): RequestHandl
       }
     };
 
-    res.on('finish', release);
-    res.on('close', release);
+    let responseEnded = false;
+    const onEnd = () => {
+      if (responseEnded) return;
+      responseEnded = true;
+      const holds = operationHolds.get(res);
+      if (holds?.size) void Promise.allSettled([...holds]).then(release);
+      else release();
+    };
+    res.on('finish', onEnd);
+    res.on('close', onEnd);
 
     next();
   };

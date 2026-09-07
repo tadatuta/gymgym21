@@ -17,7 +17,7 @@ const fixture = Object.fromEntries(readFileSync(join(cwd, '.env.example'), 'utf8
   }));
 Object.assign(fixture, { POSTGRES_PASSWORD: 'synthetic:@/#password-0123456789012345', BETTER_AUTH_SECRET: 'synthetic-auth-secret-01234567890123456789', PORT: '9999', HOST: '127.0.0.2', POSTGRES_HOST_PORT: '55432', DATABASE_SSL: 'true', APP_BASE_URL: 'https://fixture.invalid', AUTH_BASE_URL: 'https://fixture.invalid/api/auth', ALLOWED_ORIGINS: 'https://fixture.invalid', ALLOWED_ORIGIN: 'https://fixture.invalid', TRUST_PROXY: '2', JSON_BODY_LIMIT: '7mb', PASSKEY_RP_ID: 'fixture.invalid', PASSKEY_RP_NAME: 'Fixture Gym', TELEGRAM_BOT_TOKEN: 'synthetic-token', TELEGRAM_PLACEHOLDER_EMAIL_DOMAIN: 'fixture.invalid', GOOGLE_CLOUD_PROJECT: 'fixture-project', GOOGLE_CLOUD_LOCATION: 'us-central1', GOOGLE_APPLICATION_CREDENTIALS: '/fixture/google.json' });
 for (const key of Object.keys(fixture)) {
-  if (/^(RATE_LIMIT|AI_)/.test(key)) fixture[key] = key === 'RATE_LIMITS_ENABLED' ? 'false' : String(Number(fixture[key]) + 7);
+  if (/^(RATE_LIMIT|AI_)/.test(key)) fixture[key] = key === 'AI_MODEL' ? 'synthetic-test-model' : key === 'RATE_LIMITS_ENABLED' ? 'false' : String(Number(fixture[key]) + 7);
 }
 function compose(values, dev = false) {
   const path = join(temp, 'fixture.env');

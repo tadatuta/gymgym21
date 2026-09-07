@@ -8,7 +8,7 @@ export type NodeRequestHandler = (req: IncomingMessage, res: ServerResponse) => 
 export interface AppDependencies {
   authHandler: NodeRequestHandler;
   resolveRequestContext: (headers: Headers) => Promise<AuthenticatedRequestContext | null>;
-  generateRecommendation: (request: AIRequest) => Promise<string>;
+  generateRecommendation: (request: AIRequest, signal?: AbortSignal) => Promise<string>;
   findPublicProfile: (identifier: string) => Promise<PublicProfileData | null>;
   storageRepository: StorageRepository;
 }

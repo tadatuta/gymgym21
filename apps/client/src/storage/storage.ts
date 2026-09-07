@@ -15,7 +15,7 @@ import {
     WorkoutSet,
     WorkoutType,
 } from '../types';
-import { SyncService } from '../services/sync';
+import { SyncService, type SyncExecutionResult } from '../services/sync';
 import { activateAccountDatabase, db, getActiveStorageKey, captureAccountContext, closeActiveDatabase } from '../db';
 import {
     authorizedApiFetch,
@@ -92,6 +92,7 @@ export class StorageService {
     private readonly syncDebounceMs: number;
     private syncTimer: ReturnType<typeof setTimeout> | undefined;
     private syncInFlight = false;
+    private syncTask?: Promise<SyncExecutionResult | undefined>;
     private syncController?: AbortController;
     private successTimer?: ReturnType<typeof setTimeout>;
     private retryAttempt = 0;
@@ -106,6 +107,7 @@ export class StorageService {
         this.successTimer = undefined;
         this.syncController?.abort();
         this.syncController = undefined;
+        this.syncTask = undefined;
         this.retryAttempt = 0;
         this.retryAt = 0;
         this.syncFailure = undefined;
@@ -379,7 +381,18 @@ export class StorageService {
         }, Math.min(2_147_483_647, Math.max(delay, this.retryAt - Date.now())));
     }
 
-    async sync() {
+    async sync(): Promise<SyncExecutionResult | undefined> {
+        if (this.syncTask) {
+            this.syncQueued = true;
+            return this.syncTask;
+        }
+        const task = this.performSync();
+        this.syncTask = task;
+        try { return await task; }
+        finally { if (this.syncTask === task) this.syncTask = undefined; }
+    }
+
+    private async performSync(): Promise<SyncExecutionResult | undefined> {
         if (!this.isActive() || !hasVerifiedOnlineAccount(this.activeStorageKey)) {
             this.setStatus('idle');
             return;
@@ -400,6 +413,7 @@ export class StorageService {
         const controller = new AbortController();
         this.syncController = controller;
         let nextDelay = 0;
+        let completed: SyncExecutionResult | undefined;
         try {
             const lockAcquired = await this.withSyncLock(async () => {
                 context.assertCurrent();
@@ -418,6 +432,7 @@ export class StorageService {
                     ? false
                     : await this.ensureDefaultWorkoutTypesAfterBootstrap();
                 context.assertCurrent();
+                completed = result;
                 this.setStatus('success');
                 this.broadcastUpdate();
 
@@ -457,6 +472,7 @@ export class StorageService {
                 }
             }
         }
+        return completed;
     }
 
     private async withSyncLock(operation: () => Promise<void>): Promise<boolean> {
@@ -1001,17 +1017,44 @@ export class StorageService {
             throw new Error('Новая рекомендация требует подключения к интернету');
         }
 
+        this.assertActive();
+        // A successful fresh roundtrip is mandatory, including when the outbox starts empty.
+        // A scheduler cooldown/failure/lock miss is not evidence that the server has this profile.
+        let expectedRevision: number | undefined;
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+            const result = await this.sync();
+            context.assertCurrent();
+            if (!result) throw new Error('Не удалось синхронизировать данные для AI. Дождитесь синхронизации и повторите.');
+            expectedRevision = await db.transaction('r', [db.dirtyEntities, db.syncConflicts, db.syncState], async () => {
+                context.assertCurrent();
+                if (await db.syncConflicts.count()) throw new Error('Перед запросом AI разрешите конфликты синхронизации.');
+                if (result.hasMore || await db.dirtyEntities.count()) return undefined;
+                const state = await db.syncState.get('sync-cursor');
+                context.assertCurrent();
+                return state?.cursor === result.cursor ? state.cursor : undefined;
+            });
+            context.assertCurrent();
+            if (expectedRevision !== undefined) break;
+        }
+        if (expectedRevision === undefined) throw new Error('Данные ещё синхронизируются. Повторите запрос AI позже.');
+        context.assertCurrent();
+
         const response = await authorizedApiFetch('/me/ai/recommendations', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type, options }),
+            body: JSON.stringify({ type, options, expectedRevision }),
         }, context);
         context.assertCurrent();
         if (!response.ok) {
             if (response.status === 401) {
                 throw new Error('Unauthorized');
             }
-            throw new Error('AI Generation Failed');
+            const failure = await response.json().catch(() => null);
+            context.assertCurrent();
+            if (response.status === 409 && failure?.code === 'AI_CONTEXT_STALE') throw new Error('Данные на сервере изменились. Повторите запрос AI: данные синхронизируются заново.');
+            if (failure?.code === 'AI_TIMEOUT') throw new Error('AI не ответил вовремя. Повторите запрос позже.');
+            if (failure?.code === 'AI_NOT_CONFIGURED') throw new Error('AI пока не настроен на сервере.');
+            throw new Error('Не удалось получить рекомендацию AI. Повторите позже.');
         }
 
         const data = await response.json();

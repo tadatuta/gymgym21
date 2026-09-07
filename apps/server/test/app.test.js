@@ -658,7 +658,7 @@ test('POST /api/me/ai/recommendations reads AI context from the repository', asy
   const response = await request(app)
     .post('/api/me/ai/recommendations').set('X-Expected-Storage-Key', 'ai-user')
     .send({
-      type: 'general',
+      type: 'general', expectedRevision: 0,
     });
 
   assert.equal(response.status, 200);
@@ -706,4 +706,63 @@ test('Telegram Mini App auth headers can still be transformed into a request con
     .send({ cursor: 0, changes: {} });
 
   assert.equal(response.status, 200);
+});
+
+test('AI timeout aborts transport but holds concurrency until the underlying promise settles', async () => {
+  const previous = config.AI_TIMEOUT_MS;
+  config.AI_TIMEOUT_MS = 30;
+  config.RATE_LIMIT_AI_MAX = 100;
+  let finish;
+  let signal;
+  let calls = 0;
+  const { app } = createTestApp({ generateRecommendation: async (_payload, value) => {
+    signal = value;
+    calls++;
+    if (calls > 1) return 'retry succeeded';
+    return new Promise(resolve => { finish = resolve; });
+  } });
+  const send = () => request(app).post('/api/me/ai/recommendations').set('X-Expected-Storage-Key', 'test-user').send({ type: 'general', expectedRevision: 0 });
+  try {
+    const first = await send();
+    assert.equal(first.status, 503);
+    assert.equal(first.body.code, 'AI_TIMEOUT');
+    assert.equal(signal.aborted, true);
+    const blocked = await send();
+    assert.equal(blocked.body.code, 'ROUTE_BUSY');
+    assert.equal(calls, 1);
+    finish('late response');
+    await new Promise(resolve => setImmediate(resolve));
+    const retry = await send();
+    assert.equal(retry.status, 200);
+    assert.equal(calls, 2);
+  } finally { finish?.('cleanup'); config.AI_TIMEOUT_MS = previous; }
+});
+
+test('AI disconnect aborts transport and retains busy slot for ignored cancellation', async () => {
+  config.RATE_LIMIT_AI_MAX = 100;
+  let started;
+  const ready = new Promise(resolve => { started = resolve; });
+  let finish;
+  let signal;
+  const { app } = createTestApp({ generateRecommendation: async (_payload, value) => {
+    signal = value;
+    started();
+    return new Promise(resolve => { finish = resolve; });
+  } });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/api/me/ai/recommendations`;
+  const controller = new AbortController();
+  try {
+    const pending = fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Expected-Storage-Key': 'test-user' }, body: JSON.stringify({ type: 'general', expectedRevision: 0 }), signal: controller.signal });
+    const rejected = assert.rejects(pending);
+    await ready;
+    controller.abort();
+    await rejected;
+    for (let i = 0; i < 100 && !signal.aborted; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(signal.aborted, true);
+    assert.equal(signal.reason.code, 'AI_CANCELLED');
+    const blocked = await request(server).post('/api/me/ai/recommendations').set('X-Expected-Storage-Key', 'test-user').send({ type: 'general', expectedRevision: 0 });
+    assert.equal(blocked.body.code, 'ROUTE_BUSY');
+  } finally { finish?.('cleanup'); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });

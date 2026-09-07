@@ -2,9 +2,10 @@ import { validTimeZone } from '../../training-time.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { backupDataSchema } from '../../backup-validation.js';
+import { HttpError } from '../errors.js';
 import { config } from '../../config.js';
 import type { AppDependencies } from '../app-types.js';
-import { createRateLimitMiddleware, createStorageRateLimitKey } from '../middleware/rate-limit.js';
+import { holdRateLimitUntil, createRateLimitMiddleware, createStorageRateLimitKey } from '../middleware/rate-limit.js';
 
 const syncMetadataSchema = {
   id: z.string(),
@@ -83,6 +84,7 @@ const syncRequestSchema = z.object({
 }).strict();
 
 const aiRequestSchema = z.object({
+  expectedRevision: z.number().int().nonnegative(),
   type: z.enum(['general', 'plan']),
   options: z
     .object({
@@ -136,19 +138,37 @@ export function createMeRouter(dependencies: AppDependencies): Router {
 
   router.post('/ai/recommendations', aiRateLimit, async (req, res) => {
     const payload = aiRequestSchema.parse(req.body);
-    const userData = await dependencies.storageRepository.readAiContext(req.authContext!.storageKey);
-    const recommendation = await dependencies.generateRecommendation({
-      ...payload,
-      profile: userData.profile,
-      logs: userData.logs,
-      workouts: userData.workouts,
-      workoutTypes: userData.workoutTypes,
+    const controller = new AbortController();
+    const disconnect = () => {
+      if (!res.writableFinished) controller.abort(new HttpError(499, 'AI client disconnected', { code: 'AI_CANCELLED' }));
+    };
+    res.once('close', disconnect);
+    const timer = setTimeout(() => controller.abort(new HttpError(503, 'AI request timed out', {
+      code: 'AI_TIMEOUT', details: { timeoutMs: config.AI_TIMEOUT_MS },
+    })), config.AI_TIMEOUT_MS);
+    let abortListener: () => void;
+    const cancelled = new Promise<never>((_, reject) => {
+      abortListener = () => {
+        console.warn('[ai] request cancelled', { code: controller.signal.reason.code });
+        reject(controller.signal.reason);
+      };
+      controller.signal.addEventListener('abort', abortListener, { once: true });
     });
-
-    res.json({
-      format: 'markdown',
-      recommendation,
-    });
+    const operation = (async () => {
+      const userData = await dependencies.storageRepository.readAiContext(req.authContext!.storageKey, payload.expectedRevision);
+      controller.signal.throwIfAborted();
+      return dependencies.generateRecommendation({ ...payload, ...userData, profile: userData.profile }, controller.signal);
+    })();
+    // Keep the slot even when a transport ignores cancellation and the HTTP response ends.
+    holdRateLimitUntil(res, operation);
+    try {
+      const recommendation = await Promise.race([operation, cancelled]);
+      res.json({ format: 'markdown', recommendation });
+    } finally {
+      clearTimeout(timer);
+      res.removeListener('close', disconnect);
+      controller.signal.removeEventListener('abort', abortListener!);
+    }
   });
 
   return router;

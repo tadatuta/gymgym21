@@ -180,7 +180,7 @@ describe('StorageService sync scheduling', () => {
         await service.activate(`recovery-${Math.random()}`);
         await db.workoutTypes.put({ id: 'existing', name: 'Existing', updatedAt: new Date().toISOString() });
         vi.spyOn(service, 'reloadCache').mockResolvedValue();
-        vi.useFakeTimers();
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
         await service.sync();
         service.scheduleSync(0);
         await service.sync();
@@ -189,6 +189,7 @@ describe('StorageService sync scheduling', () => {
         await vi.advanceTimersByTimeAsync(1);
         expect(spy).toHaveBeenCalledTimes(2);
         expect(service.getSyncState()).toMatchObject({ retryAt: 0, error: undefined });
+        await service.sync(); // Wait for the scheduled success to finish its local database work.
         spy.mockRejectedValue(new SyncError('invalid', 'INVALID_RECORD'));
         await service.sync();
         await vi.advanceTimersByTimeAsync(120000);
@@ -354,6 +355,13 @@ it.each(['ai', 'public'] as const)('discards delayed %s cache response after acc
     const fetchMock = vi.fn(() => new Promise<Response>(resolve => { finish = resolve; }));
     vi.stubGlobal('fetch', fetchMock);
     vi.mocked(authorizedApiFetch).mockImplementation(fetchMock);
+    if (kind === 'ai') {
+        vi.spyOn(storage, 'sync').mockImplementation(async () => {
+            await a.dirtyEntities.clear();
+            await a.syncState.put({ key: 'sync-cursor', cursor: 1, updatedAt: new Date().toISOString() });
+            return { cursor: 1, conflicts: 0, pushedEntities: 0, pulledEntities: 0, hasMore: false };
+        });
+    }
     const pending = kind === 'ai' ? storage.getAIRecommendation('general') : storage.getPublicProfile('someone');
     const rejected = expect(pending).rejects.toThrow('Stale account operation');
     await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
@@ -388,4 +396,86 @@ it('loads guest public profiles without opening IndexedDB, including after auth 
     service.dispose();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+});
+
+describe('AI fresh synchronized context', () => {
+    let service: StorageService;
+    beforeEach(async () => {
+        vi.restoreAllMocks();
+        vi.mocked(authorizedApiFetch).mockReset();
+        Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+        service = new StorageService({ enableBroadcast: false, syncDebounceMs: 60_000 });
+        await service.activate(`ai-fresh-${Math.random()}`);
+        await db.workoutTypes.put({ id: 'T', name: 'Existing', version: 1, updatedAt: new Date().toISOString() });
+        await db.dirtyEntities.clear();
+    });
+    afterEach(() => { service.dispose(); vi.restoreAllMocks(); });
+
+    function syncResponse(sent: { changes: unknown }, cursor = 1) {
+        return new Response(JSON.stringify({ cursor, changes: sent.changes, conflicts: [], hasMore: false }), { status: 200 });
+    }
+
+    it('pushes the fresh profile before sending AI and retains changes made during AI', async () => {
+        await service.updateProfileSettings({ displayName: 'Fresh profile' });
+        const calls: string[] = [];
+        vi.mocked(authorizedApiFetch).mockImplementation(async (url, init) => {
+            calls.push(url);
+            const sent = JSON.parse(String(init?.body));
+            if (url.endsWith('/storage/sync')) {
+                if (calls.length === 1) expect(sent.changes.profile.displayName).toBe('Fresh profile');
+                return syncResponse(sent, calls.length);
+            }
+            expect(sent.expectedRevision).toBeGreaterThan(0);
+            expect(await db.dirtyEntities.count()).toBe(0);
+            await service.updateProfileSettings({ displayName: 'Next profile' });
+            return new Response(JSON.stringify({ format: 'markdown', recommendation: 'fresh advice' }));
+        });
+        expect(await service.getAIRecommendation('general')).toBe('fresh advice');
+        expect(calls.at(-1)).toBe('/me/ai/recommendations');
+        expect(await db.dirtyEntities.count()).toBeGreaterThan(0);
+    });
+
+    it('does not issue AI after a failed flush or while retry cooldown is active', async () => {
+        const fetch = vi.mocked(authorizedApiFetch).mockRejectedValue(new Error('offline'));
+        await expect(service.getAIRecommendation('general')).rejects.toThrow('синхронизировать');
+        const count = fetch.mock.calls.length;
+        expect(service.getSyncState().retryAt).toBeGreaterThan(Date.now());
+        await expect(service.getAIRecommendation('general')).rejects.toThrow('синхронизировать');
+        expect(fetch.mock.calls.length).toBe(count);
+        expect(fetch.mock.calls.every(([url]) => url.endsWith('/storage/sync'))).toBe(true);
+    });
+
+    it('requires a fresh sync even for an empty outbox and blocks unresolved conflicts', async () => {
+        await db.syncConflicts.put({ key: 'profile:me', entityType: 'profile', entityId: 'me', reason: 'stale-version', createdAt: new Date().toISOString(), serverVersion: 1 });
+        const fetch = vi.mocked(authorizedApiFetch).mockImplementation(async (_url, init) => syncResponse(JSON.parse(String(init?.body))));
+        await expect(service.getAIRecommendation('general')).rejects.toThrow('конфликты');
+        expect(fetch).toHaveBeenCalled();
+        expect(fetch.mock.calls.every(([url]) => url.endsWith('/storage/sync'))).toBe(true);
+    });
+
+    it('waits for an already-running sync and then verifies the outbox before AI', async () => {
+        let resolve!: (response: Response) => void;
+        let sent: { changes: unknown };
+        vi.mocked(authorizedApiFetch).mockImplementation(async (url, init) => {
+            if (url.endsWith('/storage/sync')) {
+                sent = JSON.parse(String(init?.body));
+                return new Promise<Response>(r => { resolve = r; });
+            }
+            return new Response(JSON.stringify({ format: 'markdown', recommendation: 'ok' }));
+        });
+        const first = service.sync();
+        await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+        const ai = service.getAIRecommendation('general');
+        resolve(syncResponse(sent!));
+        await first;
+        expect(await ai).toBe('ok');
+    });
+
+    it('shows retry guidance when the server revision changed after sync', async () => {
+        vi.mocked(authorizedApiFetch).mockImplementation(async (url, init) => url.endsWith('/storage/sync')
+            ? syncResponse(JSON.parse(String(init?.body)))
+            : new Response(JSON.stringify({ code: 'AI_CONTEXT_STALE' }), { status: 409 }));
+        await expect(service.getAIRecommendation('general')).rejects.toThrow('Данные на сервере изменились');
+        expect(await db.aiResultCache.count()).toBe(0);
+    });
 });

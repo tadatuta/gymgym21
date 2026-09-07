@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import { GoogleGenAI } from '@google/genai';
 import { config } from './config.js';
 import { HttpError } from './http/errors.js';
+import { dayKey } from './training-time.js';
 import { StorageData } from './storage.js';
 
 const project = process.env.GOOGLE_CLOUD_PROJECT;
@@ -40,30 +41,6 @@ function truncateText(text: string, maxLength: number): string {
   return `${text.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
-function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new HttpError(503, 'AI request timed out', {
-        code: 'AI_TIMEOUT',
-        details: {
-          timeoutMs,
-        },
-      }));
-    }, timeoutMs);
-
-    operation.then(
-      (value) => {
-        clearTimeout(timeout);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timeout);
-        reject(error);
-      },
-    );
-  });
-}
-
 async function getAiClient(): Promise<GoogleGenAI> {
   const missing: string[] = [];
 
@@ -99,7 +76,7 @@ async function getAiClient(): Promise<GoogleGenAI> {
   return ai;
 }
 
-export async function generateRecommendation(request: AIRequest): Promise<string> {
+export async function generateRecommendation(request: AIRequest, signal?: AbortSignal, suppliedClient?: GoogleGenAI): Promise<string> {
   const { type, profile, logs, workoutTypes, options } = request;
   const availableExercises = truncateText(
     workoutTypes
@@ -115,7 +92,10 @@ export async function generateRecommendation(request: AIRequest): Promise<string
       .slice(-config.AI_MAX_RECENT_LOGS)
       .map((entry) => {
         const exerciseName = workoutTypes?.find((typeEntry) => typeEntry.id === entry.workoutTypeId)?.name || 'Неизвестно';
-        return `${entry.date.split('T')[0]}: ${sanitizeText(exerciseName, 100)} (${entry.weight ? `${entry.weight}kg x ${entry.reps}` : `${entry.duration} mins`})`;
+        const exercise = workoutTypes?.find((item) => item.id === entry.workoutTypeId);
+        const isTime = exercise?.category === 'time' || (exercise?.category !== 'strength' && entry.weight === undefined && entry.reps === undefined);
+        const effort = isTime ? `${(entry.duration ?? 0) * 60 + (entry.durationSeconds ?? 0)} seconds` : `${entry.weight ?? 0}kg x ${entry.reps ?? 0}`;
+        return `${dayKey(entry.date, profile?.timeZone)}: ${sanitizeText(exerciseName, 100)} (${effort})`;
       })
       .join('\n') ?? '',
     Math.floor(config.AI_MAX_CONTEXT_CHARS * 0.6),
@@ -187,30 +167,32 @@ ${context.recentActivity || 'Нет недавней активности'}`;
   }
 
   try {
-    const client = await getAiClient();
-    const response = await withTimeout(
-      client.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: userContent }],
-          },
-        ],
-        config: {
-          systemInstruction,
-          maxOutputTokens: config.AI_MAX_OUTPUT_TOKENS,
+    signal?.throwIfAborted();
+    const client = suppliedClient ?? await getAiClient();
+    signal?.throwIfAborted();
+    const response = await client.models.generateContent({
+      model: config.AI_MODEL,
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: userContent }],
         },
-      }),
-      config.AI_TIMEOUT_MS,
-    );
+      ],
+      config: {
+        systemInstruction,
+        abortSignal: signal,
+        httpOptions: { timeout: config.AI_TIMEOUT_MS },
+        maxOutputTokens: config.AI_MAX_OUTPUT_TOKENS,
+      },
+    });
     return response.text || '';
   } catch (error) {
     if (error instanceof HttpError) {
       throw error;
     }
 
-    console.error('AI generation failed:', error instanceof Error ? error.message : 'Unknown error');
+    if (signal?.aborted) throw signal.reason;
+    console.error('[ai] generation failed', { code: 'AI_UNAVAILABLE' });
     throw new HttpError(503, 'Failed to generate recommendation', {
       code: 'AI_UNAVAILABLE',
     });

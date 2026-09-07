@@ -130,6 +130,9 @@ npm run import:storage-json --workspace @gym21/server -- --dir ./data/storage --
 - Guardrails для чувствительных маршрутов настраиваются через `RATE_LIMIT_*`: отдельно для auth, username-check, storage/sync и AI.
 - Backend требует валидный `DATABASE_URL`; PostgreSQL schema применяется migration runner-ом при старте.
 - Для `POST /api/me/ai/recommendations` стоит держать консервативные `RATE_LIMIT_AI_*`, `AI_TIMEOUT_MS` и `AI_MAX_OUTPUT_TOKENS`, чтобы ограничивать burst-нагрузку и стоимость одного вызова.
+- `AI_MODEL` выбирает модель; по умолчанию сохранена `gemini-3-flash-preview`. При изменении доступности preview-модели задайте поддерживаемую вашим Vertex AI проектом модель в окружении.
+- До запроса AI клиент подтверждает синхронизацию профиля и истории, отсутствие конфликтов и пустой outbox. API требует `expectedRevision` и читает весь контекст в одном PostgreSQL snapshot; при изменении ревизии отвечает `409 AI_CONTEXT_STALE` с предложением синхронизироваться и повторить запрос. Изменения, сделанные уже во время генерации, остаются в очереди следующей синхронизации.
+- Таймаут и отключение клиента отменяют HTTP-транспорт Google SDK. Слот `RATE_LIMIT_AI_MAX_CONCURRENT` удерживается до фактического завершения операции SDK, даже если она игнорирует отмену, а клиент уже получил `503 AI_TIMEOUT`. Это локальная отмена: после принятия запроса провайдером остановка удалённых вычислений и списаний не гарантируется. Автоматических повторов генерации нет.
 - `AI_MAX_CONTEXT_CHARS`, `AI_MAX_RECENT_LOGS`, `AI_MAX_EXERCISE_COUNT` и `AI_TEXT_FIELD_MAX_LENGTH` ограничивают размер пользовательского контекста перед отправкой в модель.
 - Browser-сессия опирается на secure Better Auth cookies; клиент не хранит bearer token в `localStorage` и не использует его как источник истины для auth.
 - AI endpoint работает только при наличии корректного Vertex AI конфига и credentials; без них backend отвечает явной конфигурационной ошибкой.
