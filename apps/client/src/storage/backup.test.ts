@@ -38,7 +38,8 @@ it('roundtrips orphan IDs and legacy missing workouts without synthesizing delet
     const data = readBackup({ ...input, workouts: undefined, workoutTypes: [] });
     expect(data.logs[0]).toMatchObject({ workoutTypeId: 'type', workoutId: 'workout' });
     const restored = readBackup(createBackup(data));
-    expect(restored.logs).toEqual(data.logs);
+    // Import creates fresh sync timestamps; compare the portable domain payload.
+    expect(createBackup(restored).data.logs).toEqual(createBackup(data).data.logs);
     expect(restored.workoutTypes).toEqual([]);
     expect(restored.workouts).toEqual([]);
 });

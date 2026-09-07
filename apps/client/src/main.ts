@@ -7,6 +7,7 @@ import './styles/profile.css';
 import './components/navigation/navigation.css';
 import { createReconnectCoordinator } from './services/reconnect';
 import { captureAccountContext } from './db';
+import { FormDrafts } from './utils/form-drafts';
 import { storage, SyncStatus } from './storage/storage';
 import { WorkoutSet, WorkoutSession, PublicProfileData, WorkoutType } from './types';
 import './styles/stats.css';
@@ -114,6 +115,18 @@ let aiLoadingState: 'idle' | 'general' | 'plan' = 'idle';
 let isStartingWorkout = false;
 let editingWorkoutId: string | null = null;
 let publicProfileRequestId = 0;
+
+let formDrafts: FormDrafts | null = null;
+function withFormDrafts(update: () => void) {
+  const app = document.getElementById('app');
+  if (!app) return;
+  formDrafts ??= new FormDrafts(app);
+  formDrafts.render(captureAccountContext().storageKey, group => JSON.stringify([
+    currentRoute, group.id,
+    group.id === 'profile-tab-content' ? currentProfileTab : '',
+    group.id === 'log-form' ? editingLogId : group.id === 'add-type-form' ? editingTypeId : group.id === 'workout-edit-form' ? editingWorkoutId : '',
+  ]), update);
+}
 
 function getCurrentPage() {
   return currentRoute.name;
@@ -223,6 +236,10 @@ function showToast(message: string) {
 }
 
 function render() {
+  withFormDrafts(renderContent);
+}
+
+function renderContent() {
   const app = document.getElementById('app');
   if (!app) return;
 
@@ -278,6 +295,8 @@ storage.onSyncStatusChange((status) => {
 
 // Handle unauthorized errors - show login screen immediately
 storage.onUnauthorized(() => {
+  formDrafts?.dispose();
+  formDrafts = null;
   authStatus = null;
   const app = document.getElementById('app');
   if (app) {
@@ -607,6 +626,10 @@ function renderLogsList() {
 }
 
 function updateWeekView() {
+  withFormDrafts(renderWeekUpdate);
+}
+
+function renderWeekUpdate() {
   const logsListEl = document.getElementById('logs-list');
   const weekLabelEl = document.querySelector('#week-label-container .subtitle');
 
@@ -636,7 +659,10 @@ function bindLogItemEvents() {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
       if (id) {
-        if (editingLogId === id) editingLogId = null;
+        if (editingLogId === id) {
+          formDrafts?.clear('log-form');
+          editingLogId = null;
+        }
         await storage.deleteLog(id);
         updateWeekView();
       }
@@ -645,6 +671,7 @@ function bindLogItemEvents() {
 
   document.querySelectorAll('.log-set__edit').forEach(btn => {
     btn.addEventListener('click', () => {
+      formDrafts?.clear('log-form');
       editingLogId = btn.getAttribute('data-id');
       render();
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -663,6 +690,7 @@ function bindLogItemEvents() {
   // Workout edit buttons
   document.querySelectorAll('.workout-header__edit').forEach(btn => {
     btn.addEventListener('click', () => {
+      formDrafts?.clear('workout-edit-form');
       editingWorkoutId = btn.getAttribute('data-workout-id');
       updateWeekView();
     });
@@ -674,6 +702,7 @@ function bindLogItemEvents() {
     editForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       if (!editingWorkoutId) return;
+      const saved = formDrafts?.checkpoint('workout-edit-form');
       const formData = new FormData(editForm);
       const name = (formData.get('workoutName') as string) || '';
       const startTimeLocal = formData.get('startTime') as string;
@@ -684,6 +713,7 @@ function bindLogItemEvents() {
       if (endTimeLocal) updates.endTime = new Date(endTimeLocal).toISOString();
 
       await storage.updateWorkout(editingWorkoutId, updates);
+      if (!saved?.()) return;
       editingWorkoutId = null;
       updateWeekView();
       showToast('Тренировка обновлена');
@@ -691,6 +721,7 @@ function bindLogItemEvents() {
 
     const cancelBtn = document.getElementById('cancel-edit-workout-btn');
     cancelBtn?.addEventListener('click', () => {
+      formDrafts?.clear('workout-edit-form');
       editingWorkoutId = null;
       updateWeekView();
     });
@@ -1317,6 +1348,10 @@ function renderProfileSettingsPage() {
 
 // Partial update for profile tabs - updates only the tab content and active state
 function updateProfileTabContent() {
+  withFormDrafts(renderProfileTabUpdate);
+}
+
+function renderProfileTabUpdate() {
   const container = document.getElementById('profile-tab-content');
   if (container) {
     container.innerHTML = renderProfileTabContent(currentProfileTab);
@@ -1375,6 +1410,10 @@ function bindStatsPageEvents() {
 
 // Partial update for settings page - re-renders type list and form
 function updateSettingsTypeList() {
+  withFormDrafts(renderSettingsTypeUpdate);
+}
+
+function renderSettingsTypeUpdate() {
   const content = document.querySelector('.content');
   if (!content) return;
   content.innerHTML = renderSettingsPage();
@@ -1386,14 +1425,17 @@ function bindSettingsPageEvents() {
   const form = document.getElementById('add-type-form') as HTMLFormElement;
   form?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const saved = formDrafts?.checkpoint('add-type-form');
     const input = document.getElementById('new-type-name') as HTMLInputElement;
     const category = (document.querySelector('input[name="new-type-category"]:checked') as HTMLInputElement)?.value as 'strength' | 'time' || 'strength';
     if (input.value) {
       if (editingTypeId) {
         await storage.updateWorkoutType(editingTypeId, input.value, category);
+        if (!saved?.()) return;
         editingTypeId = null;
       } else {
         await storage.addWorkoutType(input.value, category);
+        if (!saved?.()) return;
       }
       updateSettingsTypeList();
     }
@@ -1401,12 +1443,14 @@ function bindSettingsPageEvents() {
 
   const cancelEditBtn = document.getElementById('cancel-edit-type-btn');
   cancelEditBtn?.addEventListener('click', () => {
+    formDrafts?.clear('add-type-form');
     editingTypeId = null;
     updateSettingsTypeList();
   });
 
   document.querySelectorAll('.type-item__edit').forEach(btn => {
     btn.addEventListener('click', () => {
+      formDrafts?.clear('add-type-form');
       editingTypeId = btn.getAttribute('data-id');
       updateSettingsTypeList();
       const input = document.getElementById('new-type-name') as HTMLInputElement;
@@ -1418,7 +1462,10 @@ function bindSettingsPageEvents() {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
       if (id && confirm('Удалить этот тип тренировки?')) {
-        if (editingTypeId === id) editingTypeId = null;
+        if (editingTypeId === id) {
+          formDrafts?.clear('add-type-form');
+          editingTypeId = null;
+        }
         await storage.deleteWorkoutType(id);
         updateSettingsTypeList();
       }
@@ -1441,6 +1488,10 @@ function bindSettingsPageEvents() {
 
 // Partial update for workout controls - updates only the workout control section
 function updateWorkoutControls() {
+  withFormDrafts(renderWorkoutControlUpdate);
+}
+
+function renderWorkoutControlUpdate() {
   const mainContent = document.getElementById('main-content');
   if (!mainContent) return;
 
@@ -1483,6 +1534,7 @@ function bindWorkoutControlEvents() {
 
   const cancelStartWorkoutBtn = document.getElementById('cancel-start-workout-btn');
   cancelStartWorkoutBtn?.addEventListener('click', () => {
+    formDrafts?.clear('start-workout-form');
     isStartingWorkout = false;
     updateWorkoutControls();
   });
@@ -1490,9 +1542,11 @@ function bindWorkoutControlEvents() {
   const startWorkoutForm = document.getElementById('start-workout-form') as HTMLFormElement;
   startWorkoutForm?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const saved = formDrafts?.checkpoint('start-workout-form');
     const formData = new FormData(startWorkoutForm);
     const name = formData.get('workoutName') as string;
     await storage.startWorkout(name);
+    if (!saved?.()) return;
     isStartingWorkout = false;
     updateWorkoutControls();
   });
@@ -1500,20 +1554,17 @@ function bindWorkoutControlEvents() {
   const pauseWorkoutBtn = document.getElementById('pause-workout-btn');
   pauseWorkoutBtn?.addEventListener('click', async () => {
     await storage.pauseWorkout();
-    updateWorkoutControls();
   });
 
   const resumeWorkoutBtn = document.getElementById('resume-workout-btn');
   resumeWorkoutBtn?.addEventListener('click', async () => {
     await storage.resumeWorkout();
-    updateWorkoutControls();
   });
 
   const finishWorkoutBtn = document.getElementById('finish-workout-btn');
   finishWorkoutBtn?.addEventListener('click', async () => {
     if (confirm('Завершить тренировку?')) {
       await storage.finishWorkout();
-      updateWorkoutControls();
     }
   });
 }
@@ -1527,7 +1578,6 @@ function bindProfileSettingsEvents() {
       const key = button.getAttribute('data-conflict-key');
       if (!key) return;
       await storage.restoreConflictLocal(key);
-      updateProfileTabContent();
       showToast('Локальное изменение возвращено в очередь');
     });
   });
@@ -1537,12 +1587,12 @@ function bindProfileSettingsEvents() {
       const key = button.getAttribute('data-conflict-key');
       if (!key) return;
       await storage.dismissConflict(key);
-      updateProfileTabContent();
     });
   });
 
   const saveBtn = document.getElementById('save-profile-btn');
   saveBtn?.addEventListener('click', async () => {
+    const saved = formDrafts?.checkpoint('profile-tab-content', ['ai-plan-period', 'ai-allow-new']);
     const publicToggle = document.getElementById('profile-public-toggle') as HTMLInputElement;
     const historyToggle = document.getElementById('profile-history-toggle') as HTMLInputElement;
     const nameInput = document.getElementById('profile-display-name') as HTMLInputElement;
@@ -1567,8 +1617,8 @@ function bindProfileSettingsEvents() {
     if (additionalInfoInput) updates.additionalInfo = additionalInfoInput.value;
 
     await storage.updateProfileSettings(updates);
+    if (saved?.()) updateProfileTabContent();
     showToast('Профиль сохранен');
-    // No re-render needed - data is saved
   });
 
   // AI Buttons
@@ -2048,9 +2098,11 @@ function bindPageEvents() {
     // Listen for changes (works for both <select> and typeahead hidden input)
     const typeSelect = document.getElementById('workout-type-select');
     typeSelect?.addEventListener('change', updateFormVisibility);
+    form?.addEventListener('draftrestore', updateFormVisibility);
 
     form?.addEventListener('submit', async (e) => {
       e.preventDefault();
+      const saved = formDrafts?.checkpoint('log-form');
       const formData = new FormData(form);
       const typeId = formData.get('typeId') as string;
       const types = storage.getWorkoutTypes();
@@ -2105,15 +2157,16 @@ function bindPageEvents() {
             ...logData,
             date: newDate
           });
+          if (!saved?.()) return;
           editingLogId = null;
           // Need full render to reset the form
           render();
         }
       } else {
         const newLog = await storage.addLog(logData);
+        if (!saved?.()) return;
         lastAddedLogId = newLog.id;
-        // Use partial update for new logs
-        updateWeekView();
+        render();
         lastAddedLogId = null;
       }
     });
@@ -2139,6 +2192,7 @@ function bindPageEvents() {
 
     const cancelEditBtn = document.getElementById('cancel-edit-btn');
     cancelEditBtn?.addEventListener('click', () => {
+      formDrafts?.clear('log-form');
       editingLogId = null;
       render();
     });
@@ -2313,6 +2367,8 @@ storage.onSyncStatusChange(updateSyncStatus);
 async function initApp() {
   const app = document.getElementById('app')!;
   const showLogin = (error?: string) => {
+    formDrafts?.dispose();
+    formDrafts = null;
     void renderLogin(app, () => {
       location.reload();
     }, error);

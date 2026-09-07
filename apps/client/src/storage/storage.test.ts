@@ -34,6 +34,45 @@ describe('StorageService sync scheduling', () => {
         vi.unstubAllGlobals();
     });
 
+    it('does not notify for unchanged or transport-only cache reloads; retains identity, domain and conflict changes', async () => {
+        const service = new StorageService({ enableBroadcast: false });
+        try {
+            await service.activate(`cache-drafts-${Math.random()}`);
+            await service.addWorkoutType('Original');
+            const updated = vi.fn();
+            service.onUpdate(updated);
+            await service.reloadCache(); await service.reloadCache();
+            expect(updated).not.toHaveBeenCalled();
+            const type = service.getWorkoutTypes()[0];
+            await db.workoutTypes.update(type.id, { version: 9, updatedAt: 'new', serverUpdatedAt: 'server' });
+            await service.reloadCache();
+            expect(updated).not.toHaveBeenCalled();
+            expect(service.getWorkoutTypes()[0].version).toBe(9);
+            await db.workoutTypes.update(type.id, { name: 'Remote' }); await service.reloadCache();
+            expect(updated).toHaveBeenCalledTimes(1);
+            await db.profile.put({ id: 'me', isPublic: false, createdAt: 'old', updatedAt: 'old', telegramUserId: 123 });
+            await service.reloadCache();
+            await db.profile.update('me', { telegramUserId: 456 }); await service.reloadCache();
+            expect(updated).toHaveBeenCalledTimes(3);
+            await db.syncConflicts.put({ key: 'workoutTypes:test', entityType: 'workoutTypes', entityId: type.id,
+                reason: 'stale-version', serverVersion: 9, createdAt: 'now' });
+            await service.reloadCache();
+            await db.syncConflicts.update('workoutTypes:test', { serverVersion: 10 }); await service.reloadCache();
+            expect(updated).toHaveBeenCalledTimes(5);
+            await service.reloadCache(); expect(updated).toHaveBeenCalledTimes(5);
+        } finally { service.dispose(); }
+    });
+
+    it('notifies when the account changes even for identical empty data', async () => {
+        const service = new StorageService({ enableBroadcast: false });
+        try {
+            await service.activate(`empty-A-${Math.random()}`);
+            const updated = vi.fn(); service.onUpdate(updated);
+            await service.activate(`empty-B-${Math.random()}`);
+            expect(updated).toHaveBeenCalledTimes(1);
+        } finally { service.dispose(); }
+    });
+
     it('rejects the entire file before online preflight or any IndexedDB table mutation in both modes', async () => {
         const service = new StorageService({ enableBroadcast: false });
         try {

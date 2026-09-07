@@ -1,3 +1,4 @@
+import { domainSnapshot } from './domain-snapshot';
 import type { Table } from 'dexie';
 import { createBackup, readBackup, type BackupMode } from './backup';
 import {
@@ -91,6 +92,7 @@ export class StorageService {
     private broadcastChannel?: BroadcastChannel;
     private readonly enableBroadcast: boolean;
     private cache: AppData = emptyData();
+    private cacheStorageKey: string | null = null;
     private conflicts: SyncConflictRecord[] = [];
 
     private readonly handleAuthChange = () => {
@@ -474,9 +476,13 @@ export class StorageService {
             db.syncConflicts.orderBy('createdAt').reverse().toArray(),
         ]);
         if (!context.isCurrent()) return;
+        const changed = this.cacheStorageKey !== context.storageKey
+            || domainSnapshot(this.cache) !== domainSnapshot(data)
+            || JSON.stringify(this.conflicts) !== JSON.stringify(conflicts);
+        this.cacheStorageKey = context.storageKey;
         this.cache = data;
         this.conflicts = conflicts;
-        this.onUpdateCallback?.();
+        if (changed) this.onUpdateCallback?.();
     }
 
     getWorkoutTypes(): WorkoutType[] {
