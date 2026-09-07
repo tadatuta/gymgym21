@@ -1,3 +1,4 @@
+import { getLatestLog } from './utils/latest-log';
 import source from './main.ts?raw';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
@@ -25,7 +26,7 @@ function parse(markup: string) {
 describe('old persisted records remain text at HTML boundaries', () => {
     it('escapes log numeric fields and IDs for assigned and orphan sets', () => {
         const render = renderer('generateLogsListHtml', {
-            ...safeHtml, storage: { getWorkouts: () => [] }, editingWorkoutId: null, editingLogId: null, lastAddedLogId: null,
+            getLatestLog, ...safeHtml, storage: { getWorkouts: () => [] }, editingWorkoutId: null, editingLogId: null, lastAddedLogId: null,
         });
         for (const workoutId of ['', 'missing-workout']) for (const fields of [
             { weight: hostile, reps: hostile }, { duration: hostile, durationSeconds: hostile },
@@ -39,7 +40,7 @@ describe('old persisted records remain text at HTML boundaries', () => {
         const log = { id: 'old', workoutTypeId: 'type', date: '2026-09-01T00:00:00Z', weight: hostile, reps: hostile, durationSeconds: hostile };
         for (const editingLogId of ['old', null]) {
             const render = renderer('renderMainPage', {
-                ...safeHtml, storage: { getWorkoutTypes: () => [{ id: 'type', name: hostile }], getLogs: () => [log] },
+                getLatestLog, ...safeHtml, storage: { getWorkoutTypes: () => [{ id: 'type', name: hostile }], getLogs: () => [log] },
                 editingLogId, currentWeekOffset: 0, getWeekRange: () => ({ label: '' }), renderWorkoutControls: () => '',
                 renderLogsList: () => '', lastCalendarValue: '', isFilterEnabled: false, toLocalDatetimeValue: () => '2026-09-01T00:00',
             });

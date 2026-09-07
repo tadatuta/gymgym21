@@ -7,6 +7,7 @@ import './styles/profile.css';
 import './components/navigation/navigation.css';
 import { createReconnectCoordinator } from './services/reconnect';
 import { captureAccountContext } from './db';
+import { getLatestLog } from './utils/latest-log';
 import { FormDrafts } from './utils/form-drafts';
 import { storage, SyncStatus } from './storage/storage';
 import { WorkoutSet, WorkoutSession, PublicProfileData, WorkoutType } from './types';
@@ -502,8 +503,8 @@ function getWeekRange(offset: number) {
 function renderMainPage() {
   const types = storage.getWorkoutTypes();
   const logs = storage.getLogs();
-  const lastLog = logs[logs.length - 1];
-  const lastTypeId = lastLog?.workoutTypeId;
+  const lastLog = getLatestLog(logs);
+  const lastTypeId = types.find(t => !t.isDeleted && t.id === lastLog?.workoutTypeId)?.id;
   const editingLog = editingLogId ? logs.find(l => l.id === editingLogId) : null;
   const selectedWorkoutTypeId = editingLogId
     ? editingLog?.workoutTypeId
@@ -577,7 +578,7 @@ function renderMainPage() {
 
         <button class="button" type="submit">${editingLogId ? 'Сохранить изменения' : 'Зафиксировать'}</button>
         ${editingLogId ? `<button class="button button_secondary" type="button" id="cancel-edit-btn" style="margin-top: 12px;">Отмена</button>` : ''}
-        ${!editingLogId && lastLog ? `<button class="button button_secondary" type="button" id="duplicate-last-btn" style="margin-top: 12px;">Повторить: ${duplicateWorkoutTypeName} ${lastLog.weight !== undefined ? `${escapeHtml(lastLog.weight)}кг × ${escapeHtml(lastLog.reps)}` : `${escapeHtml(lastLog.duration || 0)} мин${lastLog.durationSeconds ? ` ${escapeHtml(lastLog.durationSeconds)} сек` : ''}`}</button>` : ''}
+        ${!editingLogId && lastLog && lastTypeId ? `<button class="button button_secondary" type="button" id="duplicate-last-btn" style="margin-top: 12px;">Повторить: ${duplicateWorkoutTypeName} ${lastLog.weight !== undefined ? `${escapeHtml(lastLog.weight)}кг × ${escapeHtml(lastLog.reps)}` : `${escapeHtml(lastLog.duration || 0)} мин${lastLog.durationSeconds ? ` ${escapeHtml(lastLog.durationSeconds)} сек` : ''}`}</button>` : ''}
 
       </form>
       <div class="recent-logs">
@@ -2174,8 +2175,8 @@ function bindPageEvents() {
     const duplicateBtn = document.getElementById('duplicate-last-btn');
     duplicateBtn?.addEventListener('click', async () => {
       const logs = storage.getLogs();
-      const lastLog = logs[logs.length - 1];
-      if (lastLog) {
+      const lastLog = getLatestLog(logs);
+      if (lastLog && storage.getWorkoutTypes().some(type => !type.isDeleted && type.id === lastLog.workoutTypeId)) {
         const newLog = await storage.addLog({
           workoutTypeId: lastLog.workoutTypeId,
           weight: lastLog.weight,

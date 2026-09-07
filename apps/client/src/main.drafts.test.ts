@@ -1,3 +1,4 @@
+import { getLatestLog } from './utils/latest-log';
 import source from './main.ts?raw';
 import ts from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -52,7 +53,7 @@ function setup(page = 'main', manyTypes = false) {
         updateProfileSettings: vi.fn(async (data) => { Object.assign(profile, data); refresh(); }),
     };
     const context = {
-        ...safeHtml, ...typeahead, FormDrafts, storage, renderProfileStats,
+        getLatestLog, ...safeHtml, ...typeahead, FormDrafts, storage, renderProfileStats,
         captureAccountContext: () => ({ storageKey: account }),
         createInternalRoute: (name: string) => ({ name }), getCurrentUser: () => ({ name: 'User' }),
         hasVerifiedOnlineAccount: () => true, canUsePasskeyInCurrentContext: () => false,
@@ -66,7 +67,7 @@ function setup(page = 'main', manyTypes = false) {
     };`)(...Object.values(context));
     cleanups.push(() => ui.dispose());
     ui.route(page);
-    return { storage, profile, types, ui, refresh: () => refresh(), account: (value: string) => { account = value; refresh(); } };
+    return { storage, logs, profile, types, ui, refresh: () => refresh(), account: (value: string) => { account = value; refresh(); } };
 }
 
 describe('production UI drafts across storage updates', () => {
@@ -201,5 +202,44 @@ describe('production UI drafts across storage updates', () => {
         input('#new-type-name', 'Newer draft'); app.refresh(); finish();
         await new Promise(resolve => setTimeout(resolve, 0)); app.refresh();
         expect(document.querySelector<HTMLInputElement>('#new-type-name')!.value).toBe('Newer draft');
+    });
+});
+
+
+describe('production latest-set selection and repeat binding', () => {
+    it('selects and repeats the newest date with opposing IDs and updatedAt', async () => {
+        const app = setup();
+        app.logs.splice(0, app.logs.length,
+            { id: 'a', workoutTypeId: 't1', workoutId: 'w1', weight: 20, reps: 5, date: '2026-09-02T00:00:00Z' },
+            { id: 'z', workoutTypeId: 't0', workoutId: 'w1', weight: 10, reps: 2, date: '2026-09-01T00:00:00Z' });
+        Object.assign(app.logs[1], { updatedAt: '2026-09-03T00:00:00Z' });
+        app.refresh();
+        expect(document.querySelector<HTMLSelectElement>('[name=typeId]')!.value).toBe('t1');
+        expect(document.querySelector('#duplicate-last-btn')!.textContent).toContain('Running 20кг × 5');
+        click('#duplicate-last-btn');
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(app.storage.addLog).toHaveBeenCalledWith(expect.objectContaining({ workoutTypeId: 't1', weight: 20, reps: 5 }));
+    });
+    it('hides repeat for an unavailable latest type and rechecks it at click time', async () => {
+        const app = setup();
+        app.types.splice(0, 1);
+        click('#duplicate-last-btn');
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(app.storage.addLog).not.toHaveBeenCalled();
+        app.refresh();
+        expect(document.querySelector('#duplicate-last-btn')).toBeNull();
+        app.types.push({ id: 't0', name: 'Deleted', category: 'strength' });
+        Object.assign(app.types.at(-1)!, { isDeleted: true });
+        app.refresh();
+        expect(document.querySelector('#duplicate-last-btn')).toBeNull();
+    });
+    it('has no repeat button for empty or solely deleted/invalid history', () => {
+        const app = setup();
+        Object.assign(app.logs[0], { isDeleted: true }); app.refresh();
+        expect(document.querySelector('#duplicate-last-btn')).toBeNull();
+        Object.assign(app.logs[0], { isDeleted: false, date: 'invalid' }); app.refresh();
+        expect(document.querySelector('#duplicate-last-btn')).toBeNull();
+        app.logs.splice(0); app.refresh();
+        expect(document.querySelector('#duplicate-last-btn')).toBeNull();
     });
 });
