@@ -1,3 +1,4 @@
+import { disposeLogin } from './components/auth/Login';
 import * as trainingTime from './utils/training-time';
 import { formatDuration } from './utils/duration';
 import { getDurationStats } from './utils/statistics';
@@ -62,6 +63,7 @@ function setup(page = 'main', manyTypes = false) {
         createInternalRoute: (name: string) => ({ name }), getCurrentUser: () => ({ name: 'User' }),
         hasVerifiedOnlineAccount: () => true, canUsePasskeyInCurrentContext: () => false,
         renderDurationChart: () => '', renderHeatmap: () => '', replaceMarkdownContent: () => {},
+        disposeLogin,
         Sortable: { create: () => {} }, getProfileLink: () => '', TELEGRAM_BOT_NAME: 'test',
     };
     const ui = new Function(...Object.keys(context), `${compiled}; return {

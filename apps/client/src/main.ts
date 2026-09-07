@@ -1,3 +1,4 @@
+import { loadTelegramWebApp } from './services/telegram-mini-app';
 import { accountTimeZone, dayKey, dayLabel, validTimeZone, datetimeValue, parseDatetimeValue } from './utils/training-time';
 import { formatDuration } from './utils/duration';
 import { getTrainingActivity } from './utils/training-activity';
@@ -39,7 +40,7 @@ import {
   signOut,
   TELEGRAM_BOT_NAME,
 } from './auth';
-import { renderLogin } from './components/auth/Login';
+import { disposeLogin, renderLogin } from './components/auth/Login';
 import { registerSW } from 'virtual:pwa-register';
 import Sortable from 'sortablejs';
 import { downloadFile, generateMarkdown } from './utils/export';
@@ -253,6 +254,7 @@ function renderContent() {
 
   const currentPage = getCurrentPage();
 
+  disposeLogin(app);
   app.innerHTML = `
     <main class="content">
       ${renderPage()}
@@ -2355,6 +2357,7 @@ storage.onUpdate(() => {
 storage.onSyncStatusChange(updateSyncStatus);
 
 async function initApp() {
+  void loadTelegramWebApp();
   const app = document.getElementById('app')!;
   const showLogin = (error?: string) => {
     formDrafts?.dispose();

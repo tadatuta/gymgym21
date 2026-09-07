@@ -6,6 +6,7 @@ const DEFAULT_AUTH_BASE_URL = '/api/auth';
 const LEGACY_AUTH_TOKEN_KEY = 'gym_auth_token';
 const OFFLINE_ACCOUNTS_KEY = 'gym21_offline_accounts_v1';
 const PENDING_SIGN_OUT_KEY = 'gym21_pending_sign_out_v1';
+const TELEGRAM_AUTO_LOGIN_BLOCKED_KEY = 'gym21_telegram_auto_login_blocked_v1';
 
 function normalizeBaseUrl(value: string): string {
   if (value === '/') {
@@ -267,6 +268,18 @@ function purgeLegacyAuthToken() {
 
 purgeLegacyAuthToken();
 currentOfflineAccount = pendingSignOut() ? null : loadActiveOfflineAccount();
+// A restored local account must never be replaced by the Telegram launch identity.
+const hadAccountAtLaunch = Boolean(currentOfflineAccount || pendingSignOut());
+let telegramAutoLoginAttempted = false;
+export function captureAuthGuard(): () => boolean {
+  const generation = authGeneration;
+  return () => generation === authGeneration;
+}
+export function canAutoSignInWithTelegram(): boolean {
+  return !hadAccountAtLaunch && !telegramAutoLoginAttempted && !currentSession && !currentOfflineAccount
+    && !pendingSignOut() && logoutIntent === 0
+    && (typeof localStorage === 'undefined' || !localStorage.getItem(TELEGRAM_AUTO_LOGIN_BLOCKED_KEY));
+}
 
 function toErrorMessage(message: unknown, fallback: string): string {
   if (typeof message === 'string' && message.length > 0) {
@@ -501,6 +514,7 @@ export async function signOut(): Promise<void> {
   memoryPendingSignOut = crypto.randomUUID();
   if (typeof localStorage !== 'undefined') {
     localStorage.setItem(PENDING_SIGN_OUT_KEY, memoryPendingSignOut);
+    localStorage.setItem(TELEGRAM_AUTO_LOGIN_BLOCKED_KEY, '1');
   }
   clearAuthState({ clearOfflineAccount: true });
   await withAuthMutation(async () => {
@@ -542,8 +556,12 @@ export async function addPasskey(name?: string): Promise<void> {
   }
 }
 
-export async function signInWithTelegram(initData: string): Promise<AuthMutationResponse> {
+export async function signInWithTelegram(initData: string, automatic = false): Promise<AuthMutationResponse> {
   return withSignInMutation(async () => {
+    if (automatic) {
+      if (!canAutoSignInWithTelegram()) throw new Error('Stale auth operation');
+      telegramAutoLoginAttempted = true;
+    }
     await beginSignIn();
     const result = await requestJson<AuthMutationResponse>('/telegram/sign-in', {
       method: 'POST',

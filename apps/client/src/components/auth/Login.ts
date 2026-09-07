@@ -1,5 +1,8 @@
 import {
   TelegramLoginData,
+  canAutoSignInWithTelegram,
+  captureAuthGuard,
+  getOfflineAccount,
   canUsePasskeyInCurrentContext,
   completeMigration,
   getCurrentSession,
@@ -13,12 +16,21 @@ import {
   signInWithTelegram,
   TELEGRAM_BOT_NAME,
 } from '../../auth';
+import { loadTelegramWebApp } from '../../services/telegram-mini-app';
 import { escapeAttribute, escapeHtml } from '../../utils/safe-html';
 
 declare global {
   interface Window {
     onTelegramAuthBetter: (user: TelegramLoginData) => void;
   }
+}
+
+const loginRenders = new WeakMap<HTMLElement, object>();
+type IsCurrent = () => boolean;
+
+/** The router takes ownership of this container; pending login callbacks must stop. */
+export function disposeLogin(container: HTMLElement): void {
+  loginRenders.delete(container);
 }
 
 type LoginMode = 'sign-in' | 'sign-up' | 'complete';
@@ -80,6 +92,7 @@ function renderAuthForm(mode: Exclude<LoginMode, 'complete'>, error?: string) {
       <div style="padding:16px; border-radius:18px; background:linear-gradient(180deg, #f8fbff, #eef6ff); border:1px solid rgba(0, 98, 255, 0.12);">
         <div style="font-weight:600; margin-bottom:10px;">Telegram</div>
         <div style="font-size:14px; color:#555; margin-bottom:12px;">Можно войти текущим Telegram-аккаунтом и привязать существующие данные.</div>
+        <button id="telegram-mini-app-sign-in" class="button button_secondary" type="button">Войти в Telegram Mini App / повторить</button>
         <div id="telegram-login-container"></div>
       </div>
     </div>
@@ -105,8 +118,10 @@ function renderCompletionForm(prefill: { email?: string; username?: string | nul
   `;
 }
 
-async function showCompletionForm(container: HTMLElement, onLoginSuccess: () => void, error?: string) {
+async function showCompletionForm(container: HTMLElement, onLoginSuccess: () => void, isCurrent: IsCurrent, error?: string) {
+  const session = getCurrentSession();
   const status = await getMigrationStatus();
+  if (!isCurrent() || session !== getCurrentSession()) return;
   renderShell(
     container,
     `${error ? `<div style="margin-bottom:14px; padding:12px 14px; border-radius:14px; background:#fff1f1; color:#9d1c1c;">${escapeHtml(error)}</div>` : ''}
@@ -120,6 +135,7 @@ async function showCompletionForm(container: HTMLElement, onLoginSuccess: () => 
   const form = container.querySelector('#migration-complete-form') as HTMLFormElement | null;
   form?.addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (!isCurrent() || !form.isConnected) return;
     const formData = new FormData(form);
 
     try {
@@ -130,38 +146,44 @@ async function showCompletionForm(container: HTMLElement, onLoginSuccess: () => 
         username: String(formData.get('username') || ''),
         password: String(formData.get('password') || ''),
       });
-      onLoginSuccess();
+      if (isCurrent()) onLoginSuccess();
     } catch (submitError) {
-      await showCompletionForm(container, onLoginSuccess, submitError instanceof Error ? submitError.message : String(submitError));
+      if (isCurrent()) await showCompletionForm(container, onLoginSuccess, isCurrent, submitError instanceof Error ? submitError.message : String(submitError));
     }
   });
 }
 
-async function finalizeAuth(container: HTMLElement, onLoginSuccess: () => void) {
+async function finalizeAuth(container: HTMLElement, onLoginSuccess: () => void, isCurrent: IsCurrent) {
+  if (!isCurrent()) return;
+  const session = getCurrentSession();
   const status = await getMigrationStatus();
+  if (!isCurrent() || session !== getCurrentSession()) return;
   if (status.needsCompletion) {
-    await showCompletionForm(container, onLoginSuccess);
+    await showCompletionForm(container, onLoginSuccess, isCurrent);
     return;
   }
 
   onLoginSuccess();
 }
 
-async function handleTelegramAuth(container: HTMLElement, initData: string, onLoginSuccess: () => void) {
+async function handleTelegramAuth(container: HTMLElement, initData: string, onLoginSuccess: () => void, isCurrent: IsCurrent, automatic = false) {
+  if (!isCurrent()) return;
   renderShell(container, renderStatus('Подключаем Telegram-аккаунт...'));
-  await signInWithTelegram(initData);
-  await finalizeAuth(container, onLoginSuccess);
+  await signInWithTelegram(initData, automatic);
+  await finalizeAuth(container, onLoginSuccess, isCurrent);
 }
 
-function mountTelegramWidget(container: HTMLElement, onLoginSuccess: () => void) {
+function mountTelegramWidget(container: HTMLElement, onLoginSuccess: () => void, isCurrent: IsCurrent, onStart: () => void) {
   const mountNode = container.querySelector('#telegram-login-container');
   if (!mountNode) return;
 
   window.onTelegramAuthBetter = async (user: TelegramLoginData) => {
+    if (!isCurrent() || !mountNode.isConnected) return;
+    onStart();
     try {
-      await handleTelegramAuth(container, serializeTelegramLoginData(user), onLoginSuccess);
+      await handleTelegramAuth(container, serializeTelegramLoginData(user), onLoginSuccess, isCurrent);
     } catch (error) {
-      await renderLogin(container, onLoginSuccess, error instanceof Error ? error.message : String(error));
+      if (isCurrent()) await renderLogin(container, onLoginSuccess, error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -177,56 +199,87 @@ function mountTelegramWidget(container: HTMLElement, onLoginSuccess: () => void)
 }
 
 export async function renderLogin(container: HTMLElement, onLoginSuccess: () => void, error?: string) {
+  const renderToken = {};
+  loginRenders.set(container, renderToken);
+  const isCurrent = () => loginRenders.get(container) === renderToken && container.isConnected;
+  const authGuard = captureAuthGuard();
+  let actionStarted = false;
+  let interacted = false;
   const restoredSession = await restoreSession();
+  if (!isCurrent()) return;
   if (restoredSession || getCurrentSession()) {
     try {
-      await finalizeAuth(container, onLoginSuccess);
+      await finalizeAuth(container, onLoginSuccess, isCurrent);
       return;
     } catch {
       // Fall through to auth screen if session restore is stale.
     }
   }
 
+  if (!authGuard()) return;
   renderShell(container, renderAuthForm('sign-in', error));
 
   let currentMode: Exclude<LoginMode, 'complete'> = 'sign-in';
 
   const rerenderMode = async (nextMode: Exclude<LoginMode, 'complete'>, nextError?: string) => {
+    if (!isCurrent()) return;
     currentMode = nextMode;
     renderShell(container, renderAuthForm(currentMode, nextError));
+    actionStarted = false;
     bindEvents();
   };
 
   const bindEvents = () => {
-    mountTelegramWidget(container, onLoginSuccess);
+    mountTelegramWidget(container, onLoginSuccess, isCurrent, () => { actionStarted = true; interacted = true; });
+    container.querySelector('#telegram-mini-app-sign-in')?.addEventListener('click', async () => {
+      if (actionStarted || !isCurrent()) return;
+      actionStarted = true; interacted = true;
+      try {
+        const guard = captureAuthGuard();
+        const app = await loadTelegramWebApp(true);
+        if (!isCurrent() || !guard()) return;
+        if (!app?.initData) throw new Error('Откройте приложение через Telegram. Если вход истёк, закройте Mini App и откройте заново. В браузере используйте виджет или email.');
+        await handleTelegramAuth(container, app.initData, onLoginSuccess, isCurrent);
+      } catch (error) {
+        if (isCurrent()) await rerenderMode(currentMode, error instanceof Error ? error.message : String(error));
+      } finally { actionStarted = false; }
+    });
 
     container.querySelector('#auth-mode-sign-in')?.addEventListener('click', async () => {
+      interacted = true;
       await rerenderMode('sign-in');
     });
 
     container.querySelector('#auth-mode-sign-up')?.addEventListener('click', async () => {
+      interacted = true;
       await rerenderMode('sign-up');
     });
 
 
     container.querySelector('#passkey-sign-in-btn')?.addEventListener('click', async () => {
+      if (!isCurrent()) return;
+      actionStarted = true; interacted = true;
       if (!canUsePasskeyInCurrentContext()) {
         openBrowserHandoff();
+        actionStarted = false;
         return;
       }
 
       try {
         renderShell(container, renderStatus('Проверяем Passkey...'));
         await signInWithPasskey();
-        await finalizeAuth(container, onLoginSuccess);
+        await finalizeAuth(container, onLoginSuccess, isCurrent);
       } catch (passkeyError) {
         await rerenderMode(currentMode, passkeyError instanceof Error ? passkeyError.message : String(passkeyError));
       }
     });
 
     const form = container.querySelector('#email-auth-form') as HTMLFormElement | null;
+    form?.addEventListener('input', () => { interacted = true; });
     form?.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (!isCurrent() || !form.isConnected || actionStarted) return;
+      actionStarted = true; interacted = true;
       const formData = new FormData(form);
 
       try {
@@ -245,7 +298,7 @@ export async function renderLogin(container: HTMLElement, onLoginSuccess: () => 
           );
         }
 
-        await finalizeAuth(container, onLoginSuccess);
+        await finalizeAuth(container, onLoginSuccess, isCurrent);
       } catch (submitError) {
         await rerenderMode(currentMode, submitError instanceof Error ? submitError.message : String(submitError));
       }
@@ -253,4 +306,15 @@ export async function renderLogin(container: HTMLElement, onLoginSuccess: () => 
   };
 
   bindEvents();
+  // Render usable email/passkey/widget controls before waiting for the optional SDK.
+  if (!error && !getOfflineAccount() && canAutoSignInWithTelegram()) {
+    const app = await loadTelegramWebApp();
+    if (!isCurrent() || !authGuard() || interacted || actionStarted || !canAutoSignInWithTelegram() || !app?.initData) return;
+    actionStarted = true; interacted = true;
+    try {
+      await handleTelegramAuth(container, app.initData, onLoginSuccess, isCurrent, true);
+    } catch (error) {
+      if (isCurrent()) await rerenderMode(currentMode, `${error instanceof Error ? error.message : String(error)}. Повторите вход вручную; если данные истекли, откройте Mini App заново.`);
+    }
+  }
 }

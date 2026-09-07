@@ -55,7 +55,13 @@
     npm run dev:client
     ```
     Клиент будет доступен по адресу `http://localhost:5173`, backend — на `http://localhost:8788`.
-    Для эмуляции Telegram среды используется `src/telegram-mock.ts`.
+    Mini App асинхронно загружает официальный `telegram-web-app.js` (таймаут 4 секунды), вызывает `ready()` и отправляет исходную `WebApp.initData` в `/api/auth/telegram/sign-in`. Сервер проверяет подпись/срок и создаёт обычную Better Auth cookie-сессию; затем открывается завершение миграции, если оно необходимо. `initDataUnsafe` не используется для идентичности.
+
+    Автовход выполняется один раз за запуск только без восстановленного аккаунта. После явного выхода автовход отключён (в том числе после reload); кнопка «Войти в Telegram Mini App / повторить» запускает новый вход вручную. При истёкших данных закройте и заново откройте Mini App. Недоступность SDK не блокирует email, Passkey или Telegram Widget в Web/PWA.
+
+    Официальный контракт SDK: https://core.telegram.org/bots/webapps. Браузерный сценарий `audit/telegram-mini-app-browser.mjs` (запуск из корня репозитория с `PLAYWRIGHT_MODULE_PATH` и `PLAYWRIGHT_CHROMIUM_EXECUTABLE`) проверяет HttpOnly cookie и выход в новом браузерном контексте.
+
+    Изолированные тесты `src/telegram-mini-app.test.ts` используют синтетический объект SDK и HTTP transport; поддельные данные не принимаются production-сервером. Для живой проверки настройте HTTPS URL Mini App у бота и `TELEGRAM_BOT_TOKEN` сервера, откройте приложение из Telegram и проверьте cookie-вход/миграцию. Не копируйте реальные initData в тесты или логи.
 
 3.  **Сборка для продакшена**:
     ```bash
