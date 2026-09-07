@@ -1,3 +1,4 @@
+import { getTrainingActivity } from './utils/training-activity';
 
 import './components/typeahead/typeahead.css';
 import { renderTypeahead, bindTypeahead, registerTypeaheadItems, getTypeaheadValue } from './components/typeahead/Typeahead';
@@ -12,7 +13,7 @@ import { FormDrafts } from './utils/form-drafts';
 import { storage, SyncStatus } from './storage/storage';
 import { WorkoutSet, WorkoutSession, PublicProfileData, WorkoutType } from './types';
 import './styles/stats.css';
-import { getOneRepMaxByDate, getWorkoutDates, getDurationStats } from './utils/statistics';
+import { getOneRepMaxByDate, getDurationStats } from './utils/statistics';
 import { renderHeatmap } from './components/stats/Heatmap';
 import { renderVolumeChart, render1RMChart, renderDurationChart } from './components/stats/Charts';
 import {
@@ -1133,7 +1134,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
 
         // Calculate stats
         const totalVolume = logs.reduce((acc, l) => acc + ((l.weight || 0) * (l.reps || 0)), 0);
-        const uniqueDaysSet = new Set(logs.map(l => l.date.split('T')[0]));
+        const uniqueDaysSet = new Set(getTrainingActivity(logs).keys());
         const totalWorkouts = uniqueDaysSet.size;
 
         const lastWorkoutDate = logs.length > 0 ? [...logs].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0].date : undefined;
@@ -1914,7 +1915,7 @@ function renderStatsPage() {
   `;
 
   if (currentStatsTab === 'overview') {
-    const dates = getWorkoutDates(workouts, logs);
+    const dates = new Set(getTrainingActivity(logs).keys());
 
     html += `
         <div class="stats-section">
@@ -1924,7 +1925,7 @@ function renderStatsPage() {
 
         <div class="stats-summary">
             <div class="stat-metric">
-                <div class="stat-metric__label">Всего тренировок</div>
+                <div class="stat-metric__label">Тренировочных дней</div>
                 <div class="stat-metric__value">${escapeHtml(dates.size)}</div>
             </div>
             <div class="stat-metric">

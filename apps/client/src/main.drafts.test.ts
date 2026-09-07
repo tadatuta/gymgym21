@@ -1,3 +1,5 @@
+import { getDurationStats } from './utils/statistics';
+import { getTrainingActivity } from './utils/training-activity';
 import { getLatestLog } from './utils/latest-log';
 import source from './main.ts?raw';
 import ts from 'typescript';
@@ -53,11 +55,11 @@ function setup(page = 'main', manyTypes = false) {
         updateProfileSettings: vi.fn(async (data) => { Object.assign(profile, data); refresh(); }),
     };
     const context = {
-        getLatestLog, ...safeHtml, ...typeahead, FormDrafts, storage, renderProfileStats,
+        getDurationStats, getTrainingActivity, getLatestLog, ...safeHtml, ...typeahead, FormDrafts, storage, renderProfileStats,
         captureAccountContext: () => ({ storageKey: account }),
         createInternalRoute: (name: string) => ({ name }), getCurrentUser: () => ({ name: 'User' }),
         hasVerifiedOnlineAccount: () => true, canUsePasskeyInCurrentContext: () => false,
-        renderHeatmap: () => '', replaceMarkdownContent: () => {},
+        renderDurationChart: () => '', renderHeatmap: () => '', replaceMarkdownContent: () => {},
         Sortable: { create: () => {} }, getProfileLink: () => '', TELEGRAM_BOT_NAME: 'test',
     };
     const ui = new Function(...Object.keys(context), `${compiled}; return {
@@ -71,6 +73,19 @@ function setup(page = 'main', manyTypes = false) {
 }
 
 describe('production UI drafts across storage updates', () => {
+    it('uses the same UTC training-day total in own preview and main statistics', () => {
+        const app = setup('profile-settings');
+        app.logs.splice(0, app.logs.length,
+            { id: 'a', workoutTypeId: 'missing', workoutId: '', weight: 10, reps: 2, date: '2026-01-01T23:30:00-03:00' },
+            { id: 'b', workoutTypeId: 't0', workoutId: '', weight: 10, reps: 2, date: '2026-01-02T02:30:00Z' });
+        app.ui.tab('public');
+        expect(document.querySelector('.stat-label')?.textContent).toBe('Тренировочных дней');
+        expect(document.querySelector('.stat-value')?.textContent).toBe('1');
+        app.ui.route('stats');
+        expect(document.querySelector('.stat-metric__label')?.textContent).toBe('Тренировочных дней');
+        expect(document.querySelector('.stat-metric__value')?.textContent).toBe('1');
+    });
+
     it('preserves a new log, selected exercise and focused selection across full background renders, then clears successful submit', async () => {
         const app = setup();
         input('[name=weight]', '43');

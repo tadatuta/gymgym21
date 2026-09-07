@@ -18,7 +18,7 @@ export function renderProfileStats(stats: ProfileStats, logDates?: Set<string>):
       <div class="profile-stats">
         <div class="stat-card">
           <div class="stat-value">${escapeHtml(stats.totalWorkouts)}</div>
-          <div class="stat-label">Тренировок</div>
+          <div class="stat-label">Тренировочных дней</div>
         </div>
         <div class="stat-card">
           <div class="stat-value">${escapeHtml(volumeDisplay)}</div>

@@ -1,3 +1,4 @@
+import { getTrainingActivity } from './training-activity.js';
 import type { PoolClient } from 'pg';
 import { config } from './config.js';
 import { ensureDatabaseReady, getDatabasePool } from './database.js';
@@ -765,8 +766,7 @@ function buildPublicProfile(
   fallbackIdentifier: string,
 ): PublicProfileData {
   const visibleWorkoutTypes = workoutTypes.filter((entry) => !entry.isDeleted);
-  const visibleWorkoutTypeIds = new Set(visibleWorkoutTypes.map((entry) => entry.id));
-  const visibleLogs = logs.filter((entry) => !entry.isDeleted && visibleWorkoutTypeIds.has(entry.workoutTypeId));
+  const visibleLogs = logs.filter((entry) => !entry.isDeleted);
 
   const totalVolume = visibleLogs.reduce((total, entry) => total + ((entry.weight ?? 0) * (entry.reps ?? 0)), 0);
   const favoriteExerciseId = visibleLogs.reduce<Map<string, number>>((counts, entry) => {
@@ -781,11 +781,7 @@ function buildPublicProfile(
     ? visibleWorkoutTypes.find((entry) => entry.id === favoriteExercise)?.name
     : undefined;
 
-  const recentActivityMap = visibleLogs.reduce<Map<string, number>>((activity, entry) => {
-    const day = entry.date.slice(0, 10);
-    activity.set(day, (activity.get(day) ?? 0) + 1);
-    return activity;
-  }, new Map());
+  const recentActivityMap = getTrainingActivity(visibleLogs);
 
   const recentActivity = [...recentActivityMap.entries()]
     .sort((left, right) => left[0].localeCompare(right[0]))
@@ -797,7 +793,7 @@ function buildPublicProfile(
     identifier: profile.username || profile.telegramUsername || fallbackIdentifier,
     photoUrl: profile.photoUrl,
     stats: {
-      totalWorkouts: recentActivity.reduce((total, entry) => total + entry.exerciseCount, 0),
+      totalWorkouts: recentActivityMap.size,
       totalVolume,
       favoriteExercise: favoriteExerciseName,
       lastWorkoutDate: visibleLogs.length > 0
