@@ -1,12 +1,12 @@
 import { validTimeZone } from './training-time.js';
 import { z } from 'zod';
 
-// Backup rules are intentionally independent of the more permissive incremental sync contract.
+// Entity rules are reused by backup and incremental sync contracts.
 // Keep the client/server copies aligned until S04 introduces the shared runtime package.
-const id = z.string().min(1).max(200).refine((value) => !value.includes('\0'), 'Invalid NUL character').refine((value) => value.trim().length > 0, 'Empty ID');
+export const id = z.string().min(1).max(200).refine((value) => !value.includes('\0'), 'Invalid NUL character').refine((value) => value.trim().length > 0, 'Empty ID');
 const text = z.string().max(10000).refine((value) => !value.includes('\0'), 'Invalid NUL character');
-const timestamp = z.iso.datetime({ offset: true }).refine((value) => !value.startsWith('0000') && Number.isFinite(Date.parse(value)), 'Invalid timestamp');
-const number = z.number().min(0).max(Number.MAX_SAFE_INTEGER);
+export const timestamp = z.iso.datetime({ offset: true }).refine((value) => !value.startsWith('0000') && Number.isFinite(Date.parse(value)), 'Invalid timestamp');
+export const number = z.number().min(0).max(Number.MAX_SAFE_INTEGER);
 const metadata = {
     id,
     updatedAt: timestamp.optional(),
@@ -14,11 +14,11 @@ const metadata = {
     version: number.int().optional(),
     isDeleted: z.boolean().optional(),
 };
-const workoutType = z.object({
+export const workoutType = z.object({
     ...metadata, name: text.min(1), category: z.enum(['strength', 'time']).optional(),
     order: z.number().int().min(0).max(2147483647).optional(),
 });
-const log = z.object({
+export const log = z.object({
     ...metadata, workoutTypeId: id, workoutId: z.union([id, z.literal('')]).optional(),
     date: timestamp, reps: number.int().optional(), weight: number.optional(),
     duration: number.optional(), durationSeconds: z.number().int().min(0).max(59).optional(),
@@ -27,12 +27,12 @@ const interval = z.object({ start: timestamp, end: timestamp.optional() }).refin
     (value) => !value.end || Date.parse(value.end) >= Date.parse(value.start),
     { message: 'End precedes start', path: ['end'] },
 );
-const workout = z.object({
+export const workout = z.object({
     ...metadata, startTime: timestamp, endTime: timestamp.optional(), name: text.optional(),
     status: z.enum(['active', 'paused', 'finished']), isManual: z.boolean(), pauseIntervals: z.array(interval),
 }).refine((value) => !value.endTime || Date.parse(value.endTime) >= Date.parse(value.startTime),
     { message: 'End precedes start', path: ['endTime'] });
-const profile = z.object({
+export const profile = z.object({
     ...metadata, isPublic: z.boolean(), showFullHistory: z.boolean().optional(),
     timeZone: z.string().max(100).refine(validTimeZone, { message: 'Invalid IANA time zone' }).optional(),
     displayName: text.optional(), photoUrl: text.optional(), createdAt: timestamp,

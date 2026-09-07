@@ -1,90 +1,36 @@
-import { validTimeZone } from '../../training-time.js';
 import { Router } from 'express';
 import { z } from 'zod';
-import { backupDataSchema } from '../../backup-validation.js';
+import { backupDataSchema, workoutType, log, workout, profile, number, id } from '../../backup-validation.js';
 import { HttpError } from '../errors.js';
 import { config } from '../../config.js';
 import type { AppDependencies } from '../app-types.js';
 import { holdRateLimitUntil, createRateLimitMiddleware, createStorageRateLimitKey } from '../middleware/rate-limit.js';
 
-const syncMetadataSchema = {
-  id: z.string(),
-  updatedAt: z.string().optional(),
-  isDeleted: z.boolean().optional(),
-  version: z.number().int().nonnegative().optional(),
-  serverUpdatedAt: z.string().optional(),
-};
-
-const workoutTypeSyncSchema = z.object({
-  ...syncMetadataSchema,
-  name: z.string(),
-  category: z.enum(['strength', 'time']).optional(),
-  order: z.number().int().optional(),
-}).strict();
-
-const logSyncSchema = z.object({
-  ...syncMetadataSchema,
-  workoutTypeId: z.string(),
-  workoutId: z.string().optional(),
-  reps: z.number().optional(),
-  weight: z.number().optional(),
-  duration: z.number().optional(),
-  durationSeconds: z.number().optional(),
-  date: z.string(),
-}).strict();
-
-const workoutSyncSchema = z.object({
-  ...syncMetadataSchema,
-  startTime: z.string(),
-  endTime: z.string().optional(),
-  name: z.string().optional(),
-  status: z.string(),
-  isManual: z.boolean(),
-  pauseIntervals: z.array(z.object({
-    start: z.string(),
-    end: z.string().optional(),
-  }).strict()),
-}).strict();
-
-const profileSyncSchema = z.object({
-  ...syncMetadataSchema,
-  isPublic: z.boolean(),
-  showFullHistory: z.boolean().optional(),
-    timeZone: z.string().max(100).refine(validTimeZone, { message: 'Invalid IANA time zone' }).optional(),
-  displayName: z.string().optional(),
-  username: z.string().optional(),
-  telegramUsername: z.string().optional(),
-  telegramUserId: z.number().int().optional(),
-  photoUrl: z.string().optional(),
-  createdAt: z.string(),
-  gender: z.enum(['male', 'female', 'other']).optional(),
-  birthDate: z.string().optional(),
-  height: z.number().optional(),
-  weight: z.number().optional(),
-  additionalInfo: z.string().optional(),
-  friends: z.array(z.object({
-    identifier: z.string(),
-    displayName: z.string(),
-    photoUrl: z.string().optional(),
-    addedAt: z.string(),
-  }).strict()).optional(),
-}).strict();
-
 const syncRequestSchema = z.object({
-  cursor: z.number().int().nonnegative(),
-  protocolVersion: z.number().int().positive().optional(),
+  cursor: number.int(),
+  // Missing version remains supported for legacy clients until S09.
+  protocolVersion: z.literal(1).optional(),
   limit: z.number().int().min(1).max(2000).optional(),
-  batchId: z.string().min(1).max(100).optional(),
+  batchId: id.refine((value) => value.length <= 100).optional(),
   changes: z.object({
-    workoutTypes: z.array(workoutTypeSyncSchema).optional(),
-    logs: z.array(logSyncSchema).optional(),
-    workouts: z.array(workoutSyncSchema).optional(),
-    profile: profileSyncSchema.nullish(),
-  }).strict(),
+    workoutTypes: z.array(workoutType.strict()).optional(),
+    logs: z.array(log.strict()).optional(),
+    workouts: z.array(workout.strict()).optional(),
+    // Strip legacy identity fields rather than accepting them as authoritative.
+    profile: profile.extend({ id: z.literal('me') }).nullish(),
+  }).strict().superRefine((data, ctx) => {
+    for (const key of ['workoutTypes', 'logs', 'workouts'] as const) {
+      const seen = new Set<string>();
+      data[key]?.forEach((item, index) => {
+        if (seen.has(item.id)) ctx.addIssue({ code: 'custom', path: [key, index, 'id'], message: 'Duplicate ID' });
+        seen.add(item.id);
+      });
+    }
+  }),
 }).strict();
 
 const aiRequestSchema = z.object({
-  expectedRevision: z.number().int().nonnegative(),
+  expectedRevision: number.int(),
   type: z.enum(['general', 'plan']),
   options: z
     .object({
@@ -112,20 +58,17 @@ export function createMeRouter(dependencies: AppDependencies): Router {
   });
 
   router.post('/storage/sync', syncRateLimit, async (req, res) => {
-    const payload = syncRequestSchema.parse(req.body);
-    // Older clients send a full profile. Accept it, but never pass client identity to storage.
-    if (payload.changes.profile) {
-      delete payload.changes.profile.username;
-      delete payload.changes.profile.telegramUsername;
-      delete payload.changes.profile.telegramUserId;
+    if (req.body && req.body.protocolVersion !== undefined && req.body.protocolVersion !== 1) {
+      throw new HttpError(409, 'Unsupported sync protocol version', { code: 'UNSUPPORTED_PROTOCOL' });
     }
+    const payload = syncRequestSchema.parse(req.body);
     res.json(await dependencies.storageRepository.sync(req.authContext!.storageKey, payload, req.authContext!));
   });
 
   router.post('/storage/backup', syncRateLimit, async (req, res) => {
     const payload = z.object({
       mode: z.enum(['merge', 'replace']),
-      expectedRevision: z.number().int().nonnegative(),
+      expectedRevision: number.int(),
       data: backupDataSchema,
     }).strict().parse(req.body);
     // backupDataSchema strips all client-supplied trusted identity fields.

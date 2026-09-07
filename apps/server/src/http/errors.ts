@@ -30,9 +30,15 @@ export const errorHandler: ErrorRequestHandler = (error, _req, res, next) => {
     return;
   }
 
+  if (error?.type === 'entity.parse.failed') {
+    res.status(400).json({ error: 'Invalid JSON request body', code: 'INVALID_JSON' });
+    return;
+  }
+
   if (error instanceof ZodError) {
     res.status(400).json({
       error: 'Invalid request body',
+      code: 'INVALID_REQUEST',
       details: error.flatten(),
     });
     return;

@@ -454,6 +454,12 @@ export class StorageService {
             if (!context.isCurrent() || controller.signal.aborted) return;
             this.syncFailure = error instanceof SyncError ? error
                 : new SyncError(error instanceof Error ? error.message : 'Ошибка локальной синхронизации', 'LOCAL_ERROR');
+            if (['INVALID_LOCAL_RECORD', 'RECORD_TOO_LARGE'].includes(this.syncFailure.code)) {
+                // The bounded empty push may have successfully pulled remote changes.
+                await this.reloadCache();
+                if (!context.isCurrent() || controller.signal.aborted) return;
+                this.broadcastUpdate();
+            }
             this.syncQueued = false;
             if (this.syncFailure.retryable && navigator.onLine) {
                 nextDelay = Math.max(retryDelay(this.retryAttempt++), this.syncFailure.retryAfterMs);
@@ -898,6 +904,7 @@ export class StorageService {
                 id: PROFILE_ID,
                 updatedAt: now,
             };
+            merged.birthDate = merged.birthDate || undefined;
             await db.profile.put(merged);
             return {
                 value: undefined,

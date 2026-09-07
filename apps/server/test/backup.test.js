@@ -38,6 +38,44 @@ function api(storageKey) {
 const backup = { workoutTypes: [entity('A', 'modified A', 99999)], workouts: [], logs: [] };
 test('PostgreSQL backup import is atomic and revision guarded', { skip: !testUrl }, async (t) => {
   try {
+    await t.test('HTTP sync validates atomically and normalizes cleared birth date before PostgreSQL', async () => {
+      const storageKey = 'sync-contract';
+      const context = { kind: 'better-auth', storageKey, authUser: { id: storageKey, username: 'trusted' } };
+      const app = createApp({ storageRepository: repository, resolveRequestContext: async () => context,
+        authHandler: async () => {}, generateRecommendation: async () => '', findPublicProfile: async () => null });
+      const send = body => request(app).post('/api/me/storage/sync').set('X-Expected-Storage-Key', storageKey).send(body);
+      const now = '2026-09-01T00:00:00Z';
+      const profile = { id: 'me', isPublic: false, createdAt: now, updatedAt: now, birthDate: '', username: 'forged' };
+      const saved = await send({ protocolVersion: 1, cursor: 0, changes: { profile } });
+      assert.equal(saved.status, 200);
+      assert.equal(saved.body.changes.profile.birthDate, undefined);
+      assert.equal(saved.body.changes.profile.username, 'trusted');
+      const revision = saved.body.cursor;
+      const malformed = [
+        { profile: { ...profile, id: 'other' } }, { profile: { ...profile, birthDate: '2026-02-30' } },
+        { profile: { ...profile, gender: 'bogus' } }, { profile: { ...profile, height: -1 } },
+        { workoutTypes: [entity(''), entity('valid')] }, { workoutTypes: [entity('A'), entity('A')] },
+        { workoutTypes: [entity(' '.repeat(2))] }, { workoutTypes: [entity('x'.repeat(201))] },
+        { logs: [{ id: 'L', workoutTypeId: 'orphan', date: '2026-02-30T00:00:00Z' }] },
+        { logs: [{ id: 'L', workoutTypeId: 'orphan', date: now, reps: 1.5 }] },
+        { logs: [{ id: 'L', workoutTypeId: 'orphan', date: now, weight: -1 }] },
+        { logs: [{ id: 'L', workoutTypeId: 'orphan', date: now, durationSeconds: 60 }] },
+        { workoutTypes: [{ ...entity('A'), version: Number.MAX_SAFE_INTEGER + 1 }] },
+        { workouts: [{ id: 'W', startTime: now, status: 'bogus', isManual: false, pauseIntervals: [] }] },
+      ];
+      for (const changes of malformed) {
+        const response = await send({ protocolVersion: 1, cursor: revision, changes: { ...changes, workouts: changes.workouts ?? [{ id: 'valid', startTime: now, status: 'active', isManual: false, pauseIntervals: [] }] } });
+        assert.equal(response.status, 400, JSON.stringify(changes));
+        assert.equal(response.body.code, 'INVALID_REQUEST');
+        assert.equal((await client(storageKey)('verify', revision)).cursor, revision);
+      }
+      const badJson = await request(app).post('/api/me/storage/sync').set('Content-Type', 'application/json').send('{"invalid":');
+      assert.equal(badJson.status, 400);
+      assert.equal(badJson.body.code, 'INVALID_JSON');
+      assert.equal((await send({ protocolVersion: 2, cursor: revision, changes: {} })).status, 409);
+      assert.equal((await send({ cursor: Number.MAX_SAFE_INTEGER + 1, changes: {} })).status, 400);
+      assert.equal((await client(storageKey)('final', revision)).cursor, revision);
+    });
     await t.test('atomic HTTP backup accepts 10001 valid logs and reports body limit without truncation', async () => {
       const logs = Array.from({ length: 10001 }, (_, i) => ({ id: `L${i}`, workoutTypeId: 'T', date: '2026-09-01T00:00:00Z', reps: 1 }));
       const imported = await api('large-backup')('replace', 0, { workoutTypes: [], workouts: [], logs });

@@ -1669,7 +1669,7 @@ function bindProfileSettingsEvents() {
     }
 
     if (genderInput) updates.gender = genderInput.value || undefined;
-    if (birthDateInput) updates.birthDate = birthDateInput.value;
+    if (birthDateInput) updates.birthDate = birthDateInput.value || undefined;
     if (heightInput) updates.height = heightInput.value ? Number(heightInput.value) : undefined;
     if (weightInput) updates.weight = weightInput.value ? Number(weightInput.value) : undefined;
     if (additionalInfoInput) updates.additionalInfo = additionalInfoInput.value;

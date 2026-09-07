@@ -1,3 +1,4 @@
+import { parseSyncResponse, syncEntitySchemas } from './sync-validation';
 import { SyncError, syncResponseError } from './sync-error';
 import { authorizedApiFetch } from '../auth';
 import { captureAccountContext } from '../db';
@@ -36,6 +37,8 @@ type SyncEntityMap = {
 type ArrayEntityType = 'workoutTypes' | 'logs' | 'workouts';
 
 interface SyncRequestSnapshot {
+  missingEntries: Map<string, DirtyEntityRecord>;
+  blocked?: SyncError;
   request: SyncRequest;
   dirtyEntries: Map<string, DirtyEntityRecord>;
 }
@@ -131,7 +134,7 @@ export class SyncService {
         this.context.assertCurrent();
         if (combined.aborted) throw combined.reason;
         if (!response.ok) throw await syncResponseError(response);
-        return await response.json() as SyncResponse;
+        return parseSyncResponse(await response.json());
       };
       result = await Promise.race([request(), aborted]);
     } catch (error) {
@@ -150,6 +153,8 @@ export class SyncService {
     this.context.assertCurrent();
     await this.applySyncResponse(result, snapshot);
     this.context.assertCurrent();
+
+    if (snapshot.blocked && !pushedEntities && !result.hasMore) throw snapshot.blocked;
 
     return {
       cursor: result.cursor,
@@ -179,7 +184,7 @@ export class SyncService {
     if (response.status === 409) throw new Error('Данные изменились на другом устройстве. Синхронизируйте и повторите импорт');
     if (response.status === 413) throw new Error('Файл превышает лимит импорта сервера. Уменьшите файл или согласуйте JSON_BODY_LIMIT и лимит прокси');
     if (!response.ok) throw new Error('Не удалось подтвердить импорт на сервере. Синхронизируйте данные перед повторной попыткой');
-    const imported = await response.json() as SyncResponse;
+    const imported = parseSyncResponse(await response.json());
     this.context.assertCurrent();
     await this.applySyncResponse(imported, snapshot);
     this.context.assertCurrent();
@@ -267,16 +272,19 @@ export class SyncService {
         const dirtyEntryList = await this.db.dirtyEntities.toArray();
         const entities = this.buildEntityMap(await this.readDirtyDelta(dirtyEntryList));
         const dirtyEntries = new Map<string, DirtyEntityRecord>();
+        const missingEntries = new Map<string, DirtyEntityRecord>();
         const changes: SyncDelta = {};
         // Reserve the envelope, property names and punctuation; entity bytes are UTF-8.
         let bytes = 1024;
         let oversized: string | undefined;
+        let blocked: SyncError | undefined;
         for (const entry of dirtyEntryList) {
           if (dirtyEntries.size >= SYNC_PUSH_LIMIT) break;
-          const entity = entities.get(entry.key);
+          let entity = entities.get(entry.key);
+          if (!entity && entry.entityType === 'profile') entity = await this.db.profile.get(entry.entityId);
           if (!entity) {
-            // Missing rows cannot be submitted. Cleanup is atomic with the snapshot.
-            await this.db.dirtyEntities.delete(entry.key);
+            // Defer cleanup until a valid response, preserving outbox on malformed responses.
+            missingEntries.set(entry.key, entry);
             continue;
           }
           const size = new TextEncoder().encode(JSON.stringify(entity)).byteLength + 1;
@@ -284,6 +292,13 @@ export class SyncService {
             oversized ??= entry.key;
             continue;
           }
+          const validation = syncEntitySchemas[entry.entityType].safeParse(entity);
+          if (!validation.success) {
+            const fields = validation.error.issues.map((issue) => issue.path.join('.')).filter(Boolean).slice(0, 5);
+            blocked ??= new SyncError(`Запись ${entry.key.slice(0, 160)} содержит некорректные поля: ${fields.join(', ')}. Исправьте запись и повторите синхронизацию; исходные данные сохранены на устройстве.`, 'INVALID_LOCAL_RECORD', false, 0, { recordId: entry.key, fields });
+            continue;
+          }
+          entity = validation.data as SyncItem;
           if (bytes + size > SYNC_PUSH_BYTES) continue;
           bytes += size;
           dirtyEntries.set(entry.key, entry);
@@ -292,10 +307,11 @@ export class SyncService {
           else if (entry.entityType === 'workouts') (changes.workouts ??= []).push(entity as WorkoutSession);
           else (changes.workoutTypes ??= []).push(entity as WorkoutType);
         }
-        if (!dirtyEntries.size && oversized) {
-          throw new SyncError(`Запись ${oversized} превышает лимит синхронизации 512 КиБ. Сократите содержимое записи и повторите синхронизацию`, 'RECORD_TOO_LARGE', false, 0, { recordId: oversized });
+        if (oversized) {
+          blocked ??= new SyncError(`Запись ${oversized} превышает лимит синхронизации 512 КиБ. Сократите содержимое записи и повторите синхронизацию`, 'RECORD_TOO_LARGE', false, 0, { recordId: oversized });
         }
         return {
+          blocked, missingEntries,
           request: { cursor, changes, protocolVersion: SYNC_PROTOCOL_VERSION,
             limit: SYNC_PULL_LIMIT, batchId: createBatchId(cursor, dirtyEntries) },
           dirtyEntries,
@@ -370,6 +386,10 @@ export class SyncService {
 
         await this.recordConflicts(response, snapshot.request);
         await this.acknowledgeUnchangedOutboxEntries(snapshot, acknowledged, conflicts);
+        const missingKeys = [...snapshot.missingEntries.keys()];
+        const currentMissing = await this.db.dirtyEntities.bulkGet(missingKeys);
+        await this.db.dirtyEntities.bulkDelete(missingKeys.filter((key, index) =>
+          currentMissing[index]?.generation === snapshot.missingEntries.get(key)!.generation));
 
         const syncState: SyncStateRecord = {
           key: SYNC_CURSOR_KEY,

@@ -36,6 +36,35 @@ describe('StorageService sync scheduling', () => {
         vi.unstubAllGlobals();
     });
 
+    it('shows remote pulls with invalid local records, stops retries and syncs a corrected profile', async () => {
+        Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+        const service = new StorageService({ autoInit: false, enableBroadcast: false, syncDebounceMs: 0 });
+        try {
+            await service.activate(`invalid-local-${Math.random()}`);
+            const now = '2026-09-01T00:00:00Z';
+            await db.profile.put({ id: 'me', createdAt: now, updatedAt: now, isPublic: false, timeZone: 'UTC', birthDate: 'bad' });
+            await SyncService.markDirty('profile', 'me');
+            vi.mocked(authorizedApiFetch).mockImplementation(async (_url, init) => {
+                const sent = JSON.parse(String(init?.body));
+                return new Response(JSON.stringify({ protocolVersion: 1, cursor: 1, conflicts: [], changes: {
+                    ...sent.changes, logs: [{ id: 'remote', workoutTypeId: 'orphan', workoutId: '', date: now, updatedAt: now }],
+                    workoutTypes: [{ id: 'T', name: 'Existing', updatedAt: now, version: 1 }],
+                } }), { status: 200 });
+            });
+            await service.sync();
+            expect(service.getLogs().some(log => log.id === 'remote')).toBe(true);
+            expect(await db.dirtyEntities.count()).toBe(1);
+            expect(service.getSyncState().error?.code).toBe('INVALID_LOCAL_RECORD');
+            const calls = vi.mocked(authorizedApiFetch).mock.calls.length;
+            await new Promise(resolve => setTimeout(resolve, 30));
+            expect(vi.mocked(authorizedApiFetch).mock.calls.length).toBe(calls);
+            await service.updateProfileSettings({ birthDate: '' });
+            await service.sync();
+            expect((await db.profile.get('me'))!.birthDate).toBeUndefined();
+            expect(await db.dirtyEntities.get('profile:me')).toBeUndefined();
+        } finally { service.dispose(); }
+    });
+
     it('automatically schedules remaining real outbox batches without another user flush', async () => {
         Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
         const service = new StorageService({ autoInit: false, enableBroadcast: false, syncDebounceMs: 0 });

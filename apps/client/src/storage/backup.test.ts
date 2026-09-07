@@ -48,3 +48,8 @@ it('roundtrips the owner time zone in portable backups', () => {
     const data = readBackup({ ...validBackupData(), profile: { ...validBackupData().profile, timeZone: 'Europe/Berlin' } });
     expect(readBackup(createBackup(data)).profile?.timeZone).toBe('Europe/Berlin');
 });
+
+it('normalizes a valid legacy profile ID after validation', () => {
+    const input = validBackupData();
+    expect(readBackup({ ...input, profile: { ...input.profile, id: '12345' } }).profile?.id).toBe('me');
+});

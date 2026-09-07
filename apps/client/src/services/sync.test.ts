@@ -66,8 +66,8 @@ describe('SyncService reliable outbox acknowledgements', () => {
   }, 30000);
 
   it('uses UTF-8 byte bounds and stable retry IDs, skips oversized records without starving others', async () => {
-    const rows = Array.from({ length: 6 }, (_, i) => ({ id: `T${i}`, name: 'я'.repeat(60000), updatedAt: '2026-09-01T00:00:00Z' }));
-    await db.workoutTypes.bulkPut([...rows, { ...rows[0], id: 'oversized', name: 'я'.repeat(SYNC_PUSH_BYTES) }]);
+    const rows = Array.from({ length: 6 }, (_, i) => ({ id: `T${i}`, name: 'я'.repeat(9999), updatedAt: '2026-09-01T00:00:00Z', startTime: '2026-09-01T00:00:00Z', status: 'paused' as const, isManual: false, pauseIntervals: Array.from({ length: 1700 }, () => ({ start: '2026-09-01T00:00:00Z', end: '2026-09-01T00:00:00Z' })) }));
+    await db.workouts.bulkPut([...rows, { ...rows[0], id: 'oversized', name: 'я'.repeat(SYNC_PUSH_BYTES) }]);
     await SyncService.markAllEntitiesDirty();
     vi.mocked(authorizedApiFetch).mockRejectedValueOnce(new Error('lost response')).mockImplementation(async (_url, init) => {
       expect(new TextEncoder().encode(String(init?.body)).length).toBeLessThanOrEqual(SYNC_PUSH_BYTES);
@@ -81,7 +81,65 @@ describe('SyncService reliable outbox acknowledgements', () => {
     expect((await SyncService.sync()).hasMore).toBe(true);
     expect(await db.dirtyEntities.count()).toBe(1);
     await expect(SyncService.sync()).rejects.toThrow('oversized');
-    expect(authorizedApiFetch).toHaveBeenCalledTimes(3);
+    expect(authorizedApiFetch).toHaveBeenCalledTimes(4);
+  });
+
+  it('retains invalid rows, drains valid rows, pulls remote data and requeues corrections', async () => {
+    const now = '2026-09-01T00:00:00Z';
+    await db.logs.put({ id: 'bad', workoutId: '', workoutTypeId: 'T', date: '2026-02-30', updatedAt: now });
+    await db.workoutTypes.put({ id: 'good', name: 'Good', updatedAt: now });
+    await SyncService.markAllEntitiesDirty();
+    const generation = (await db.dirtyEntities.get('logs:bad'))!.generation;
+    vi.mocked(authorizedApiFetch).mockImplementation(async (_url, init) => {
+      const sent = JSON.parse(String(init?.body));
+      expect(sent.protocolVersion).toBe(1);
+      return jsonResponse({ protocolVersion: 1, cursor: 1, changes: { ...sent.changes, workoutTypes: [{ id: 'remote', name: 'Remote', updatedAt: now }] }, conflicts: [], acknowledged: [
+        ...(sent.changes.workoutTypes ?? []).map((x: { id: string }) => ({ entityType: 'workoutTypes', entityId: x.id })),
+        ...(sent.changes.logs ?? []).map((x: { id: string }) => ({ entityType: 'logs', entityId: x.id })),
+      ] });
+    });
+    expect((await SyncService.sync()).hasMore).toBe(true);
+    await expect(SyncService.sync()).rejects.toMatchObject({ code: 'INVALID_LOCAL_RECORD', retryable: false, details: { fields: ['date'] } });
+    expect(await db.workoutTypes.get('remote')).toBeDefined();
+    expect((await db.logs.get('bad'))!.date).toBe('2026-02-30');
+    expect((await db.dirtyEntities.get('logs:bad'))!.generation).toBe(generation);
+    await db.logs.update('bad', { date: now });
+    await SyncService.markDirty('logs', 'bad');
+    expect((await db.dirtyEntities.get('logs:bad'))!.generation).not.toBe(generation);
+    expect((await SyncService.sync()).hasMore).toBe(false);
+    expect(await db.dirtyEntities.count()).toBe(0);
+  });
+
+  it('validates every response before entity, cursor, conflict or acknowledgement writes', async () => {
+    const now = '2026-09-01T00:00:00Z';
+    await db.workoutTypes.put({ id: 'A', name: 'Local', updatedAt: now });
+    await SyncService.markDirty('workoutTypes', 'A');
+    await SyncService.markDirty('logs', 'missing');
+    const before = await db.dirtyEntities.toArray();
+    const good = { protocolVersion: 1, cursor: 2, changes: {}, conflicts: [], acknowledged: [{ entityType: 'workoutTypes', entityId: 'A' }] };
+    for (const value of [null, {}, { ...good, protocolVersion: 2 }, { ...good, cursor: 1.5 }, { ...good, hasMore: 'yes' },
+      { ...good, changes: { workouts: [{ id: 'W', status: 'bogus' }] } }, { ...good, acknowledged: [{ entityType: 'alien', entityId: 'A' }] },
+      { ...good, conflicts: [{ entityType: 'logs', entityId: '', reason: 'other', serverVersion: 2 }] },
+      { ...good, changes: { workoutTypes: [{ id: 'A', name: 'one' }, { id: 'A', name: 'two' }] } }]) {
+      vi.mocked(authorizedApiFetch).mockResolvedValueOnce(jsonResponse(value));
+      await expect(SyncService.sync()).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+      expect(await db.dirtyEntities.toArray()).toEqual(before);
+      expect((await db.workoutTypes.get('A'))!.name).toBe('Local');
+      expect(await db.syncState.count()).toBe(0);
+      expect(await db.syncConflicts.count()).toBe(0);
+    }
+  });
+
+  it('rejects malformed backup response without applying imported changes', async () => {
+    const original = { id: 'A', name: 'Local', updatedAt: '2026-09-01T00:00:00Z' };
+    await db.workoutTypes.put(original);
+    vi.mocked(authorizedApiFetch)
+      .mockResolvedValueOnce(jsonResponse({ protocolVersion: 1, cursor: 1, changes: {}, conflicts: [] }))
+      .mockResolvedValueOnce(jsonResponse({ protocolVersion: 2, cursor: 2, changes: { workoutTypes: [{ ...original, name: 'Corrupt' }] }, conflicts: [] }));
+    await expect(new SyncService().importBackup({ workoutTypes: [original], workouts: [], logs: [] }, 'replace')).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(await db.workoutTypes.get('A')).toEqual(original);
+    expect((await db.syncState.get('sync-cursor'))!.cursor).toBe(1);
+    expect(await db.dirtyEntities.count()).toBe(0);
   });
 
   it('imports after full fresh pull and preserves a newer local generation during replace', async () => {
