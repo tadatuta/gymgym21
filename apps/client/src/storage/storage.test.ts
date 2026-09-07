@@ -2,6 +2,7 @@ import { invalidBackupCases, validBackupData } from './backup-fixtures.test-help
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '../db';
+import { authorizedApiFetch } from '../auth';
 import { SyncService } from '../services/sync';
 import { StorageService } from './storage';
 
@@ -33,6 +34,27 @@ describe('StorageService sync scheduling', () => {
         vi.useRealTimers();
         vi.unstubAllGlobals();
     });
+
+    it('automatically schedules remaining real outbox batches without another user flush', async () => {
+        Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+        const service = new StorageService({ autoInit: false, enableBroadcast: false, syncDebounceMs: 0 });
+        try {
+            await service.activate(`real-batches-${Math.random()}`);
+            await db.workoutTypes.put({ id: 'T', name: 'Existing', updatedAt: '2026-09-01T00:00:00Z', version: 1 });
+            const logs = Array.from({ length: 501 }, (_, i) => ({ id: `L${i}`, workoutTypeId: 'T', workoutId: 'W', date: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' }));
+            await db.logs.bulkPut(logs);
+            await SyncService.markDirtyMany(logs.map(({ id }) => ({ entityType: 'logs', entityId: id })));
+            let requests = 0;
+            vi.mocked(authorizedApiFetch).mockImplementation(async (_url, init) => {
+                requests++;
+                const sent = JSON.parse(String(init?.body));
+                return new Response(JSON.stringify({ cursor: requests, changes: sent.changes, conflicts: [], hasMore: false }), { status: 200 });
+            });
+            await service.sync();
+            await vi.waitFor(async () => expect(await db.dirtyEntities.count()).toBe(0), { timeout: 30000, interval: 100 });
+            expect(requests).toBe(2);
+        } finally { service.dispose(); }
+    }, 30000);
 
     it('does not notify for unchanged or transport-only cache reloads; retains identity, domain and conflict changes', async () => {
         const service = new StorageService({ enableBroadcast: false });

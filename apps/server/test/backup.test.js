@@ -38,6 +38,21 @@ function api(storageKey) {
 const backup = { workoutTypes: [entity('A', 'modified A', 99999)], workouts: [], logs: [] };
 test('PostgreSQL backup import is atomic and revision guarded', { skip: !testUrl }, async (t) => {
   try {
+    await t.test('atomic HTTP backup accepts 10001 valid logs and reports body limit without truncation', async () => {
+      const logs = Array.from({ length: 10001 }, (_, i) => ({ id: `L${i}`, workoutTypeId: 'T', date: '2026-09-01T00:00:00Z', reps: 1 }));
+      const imported = await api('large-backup')('replace', 0, { workoutTypes: [], workouts: [], logs });
+      assert.equal(imported.status, 200, JSON.stringify(imported.body).slice(0, 500));
+      assert.equal(imported.body.changes.logs.length, 10001);
+      const tooLarge = await api('large-backup')('replace', imported.body.cursor, { workoutTypes: [], workouts: [], logs, padding: 'x'.repeat(11 * 1024 * 1024) });
+      assert.equal(tooLarge.status, 413);
+      assert.equal(tooLarge.body.code, 'payload_too_large');
+      let saved = await client('large-backup')('check');
+      assert.equal(saved.changes.logs.length, 1000);
+      let count = saved.changes.logs.length;
+      while (saved.hasMore) { saved = await client('large-backup')('check', saved.cursor); count += saved.changes.logs.length; }
+      assert.equal(count, 10001);
+      assert.equal(saved.cursor, imported.body.cursor);
+    });
     for (const mode of ['merge', 'replace']) await t.test(`${mode}: old backup versions, two-client roundtrip and tombstones`, async () => {
       const key = `backup-${mode}`;
       const a = client(key), b = client(key);

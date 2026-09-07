@@ -174,7 +174,7 @@ function defaultSyncChanges(): StorageSyncResponse['changes'] {
   };
 }
 
-function validateStorageDataShape(data: StorageData) {
+function validateStorageDataShape(data: StorageData, maxLogs = MAX_LOG_COUNT) {
   if (data.workoutTypes !== undefined && !Array.isArray(data.workoutTypes)) {
     throw new HttpError(400, 'workoutTypes must be an array');
   }
@@ -201,7 +201,7 @@ function validateStorageDataShape(data: StorageData) {
     }
   }
 
-  if ((data.logs?.length ?? 0) > MAX_LOG_COUNT) {
+  if ((data.logs?.length ?? 0) > maxLogs) {
     throw new HttpError(400, 'Too many log entries');
   }
 
@@ -210,12 +210,24 @@ function validateStorageDataShape(data: StorageData) {
   }
 }
 
-function validateSyncRequest(request: StorageSyncRequest) {
+function validateSyncRequest(request: StorageSyncRequest, backup = false) {
   if (!Number.isInteger(request.cursor) || request.cursor < 0) {
     throw new HttpError(400, 'cursor must be a non-negative integer');
   }
   if (request.batchId && !/^[a-zA-Z0-9_-]{1,100}$/.test(request.batchId)) {
     throw new HttpError(400, 'batchId is invalid');
+  }
+
+  if (!backup) {
+    const count = (request.changes.workoutTypes?.length ?? 0) + (request.changes.logs?.length ?? 0)
+      + (request.changes.workouts?.length ?? 0) + (request.changes.profile ? 1 : 0);
+    if (count > 500) throw new HttpError(413, 'Sync push exceeds 500 entities; split into batches', { code: 'sync_batch_too_large' });
+    if (Buffer.byteLength(JSON.stringify(request), 'utf8') > 512 * 1024) {
+      throw new HttpError(413, 'Sync push exceeds 512 KiB; split into batches', { code: 'sync_batch_too_large' });
+    }
+    if (request.limit !== undefined && (!Number.isInteger(request.limit) || request.limit < 1 || request.limit > 2000)) {
+      throw new HttpError(400, 'limit must be an integer between 1 and 2000');
+    }
   }
 
   const dataForValidation: StorageData = {
@@ -225,7 +237,7 @@ function validateSyncRequest(request: StorageSyncRequest) {
     ...(request.changes.profile ? { profile: request.changes.profile } : {}),
   };
 
-  validateStorageDataShape(dataForValidation);
+  validateStorageDataShape(dataForValidation, backup ? 100000 : MAX_LOG_COUNT);
 }
 
 function parseSyncReceiptPayload(payload: SyncPushReceipt | string): SyncPushReceipt {
@@ -1239,7 +1251,7 @@ class PostgresStorageRepository implements StorageRepository {
     backup?: { mode: 'merge' | 'replace'; expectedRevision: number },
   ): Promise<StorageSyncResponse> {
     await ensureDatabaseReady();
-    validateSyncRequest(request);
+    validateSyncRequest(request, Boolean(backup));
     const storageKey = sanitizeStorageKey(storageKeyInput);
     const client = await getDatabasePool().connect();
 
@@ -1469,9 +1481,18 @@ class PostgresStorageRepository implements StorageRepository {
         }
       }
 
+      // A push's authoritative versions are separate from cursor pagination. Including
+      // them must never advance past unseen remote changes. Bound: page + submitted.
+      if (hasPush && !receipt && !backup) {
+        authoritativeWorkoutTypes = [...(await readExistingArrayEntityMap<StorageWorkoutTypeRow>(client, storageKey, 'storage_workout_types', (request.changes.workoutTypes ?? []).map((x) => x.id))).values()].map(mapWorkoutTypeRow);
+        authoritativeWorkouts = [...(await readExistingArrayEntityMap<StorageWorkoutRow>(client, storageKey, 'storage_workouts', (request.changes.workouts ?? []).map((x) => x.id))).values()].map(mapWorkoutRow);
+        authoritativeLogs = [...(await readExistingArrayEntityMap<StorageLogRow>(client, storageKey, 'storage_logs', (request.changes.logs ?? []).map((x) => x.id))).values()].map(mapLogRow);
+        authoritativeProfile = request.changes.profile ? await readExistingProfile(client, storageKey) ?? null : null;
+      }
+
       let pulled: Pick<StorageSyncResponse, 'cursor' | 'changes' | 'hasMore'>;
-      if (request.limit && !hasOutgoingSyncChanges(request.changes)) {
-        pulled = await readPagedSyncChanges(client, storageKey, request.cursor, revision, request.limit);
+      if (!backup) {
+        pulled = await readPagedSyncChanges(client, storageKey, request.cursor, revision, request.limit ?? 1000);
       } else {
         const [profileResult, workoutTypeResult, workoutResult, logResult] = await Promise.all([
           client.query<StorageProfileRow>(

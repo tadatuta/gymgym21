@@ -22,6 +22,8 @@ const SYNC_CURSOR_KEY = 'sync-cursor';
 const PROFILE_ID = 'me';
 const SYNC_PROTOCOL_VERSION = 1;
 const SYNC_PULL_LIMIT = 1000;
+export const SYNC_PUSH_LIMIT = 500;
+export const SYNC_PUSH_BYTES = 512 * 1024;
 
 type SyncEntityMap = {
   workoutTypes: WorkoutType;
@@ -116,6 +118,7 @@ export class SyncService {
       if (response.status === 401) {
         throw new Error('Unauthorized');
       }
+      if (response.status === 413) throw new Error('Пачка синхронизации превышает лимит сервера. Проверьте JSON_BODY_LIMIT и лимит прокси');
       throw new Error('Sync failed');
     }
 
@@ -132,7 +135,7 @@ export class SyncService {
       conflicts: result.conflicts.length,
       pushedEntities,
       pulledEntities,
-      hasMore: result.hasMore ?? false,
+      hasMore: Boolean(result.hasMore) || await this.db.dirtyEntities.count() > 0,
     };
   }
 
@@ -153,6 +156,7 @@ export class SyncService {
     }, this.context);
     this.context.assertCurrent();
     if (response.status === 409) throw new Error('Данные изменились на другом устройстве. Синхронизируйте и повторите импорт');
+    if (response.status === 413) throw new Error('Файл превышает лимит импорта сервера. Уменьшите файл или согласуйте JSON_BODY_LIMIT и лимит прокси');
     if (!response.ok) throw new Error('Не удалось подтвердить импорт на сервере. Синхронизируйте данные перед повторной попыткой');
     const imported = await response.json() as SyncResponse;
     this.context.assertCurrent();
@@ -235,23 +239,44 @@ export class SyncService {
 
   private async createRequestSnapshot(): Promise<SyncRequestSnapshot> {
     return this.db.transaction(
-      'r',
+      'rw',
       [this.db.workouts, this.db.logs, this.db.workoutTypes, this.db.profile, this.db.dirtyEntities, this.db.syncState],
       async () => {
-        const [cursor, dirtyEntryList] = await Promise.all([
-          this.getCursor(),
-          this.db.dirtyEntities.toArray(),
-        ]);
-        const dirtyEntries = new Map(dirtyEntryList.map((entry) => [entry.key, entry]));
-
+        const cursor = await this.getCursor();
+        const dirtyEntryList = await this.db.dirtyEntities.toArray();
+        const entities = this.buildEntityMap(await this.readDirtyDelta(dirtyEntryList));
+        const dirtyEntries = new Map<string, DirtyEntityRecord>();
+        const changes: SyncDelta = {};
+        // Reserve the envelope, property names and punctuation; entity bytes are UTF-8.
+        let bytes = 1024;
+        let oversized: string | undefined;
+        for (const entry of dirtyEntryList) {
+          if (dirtyEntries.size >= SYNC_PUSH_LIMIT) break;
+          const entity = entities.get(entry.key);
+          if (!entity) {
+            // Missing rows cannot be submitted. Cleanup is atomic with the snapshot.
+            await this.db.dirtyEntities.delete(entry.key);
+            continue;
+          }
+          const size = new TextEncoder().encode(JSON.stringify(entity)).byteLength + 1;
+          if (size + 1024 > SYNC_PUSH_BYTES) {
+            oversized ??= entry.key;
+            continue;
+          }
+          if (bytes + size > SYNC_PUSH_BYTES) continue;
+          bytes += size;
+          dirtyEntries.set(entry.key, entry);
+          if (entry.entityType === 'profile') changes.profile = entity as UserProfile;
+          else if (entry.entityType === 'logs') (changes.logs ??= []).push(entity as WorkoutSet);
+          else if (entry.entityType === 'workouts') (changes.workouts ??= []).push(entity as WorkoutSession);
+          else (changes.workoutTypes ??= []).push(entity as WorkoutType);
+        }
+        if (!dirtyEntries.size && oversized) {
+          throw new Error(`Запись ${oversized} превышает лимит синхронизации 512 КиБ. Сократите содержимое записи и повторите синхронизацию`);
+        }
         return {
-          request: {
-            cursor,
-            changes: await this.readDirtyDelta(dirtyEntryList),
-            protocolVersion: SYNC_PROTOCOL_VERSION,
-            limit: SYNC_PULL_LIMIT,
-            batchId: createBatchId(cursor, dirtyEntries),
-          },
+          request: { cursor, changes, protocolVersion: SYNC_PROTOCOL_VERSION,
+            limit: SYNC_PULL_LIMIT, batchId: createBatchId(cursor, dirtyEntries) },
           dirtyEntries,
         };
       },
@@ -314,9 +339,9 @@ export class SyncService {
       'rw',
       [this.db.workouts, this.db.logs, this.db.workoutTypes, this.db.profile, this.db.dirtyEntities, this.db.syncState, this.db.syncConflicts],
       async () => {
-        await this.applyArrayDelta('workoutTypes', response.changes.workoutTypes, snapshot, acknowledged, conflicts);
-        await this.applyArrayDelta('logs', response.changes.logs, snapshot, acknowledged, conflicts);
-        await this.applyArrayDelta('workouts', response.changes.workouts, snapshot, acknowledged, conflicts);
+        await this.applyArrayDelta('workoutTypes', response.changes.workoutTypes, snapshot);
+        await this.applyArrayDelta('logs', response.changes.logs, snapshot);
+        await this.applyArrayDelta('workouts', response.changes.workouts, snapshot);
 
         if (response.changes.profile) {
           await this.applyProfileDelta(response.changes.profile, snapshot, acknowledged, conflicts);
@@ -341,27 +366,29 @@ export class SyncService {
     entityType: K,
     incomingItems: SyncEntityMap[K][] | undefined,
     snapshot: SyncRequestSnapshot,
-    acknowledged: Set<string>,
-    conflicts: Set<string>,
   ) {
-    for (const incoming of asArray(incomingItems)) {
-      const key = dirtyKey(entityType, incoming.id);
-      const table = this.getArrayTable(entityType);
-      const local = await table.get(incoming.id) as SyncEntityMap[K] | undefined;
-      const dirtyState = await this.getDirtyState(key, snapshot);
-
-      if (dirtyState.changedAfterSnapshot && local) {
-        await this.putRebasedArrayEntity(entityType, local, incoming);
-      } else if (!local || this.shouldReplaceLocal(local, incoming)) {
-        await this.putArrayEntity(entityType, incoming);
+    const incoming = asArray(incomingItems);
+    if (!incoming.length) return;
+    const table = this.getArrayTable(entityType);
+    const keys = incoming.map((item) => dirtyKey(entityType, item.id));
+    const locals = await table.bulkGet(incoming.map((item) => item.id));
+    const dirty = await this.db.dirtyEntities.bulkGet(keys);
+    const writes: SyncEntityMap[K][] = [];
+    incoming.forEach((item, index) => {
+      const local = locals[index] as SyncEntityMap[K] | undefined;
+      const sent = snapshot.dirtyEntries.get(keys[index]);
+      const current = dirty[index];
+      if (current && (!sent || current.generation !== sent.generation) && local) {
+        writes.push({ ...local, version: item.version, serverUpdatedAt: item.serverUpdatedAt });
+      } else if (!local || this.shouldReplaceLocal(local, item)) {
+        writes.push(item);
       }
-
-      if (acknowledged.has(key) && dirtyState.matchesSnapshot) {
-        await this.db.dirtyEntities.delete(key);
-        if (!conflicts.has(key)) {
-          await this.db.syncConflicts.delete(key);
-        }
-      }
+    });
+    // All writes and generation-aware acknowledgements share applySyncResponse's tx.
+    switch (entityType) {
+      case 'logs': await this.db.logs.bulkPut(writes as WorkoutSet[]); break;
+      case 'workouts': await this.db.workouts.bulkPut(writes as WorkoutSession[]); break;
+      case 'workoutTypes': await this.db.workoutTypes.bulkPut(writes as WorkoutType[]); break;
     }
   }
 
@@ -403,49 +430,17 @@ export class SyncService {
     };
   }
 
-  private async putArrayEntity<K extends ArrayEntityType>(entityType: K, entity: SyncEntityMap[K]) {
-    switch (entityType) {
-      case 'workoutTypes':
-        await this.db.workoutTypes.put(entity as WorkoutType);
-        break;
-      case 'logs':
-        await this.db.logs.put(entity as WorkoutSet);
-        break;
-      case 'workouts':
-        await this.db.workouts.put(entity as WorkoutSession);
-        break;
-    }
-  }
-
-  private async putRebasedArrayEntity<K extends ArrayEntityType>(
-    entityType: K,
-    local: SyncEntityMap[K],
-    incoming: SyncEntityMap[K],
-  ) {
-    await this.putArrayEntity(entityType, {
-      ...local,
-      version: incoming.version,
-      serverUpdatedAt: incoming.serverUpdatedAt,
-    });
-  }
-
   private async acknowledgeUnchangedOutboxEntries(
     snapshot: SyncRequestSnapshot,
     acknowledged: Set<string>,
     conflicts: Set<string>,
   ) {
-    for (const key of acknowledged) {
-      const sent = snapshot.dirtyEntries.get(key);
-      const current = await this.db.dirtyEntities.get(key);
-      if (!sent || !current || sent.generation !== current.generation) {
-        continue;
-      }
-
-      await this.db.dirtyEntities.delete(key);
-      if (!conflicts.has(key)) {
-        await this.db.syncConflicts.delete(key);
-      }
-    }
+    const keys = [...acknowledged].filter((key) => snapshot.dirtyEntries.has(key));
+    const current = await this.db.dirtyEntities.bulkGet(keys);
+    const matching = keys.filter((key, index) => current[index]
+      && snapshot.dirtyEntries.get(key)!.generation === current[index]!.generation);
+    await this.db.dirtyEntities.bulkDelete(matching);
+    await this.db.syncConflicts.bulkDelete(matching.filter((key) => !conflicts.has(key)));
   }
 
   private shouldReplaceLocal<T extends SyncItem>(local: T, incoming: T): boolean {

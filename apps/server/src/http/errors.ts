@@ -25,6 +25,11 @@ export const errorHandler: ErrorRequestHandler = (error, _req, res, next) => {
     return;
   }
 
+  if (error?.type === 'entity.too.large') {
+    res.status(413).json({ error: 'Request exceeds JSON_BODY_LIMIT; reduce the payload or adjust API and proxy limits', code: 'payload_too_large' });
+    return;
+  }
+
   if (error instanceof ZodError) {
     res.status(400).json({
       error: 'Invalid request body',

@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { authorizedApiFetch } from '../auth';
 import { activateAccountDatabase, db } from '../db';
-import { SyncService } from './sync';
+import { SYNC_PUSH_BYTES, SYNC_PUSH_LIMIT, SyncService } from './sync';
 
 vi.mock('../auth', () => ({
   authorizedApiFetch: vi.fn(),
@@ -27,6 +27,45 @@ describe('SyncService reliable outbox acknowledgements', () => {
     });
     Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
     await activateAccountDatabase(`sync-test-${Math.random().toString(36).slice(2)}`);
+  });
+
+  it('drains multiple batches of logs in bounded submitted snapshots, removes missing rows', async () => {
+    const logs = Array.from({ length: 501 }, (_, i) => ({ id: `L${i}`, workoutTypeId: 'T', workoutId: 'W', date: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z', reps: 1 }));
+    await db.logs.bulkPut(logs);
+    await SyncService.markDirtyMany([...logs.map(({ id }) => ({ entityType: 'logs' as const, entityId: id })), { entityType: 'logs', entityId: 'missing' }]);
+    const seen = new Set<string>();
+    vi.mocked(authorizedApiFetch).mockImplementation(async (_url, init) => {
+      const body = String(init?.body);
+      expect(new TextEncoder().encode(body).length).toBeLessThanOrEqual(SYNC_PUSH_BYTES);
+      const sent = JSON.parse(body);
+      expect(sent.changes.logs.length).toBeLessThanOrEqual(SYNC_PUSH_LIMIT);
+      for (const log of sent.changes.logs) { expect(seen.has(log.id)).toBe(false); seen.add(log.id); }
+      return jsonResponse({ cursor: seen.size, changes: sent.changes, conflicts: [], acknowledged: sent.changes.logs.map((log: { id: string }) => ({ entityType: 'logs', entityId: log.id })), hasMore: false });
+    });
+    let rounds = 0;
+    while ((await SyncService.sync()).hasMore) { expect(++rounds).toBeLessThan(25); }
+    expect(seen.size).toBe(501);
+    expect(await db.dirtyEntities.count()).toBe(0);
+    expect(authorizedApiFetch).toHaveBeenCalledTimes(2);
+  }, 30000);
+
+  it('uses UTF-8 byte bounds and stable retry IDs, skips oversized records without starving others', async () => {
+    const rows = Array.from({ length: 6 }, (_, i) => ({ id: `T${i}`, name: 'я'.repeat(60000), updatedAt: '2026-09-01T00:00:00Z' }));
+    await db.workoutTypes.bulkPut([...rows, { ...rows[0], id: 'oversized', name: 'я'.repeat(SYNC_PUSH_BYTES) }]);
+    await SyncService.markAllEntitiesDirty();
+    vi.mocked(authorizedApiFetch).mockRejectedValueOnce(new Error('lost response')).mockImplementation(async (_url, init) => {
+      expect(new TextEncoder().encode(String(init?.body)).length).toBeLessThanOrEqual(SYNC_PUSH_BYTES);
+      const sent = JSON.parse(String(init?.body));
+      return jsonResponse({ cursor: 0, changes: sent.changes, conflicts: [], hasMore: false });
+    });
+    await expect(SyncService.sync()).rejects.toThrow('lost response');
+    expect((await SyncService.sync()).hasMore).toBe(true);
+    const calls = vi.mocked(authorizedApiFetch).mock.calls;
+    expect(JSON.parse(String(calls[0][1]?.body)).batchId).toBe(JSON.parse(String(calls[1][1]?.body)).batchId);
+    expect((await SyncService.sync()).hasMore).toBe(true);
+    expect(await db.dirtyEntities.count()).toBe(1);
+    await expect(SyncService.sync()).rejects.toThrow('oversized');
+    expect(authorizedApiFetch).toHaveBeenCalledTimes(3);
   });
 
   it('imports after full fresh pull and preserves a newer local generation during replace', async () => {
