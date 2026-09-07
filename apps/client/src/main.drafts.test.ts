@@ -27,6 +27,7 @@ function setup(page: 'main' | 'stats' | 'settings' | 'profile-settings' = 'main'
     const workouts = [{ id: 'w1', name: 'Session', startTime: new Date().toISOString(), status: 'finished', pauseIntervals: [] }];
     const profile = { displayName: 'Original', isPublic: false, gender: '', additionalInfo: '' };
     const storage = {
+        isActive: () => true, getSyncState: () => ({ pendingCount: 0 }),
         getWorkoutTypes: () => types, getLogs: () => logs, getWorkouts: () => workouts,
         getActiveWorkout: () => active ? { ...workouts[0], status: 'active' } : null, getWorkoutDuration: () => 0, getProfile: () => profile, getProfileIdentifier: () => '',
         getTimeZone: () => 'UTC', getConflicts: () => [], getStorageKey: () => account,

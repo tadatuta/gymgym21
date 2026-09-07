@@ -56,6 +56,8 @@ export function createApplication(dependencyOverrides: Partial<UiDependencies> =
   const routerController = createRouterController({ window, onRouteChange: (route, context) => handleRouteChange(route, context.previousRoute) });
   const syncStatusEl = document.createElement('div');
   syncStatusEl.className = 'sync-status';
+  syncStatusEl.hidden = true;
+  let syncAccountKey: string | null = null;
   function withFormDrafts(update: () => void) {
     if (disposed) return;
     const app = document.getElementById('app');
@@ -137,6 +139,7 @@ export function createApplication(dependencyOverrides: Partial<UiDependencies> =
 
   function render() {
     withFormDrafts(renderContent);
+    updateSyncStatus();
   }
 
   function disposeMainLogin(app: HTMLElement) {
@@ -157,6 +160,7 @@ export function createApplication(dependencyOverrides: Partial<UiDependencies> =
     app.replaceChildren();
     state.guestLoginHost = document.createElement('div');
     app.append(state.guestLoginHost);
+    updateSyncStatus();
     void renderLogin(state.guestLoginHost, () => location.reload(), error);
     if (state.currentRoute.name === 'public-profile') {
       const back = document.createElement('button');
@@ -219,7 +223,6 @@ export function createApplication(dependencyOverrides: Partial<UiDependencies> =
         <span class="navigation__label">Настройки</span>
       </button>
     </nav>
-    <div id="sync-status" class="sync-status"></div>
   `;
 
     // Bind events
@@ -234,82 +237,43 @@ export function createApplication(dependencyOverrides: Partial<UiDependencies> =
     currentPageModule().mount();
   }
 
-  function updateSyncStatusUI() {
-    const statusEl = document.getElementById('sync-status');
-    if (!statusEl) return;
-
-    statusEl.className = 'sync-status';
-    let text = '';
-    let icon = '';
-
-    switch (state.syncStatus) {
-      case 'saving':
-        text = 'Синхронизация...';
-        icon = '🔄';
-        statusEl.classList.add('sync-status_saving');
-        break;
-      case 'success':
-        text = 'Сохранено';
-        icon = '✅';
-        statusEl.classList.add('sync-status_success');
-        break;
-      case 'error':
-        text = 'Ошибка синхронизации';
-        icon = '⚠️';
-        statusEl.classList.add('sync-status_error');
-        break;
-      case 'idle':
-        if (!navigator.onLine) {
-          text = 'Оффлайн';
-          icon = '📡';
-          statusEl.classList.add('sync-status_offline');
-        } else {
-          return; // Hide if idle and online
-        }
-        break;
-    }
-
-    statusEl.innerHTML = `${icon} ${text}`;
-  }
-
-  function updateSyncStatus(status: SyncStatus) {
+  function updateSyncStatus(status?: SyncStatus) {
     if (disposed) return;
     statusLifecycle.dispose();
     syncStatusEl.replaceChildren();
-    syncStatusEl.className = 'sync-status visible ' + status;
-
-    switch (status) {
-      case 'saving':
-        syncStatusEl.textContent = 'Синхронизация...';
-        break;
-      case 'success':
-        syncStatusEl.textContent = 'Синхронизировано';
-        break;
-      case 'error':
-        syncStatusEl.textContent = storage.getSyncState().error?.message ?? 'Ошибка синхронизации';
-        break;
-      default:
-        if (!navigator.onLine || !hasActiveSession()) {
-          syncStatusEl.className = 'sync-status visible idle';
-          syncStatusEl.textContent = 'Оффлайн · изменения сохраняются на устройстве';
-        } else {
-          syncStatusEl.className = 'sync-status';
-        }
+    syncStatusEl.className = 'sync-status';
+    syncStatusEl.hidden = true;
+    const accountKey = getCurrentUser() && storage.isActive() ? storage.getStorageKey() : null;
+    if (accountKey !== syncAccountKey) state.syncStatus = 'idle';
+    syncAccountKey = accountKey;
+    if (!accountKey || state.guestLoginHost?.isConnected) {
+      state.syncStatus = 'idle';
+      return;
     }
-    const pending = storage.getSyncState().pendingCount;
-    if (pending) {
-      syncStatusEl.classList.add('visible');
-      syncStatusEl.appendChild(document.createTextNode(` · Ожидают отправки: ${pending}`));
-    }
-    if (status === 'error' || !hasActiveSession()) {
+    if (status) state.syncStatus = status;
+    const { pendingCount, error } = storage.getSyncState();
+    const offline = !navigator.onLine || !hasActiveSession();
+    const currentStatus = state.syncStatus;
+    let message = '';
+    if (currentStatus === 'saving') message = 'Синхронизация...';
+    else if (currentStatus === 'success') message = 'Синхронизировано';
+    else if (currentStatus === 'error') message = error?.message ?? 'Ошибка синхронизации';
+    else if (offline) message = 'Оффлайн · изменения сохраняются на устройстве';
+    if (pendingCount) message += `${message ? ' · ' : ''}Ожидают отправки: ${pendingCount}`;
+    if (!message) return;
+    syncStatusEl.hidden = false;
+    syncStatusEl.classList.add(`sync-status_${currentStatus === 'idle' && offline ? 'offline' : currentStatus}`);
+    syncStatusEl.textContent = message;
+    if (currentStatus === 'error' || !hasActiveSession()) {
       const retry = document.createElement('button');
-      retry.className = 'button button_secondary';
+      retry.type = 'button';
+      retry.className = 'button button_secondary sync-status__retry';
       retry.textContent = 'Повторить подключение';
       statusLifecycle.listen(retry, 'click', () => { if (hasActiveSession()) void storage.sync(); else void reconnect?.retry(); });
       syncStatusEl.appendChild(retry);
     }
-
   }
+  function refreshSyncStatus() { updateSyncStatus(); }
   async function initApp() {
     void loadTelegramWebApp();
     const showLogin = (error?: string) => {
@@ -366,11 +330,13 @@ export function createApplication(dependencyOverrides: Partial<UiDependencies> =
   }
   function subscribe() {
     cleanups.push(storage.onUpdate(() => { if (!disposed) currentPageModule().refresh(); }));
-    cleanups.push(storage.onSyncStatusChange(status => { state.syncStatus = status; updateSyncStatus(status); }));
+    cleanups.push(storage.onSyncStatusChange(status => updateSyncStatus(status)));
     cleanups.push(storage.onUnauthorized(() => { state.formDrafts?.dispose(); state.formDrafts = null; state.authStatus = null; showGuestLogin(); }));
-    window.addEventListener('online', updateSyncStatusUI);
-    window.addEventListener('offline', updateSyncStatusUI);
-    cleanups.push(() => { window.removeEventListener('online', updateSyncStatusUI); window.removeEventListener('offline', updateSyncStatusUI); });
+    window.addEventListener('gym21-auth-changed', refreshSyncStatus);
+    cleanups.push(() => window.removeEventListener('gym21-auth-changed', refreshSyncStatus));
+    window.addEventListener('online', refreshSyncStatus);
+    window.addEventListener('offline', refreshSyncStatus);
+    cleanups.push(() => { window.removeEventListener('online', refreshSyncStatus); window.removeEventListener('offline', refreshSyncStatus); });
   }
   return {
     state, pages, render,

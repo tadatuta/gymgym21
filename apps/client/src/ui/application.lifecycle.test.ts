@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApplication } from './application';
 import type { UiDependencies } from './dependencies';
+import type { SyncStatus } from '../storage/storage';
 import { createLifecycle } from './lifecycle';
 
 const apps: Array<ReturnType<typeof createApplication>> = [];
@@ -15,20 +16,24 @@ function fixture(overrides: Partial<UiDependencies> = {}) {
   document.body.innerHTML = '<div id="app"></div>';
   const unsubscribes = [vi.fn(), vi.fn(), vi.fn()];
   let refresh = () => { };
+  let statusChange: (status: SyncStatus) => void = () => { };
+  let syncState = { pendingCount: 0, error: undefined as { message: string } | undefined };
   const storage = {
+    isActive: () => true, getStorageKey: () => 'fixture',
+    getSyncState: vi.fn(() => syncState), sync: vi.fn(async () => { }),
     getWorkoutTypes: () => [], getLogs: () => [], getWorkouts: () => [],
     getTimeZone: () => 'UTC', getProfile: () => ({ isPublic: false }),
     getActiveWorkout: () => ({ id: 'w', startTime: new Date().toISOString(), status: 'active', pauseIntervals: [] }),
     onUpdate: vi.fn((callback: () => void) => { refresh = callback; return unsubscribes[0]; }),
-    onSyncStatusChange: vi.fn(() => unsubscribes[1]),
+    onSyncStatusChange: vi.fn((callback: typeof statusChange) => { statusChange = callback; return unsubscribes[1]; }),
     onUnauthorized: vi.fn(() => unsubscribes[2]),
   };
   const app = createApplication({
-    storage, captureAccountContext: () => ({ storageKey: 'fixture' }), getCurrentUser: () => ({ name: 'Fixture' }),
+    storage, hasActiveSession: () => true, captureAccountContext: () => ({ storageKey: 'fixture' }), getCurrentUser: () => ({ name: 'Fixture' }),
     ...overrides,
   } as unknown as Partial<UiDependencies>);
   apps.push(app);
-  return { app, storage, unsubscribes, refresh: () => refresh() };
+  return { app, storage, unsubscribes, refresh: () => refresh(), emit: (status: SyncStatus, pendingCount = 0, message?: string) => { syncState = { pendingCount, error: message ? { message } : undefined }; statusChange(status); } };
 }
 
 describe('application mount and dispose', () => {
@@ -52,7 +57,89 @@ describe('application mount and dispose', () => {
     expect(document.querySelector('.sync-status')).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
     expect(storage.onUpdate).toHaveBeenCalledTimes(1);
+    expect(storage.onSyncStatusChange).toHaveBeenCalledTimes(1);
     unsubscribes.forEach(unsubscribe => expect(unsubscribe).toHaveBeenCalledTimes(1));
+  });
+
+  it('renders one indicator across states, network events and page rerenders with actionable retry', async () => {
+    const { app, storage, emit } = fixture();
+    await app.mount({ bootstrap: false });
+    app.navigate({ name: 'settings' });
+    const indicator = document.querySelector<HTMLElement>('.sync-status')!;
+    expect(indicator.hidden).toBe(true);
+    emit('saving', 3);
+    expect(indicator.textContent).toBe('Синхронизация... · Ожидают отправки: 3');
+    emit('success');
+    expect(indicator.textContent).toBe('Синхронизировано');
+    emit('error', 2, '<record> слишком большой');
+    expect(indicator.textContent).toContain('<record> слишком большой · Ожидают отправки: 2');
+    expect(indicator.querySelector('record')).toBeNull();
+    const detachedRetry = indicator.querySelector('button')!;
+    app.render();
+    detachedRetry.click();
+    expect(storage.sync).not.toHaveBeenCalled();
+    expect(document.querySelectorAll('.sync-status')).toHaveLength(1);
+    indicator.querySelector('button')!.click();
+    expect(storage.sync).toHaveBeenCalledOnce();
+    emit('idle', 2);
+    expect(indicator.textContent).toBe('Ожидают отправки: 2');
+    emit('idle');
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    window.dispatchEvent(new Event('offline'));
+    expect(indicator.textContent).toContain('изменения сохраняются на устройстве');
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true);
+    window.dispatchEvent(new Event('online'));
+    expect(indicator.hidden).toBe(true);
+    emit('error');
+    const disposedRetry = indicator.querySelector('button')!;
+    app.dispose();
+    disposedRetry.click();
+    emit('saving');
+    window.dispatchEvent(new Event('offline'));
+    expect(storage.sync).toHaveBeenCalledOnce();
+    expect(document.querySelector('.sync-status')).toBeNull();
+  });
+
+  it('clears private status on auth loss and never reads personal sync state for guests', async () => {
+    let user = { name: 'Fixture' } as ReturnType<UiDependencies['getCurrentUser']>;
+    const { app, storage, emit } = fixture({ getCurrentUser: () => user });
+    await app.mount({ bootstrap: false });
+    emit('error', 9, 'Private record');
+    user = null;
+    storage.getSyncState.mockClear();
+    window.dispatchEvent(new Event('gym21-auth-changed'));
+    emit('error', 9, 'Private record');
+    const indicator = document.querySelector<HTMLElement>('.sync-status')!;
+    expect(indicator.hidden).toBe(true);
+    expect(indicator.textContent).toBe('');
+    expect(storage.getSyncState).not.toHaveBeenCalled();
+    user = { name: 'New account' } as ReturnType<UiDependencies['getCurrentUser']>;
+    storage.isActive = () => false;
+    window.dispatchEvent(new Event('online'));
+    expect(indicator.hidden).toBe(true);
+    expect(storage.getSyncState).not.toHaveBeenCalled();
+    storage.isActive = () => true;
+    storage.getStorageKey = () => 'new-account';
+    storage.getSyncState.mockReturnValue({ pendingCount: 0, error: undefined });
+    window.dispatchEvent(new Event('online'));
+    expect(app.state.syncStatus).toBe('idle');
+    expect(indicator.hidden).toBe(true);
+  });
+
+  it('routes offline-account retry through reconnect instead of manual sync', async () => {
+    const retry = vi.fn(async () => { });
+    const { app, storage, emit } = fixture({
+      hasActiveSession: () => false,
+      getOfflineAccount: () => null,
+      loadTelegramWebApp: async () => null,
+      createReconnectCoordinator: () => ({ retry, dispose: vi.fn() }),
+    });
+    await app.mount();
+    emit('idle', 1);
+    expect(document.querySelector('.sync-status')?.textContent).toContain('изменения сохраняются на устройстве');
+    document.querySelector<HTMLButtonElement>('.sync-status button')!.click();
+    expect(retry).toHaveBeenCalledTimes(2);
+    expect(storage.sync).not.toHaveBeenCalled();
   });
 
   it('ignores a public response completing after disposal and keeps state private to each instance', async () => {
