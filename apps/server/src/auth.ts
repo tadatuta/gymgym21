@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { config, HAS_DATABASE } from './config.js';
 import {
   AuthMetaService,
+  claimUserAliasTx,
   closeAuthPool,
   createPlaceholderEmail,
   ensureAuthDatabaseSchema,
@@ -43,6 +44,7 @@ interface AccountRecord {
   providerId: string;
   userId: string;
   password: string | null;
+  telegramUsername: string | null;
 }
 
 export interface AuthenticatedRequestContext {
@@ -174,9 +176,10 @@ async function getAccountsForUser(userId: string): Promise<AccountRecord[]> {
     provider_id: string;
     user_id: string;
     password: string | null;
+    telegram_username: string | null;
   }>(
     `
-      SELECT id, account_id, provider_id, user_id, password
+      SELECT id, account_id, provider_id, user_id, password, telegram_username
       FROM account
       WHERE user_id = $1
     `,
@@ -189,6 +192,7 @@ async function getAccountsForUser(userId: string): Promise<AccountRecord[]> {
     providerId: row.provider_id,
     userId: row.user_id,
     password: row.password,
+    telegramUsername: row.telegram_username,
   }));
 }
 
@@ -299,24 +303,18 @@ async function getAliasOwnerTx(client: PoolClient, alias: string): Promise<strin
   return result.rows[0]?.user_id ?? null;
 }
 
-async function upsertAliasTx(client: PoolClient, userId: string, alias: string, type: 'canonical' | 'telegram_username' | 'telegram_id') {
+export async function upsertAliasTx(client: PoolClient, userId: string, alias: string, type: 'canonical' | 'telegram_username' | 'telegram_id') {
   const normalizedAlias = alias.trim().replace(/^@/, '').toLowerCase();
   if (!normalizedAlias) return;
 
-  const ownerId = await getAliasOwnerTx(client, normalizedAlias);
-  if (ownerId && ownerId !== userId) {
-    throw APIError.fromStatus('BAD_REQUEST', { message: `Identifier already taken: ${normalizedAlias}` });
+  try {
+    await claimUserAliasTx(client, userId, normalizedAlias, type);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Alias already taken:')) {
+      throw APIError.fromStatus('BAD_REQUEST', { message: `Identifier already taken: ${normalizedAlias}` });
+    }
+    throw error;
   }
-
-  await client.query(
-    `
-      INSERT INTO user_alias (id, user_id, alias, alias_lower, type, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-      ON CONFLICT (alias_lower)
-      DO UPDATE SET user_id = EXCLUDED.user_id, alias = EXCLUDED.alias, type = EXCLUDED.type, updated_at = NOW()
-    `,
-    [randomUUID(), userId, normalizedAlias, normalizedAlias, type],
-  );
 }
 
 async function tryUpsertAliasTx(client: PoolClient, userId: string, alias: string | undefined, type: 'telegram_username') {
@@ -494,6 +492,10 @@ async function ensureTelegramStateForUser(userId: string, telegramUser: Telegram
   try {
     await client.query('BEGIN');
     await upsertStorageBindingTx(client, userId, storageKey);
+    await client.query(
+      "UPDATE account SET telegram_username = $3, updated_at = NOW() WHERE user_id = $1 AND provider_id = 'telegram' AND account_id = $2",
+      [userId, String(telegramUser.id), telegramUser.username ?? null],
+    );
     await upsertAliasTx(client, userId, `id_${telegramUser.id}`, 'telegram_id');
 
     const currentUser = await getUserById(userId);
@@ -1091,6 +1093,12 @@ export async function resolveBetterAuthSession(headers: Headers): Promise<{ sess
   };
 }
 
+async function getLinkedTelegramUser(user: AuthUserRecord): Promise<TelegramUser | undefined> {
+  const accounts = await getAccountsForUser(user.id);
+  const account = accounts.find((entry) => entry.providerId === TELEGRAM_PROVIDER_ID);
+  return account ? { id: Number(account.accountId), first_name: user.name, username: account.telegramUsername ?? undefined } : undefined;
+}
+
 export async function resolveRequestContext(headers: Headers): Promise<AuthenticatedRequestContext | null> {
   if (!HAS_DATABASE) {
     return null;
@@ -1099,8 +1107,10 @@ export async function resolveRequestContext(headers: Headers): Promise<Authentic
   const betterSession = await resolveBetterAuthSession(headers);
   if (betterSession) {
     const storageKey = await AuthMetaService.ensureStorageBinding(betterSession.user.id, () => `u_${betterSession.user.id}`);
+    const telegramUser = await getLinkedTelegramUser(betterSession.user);
     return {
       kind: 'better-auth',
+      telegramUser,
       storageKey,
       authUser: betterSession.user,
     };

@@ -108,6 +108,12 @@ export function createMeRouter(dependencies: AppDependencies): Router {
 
   router.post('/storage/sync', syncRateLimit, async (req, res) => {
     const payload = syncRequestSchema.parse(req.body);
+    // Older clients send a full profile. Accept it, but never pass client identity to storage.
+    if (payload.changes.profile) {
+      delete payload.changes.profile.username;
+      delete payload.changes.profile.telegramUsername;
+      delete payload.changes.profile.telegramUserId;
+    }
     res.json(await dependencies.storageRepository.sync(req.authContext!.storageKey, payload, req.authContext!));
   });
 

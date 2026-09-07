@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
+import { ensureDatabaseReady } from './database.js';
 import { config } from './config.js';
 
 export type AliasType = 'canonical' | 'telegram_username' | 'telegram_id';
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS user_alias (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS user_alias_user_id_idx ON user_alias(user_id);
+ALTER TABLE account ADD COLUMN IF NOT EXISTS telegram_username TEXT;
 `;
 
 function assertDatabaseUrl() {
@@ -154,6 +156,29 @@ export function createPlaceholderEmail(telegramUserId: number): string {
 
 export function isPlaceholderEmail(email: string): boolean {
     return email.toLowerCase().endsWith(`@${config.TELEGRAM_PLACEHOLDER_EMAIL_DOMAIN}`);
+}
+
+/** All alias writers share a transaction lock across the auth and public registries. */
+export async function claimUserAliasTx(client: PoolClient, userId: string, alias: string, type: AliasType): Promise<void> {
+    const normalized = normalizeIdentifier(alias);
+    await ensureDatabaseReady();
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`gym21-alias:${normalized}`]);
+    const publicOwner = await client.query(
+        `SELECT 1 FROM public_profile_aliases p
+         WHERE p.alias_lower = $1 AND NOT EXISTS (
+           SELECT 1 FROM user_storage_binding b WHERE b.user_id = $2 AND b.storage_key = p.storage_key
+         )`, [normalized, userId],
+    );
+    if (publicOwner.rowCount) throw new Error(`Alias already taken: ${normalized}`);
+    const claimed = await client.query(
+        `INSERT INTO user_alias (id, user_id, alias, alias_lower, type, created_at, updated_at)
+         VALUES ($1, $2, $3, $3, $4, NOW(), NOW())
+         ON CONFLICT (alias_lower)
+         DO UPDATE SET alias = EXCLUDED.alias, type = EXCLUDED.type, updated_at = NOW()
+         WHERE user_alias.user_id = EXCLUDED.user_id
+         RETURNING user_id`, [randomUUID(), userId, normalized, type],
+    );
+    if (!claimed.rowCount) throw new Error(`Alias already taken: ${normalized}`);
 }
 
 export class AuthMetaService {
@@ -223,23 +248,17 @@ export class AuthMetaService {
 
     static async claimAlias(userId: string, alias: string, type: AliasType): Promise<void> {
         await ensureAuthDatabaseSchema();
-        const normalizedAlias = alias.trim();
-        const aliasLower = normalizeIdentifier(normalizedAlias);
-        const existing = await this.getAlias(aliasLower);
-
-        if (existing && existing.userId !== userId) {
-            throw new Error(`Alias already taken: ${normalizedAlias}`);
+        const client = await getAuthPool().connect();
+        try {
+            await client.query('BEGIN');
+            await claimUserAliasTx(client, userId, alias, type);
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
         }
-
-        await getAuthPool().query(
-            `
-                INSERT INTO user_alias (id, user_id, alias, alias_lower, type, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-                ON CONFLICT (alias_lower)
-                DO UPDATE SET user_id = EXCLUDED.user_id, alias = EXCLUDED.alias, type = EXCLUDED.type, updated_at = NOW()
-            `,
-            [randomUUID(), userId, normalizedAlias, aliasLower, type],
-        );
     }
 
     static async tryClaimAlias(userId: string, alias: string, type: AliasType): Promise<boolean> {
@@ -272,15 +291,7 @@ export class AuthMetaService {
                 'DELETE FROM user_alias WHERE user_id = $1 AND type = $2 AND alias_lower <> $3',
                 [userId, 'canonical', normalizedUsername],
             );
-            await client.query(
-                `
-                    INSERT INTO user_alias (id, user_id, alias, alias_lower, type, created_at, updated_at)
-                    VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-                    ON CONFLICT (alias_lower)
-                    DO UPDATE SET user_id = EXCLUDED.user_id, alias = EXCLUDED.alias, type = EXCLUDED.type, updated_at = NOW()
-                `,
-                [randomUUID(), userId, normalizedUsername, normalizedUsername, 'canonical'],
-            );
+            await claimUserAliasTx(client, userId, normalizedUsername, 'canonical');
             await client.query('COMMIT');
         } catch (error) {
             await client.query('ROLLBACK');

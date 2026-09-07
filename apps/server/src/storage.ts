@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg';
 import { config } from './config.js';
 import { ensureDatabaseReady, getDatabasePool } from './database.js';
 import type { AuthenticatedRequestContext } from './auth.js';
+import { ensureAuthDatabaseSchema } from './auth-meta.js';
 import { HttpError } from './http/errors.js';
 
 const ARRAY_ENTITY_TYPES = ['workoutTypes', 'logs', 'workouts'] as const;
@@ -230,7 +231,7 @@ function parseSyncReceiptPayload(payload: StorageSyncResponse | string): Storage
     : payload;
 }
 
-function normalizeProfileForWrite(
+export function normalizeProfileForWrite(
   profile: StorageProfile,
   options: {
     existing?: StorageProfile;
@@ -253,8 +254,11 @@ function normalizeProfileForWrite(
     serverUpdatedAt: profile.serverUpdatedAt,
   };
 
-  if (options.authContext?.authUser?.username) {
-    normalized.username = options.authContext.authUser.username;
+  // Sync identity comes exclusively from authenticated server state, including absence.
+  if (options.authContext) {
+    normalized.username = options.authContext.authUser?.username ?? undefined;
+    normalized.telegramUserId = options.authContext.telegramUser?.id;
+    normalized.telegramUsername = options.authContext.telegramUser?.username;
   }
 
   if (!normalized.displayName && options.authContext?.authUser?.name) {
@@ -799,7 +803,20 @@ async function refreshPublicAliases(client: PoolClient, storageKey: string, prof
   const desired = new Map<string, { alias: string; type: string }>();
   desired.set(`id_${storageKey}`.toLowerCase(), { alias: `id_${storageKey}`, type: 'storage_id' });
 
-  if (profile && !profile.isDeleted) {
+  await ensureAuthDatabaseSchema();
+  const binding = await client.query<{ user_id: string }>(
+    'SELECT user_id FROM user_storage_binding WHERE storage_key = $1', [storageKey],
+  );
+  if (profile && !profile.isDeleted && binding.rows[0]) {
+    // Bound accounts publish only identifiers actually owned in the auth registry.
+    const aliases = await client.query<{ alias: string; type: string }>(
+      "SELECT alias, type FROM user_alias WHERE user_id = $1 AND type IN ('canonical', 'telegram_username')",
+      [binding.rows[0].user_id],
+    );
+    for (const entry of aliases.rows) {
+      desired.set(normalizeAlias(entry.alias), { alias: entry.alias, type: entry.type === 'canonical' ? 'canonical_username' : entry.type });
+    }
+  } else if (profile && !profile.isDeleted) {
     if (profile.username) {
       const alias = normalizeAlias(profile.username);
       desired.set(alias, { alias: profile.username, type: 'canonical_username' });
@@ -813,13 +830,22 @@ async function refreshPublicAliases(client: PoolClient, storageKey: string, prof
 
   await client.query('DELETE FROM public_profile_aliases WHERE storage_key = $1', [storageKey]);
 
-  for (const entry of desired.values()) {
+  for (const entry of [...desired.values()].sort((a, b) => normalizeAlias(a.alias).localeCompare(normalizeAlias(b.alias)))) {
+    const aliasLower = normalizeAlias(entry.alias);
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`gym21-alias:${aliasLower}`]);
+    const foreignOwner = await client.query(
+      `SELECT 1 FROM user_alias a WHERE a.alias_lower = $1 AND NOT EXISTS (
+        SELECT 1 FROM user_storage_binding b WHERE b.user_id = a.user_id AND b.storage_key = $2
+      )`, [aliasLower, storageKey],
+    );
+    if (foreignOwner.rowCount) continue;
     await client.query(
       `
         INSERT INTO public_profile_aliases (alias_lower, alias, storage_key, type, created_at, updated_at)
         VALUES ($1, $2, $3, $4, NOW(), NOW())
         ON CONFLICT (alias_lower)
-        DO UPDATE SET alias = EXCLUDED.alias, storage_key = EXCLUDED.storage_key, type = EXCLUDED.type, updated_at = NOW()
+        DO UPDATE SET alias = EXCLUDED.alias, type = EXCLUDED.type, updated_at = NOW()
+        WHERE public_profile_aliases.storage_key = EXCLUDED.storage_key
       `,
       [normalizeAlias(entry.alias), entry.alias, storageKey, entry.type],
     );
