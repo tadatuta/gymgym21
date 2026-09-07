@@ -27,6 +27,8 @@ try {
   let authUnavailable = false;
   let authenticated = false;
   let activationCalls = 0;
+  let syncRequests = 0;
+  let revision = 0;
   let releaseActivation;
   const user = { id: 'synthetic', name: 'Synthetic', email: 'synthetic@example.invalid' };
   let releaseSlow;
@@ -40,7 +42,21 @@ try {
         : { user, session: { id: 'synthetic', userId: user.id, expiresAt: '2099-01-01T00:00:00Z' } };
       return route.fulfill({ status: authUnavailable ? 503 : 200, contentType: 'application/json', body: JSON.stringify(body) });
     }
-    if (url.pathname.includes('/api/me/')) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ protocolVersion: 1, acknowledged: [], cursor: 0, changes: {}, conflicts: [], hasMore: false }) });
+    if (url.pathname === '/api/me/storage/sync') {
+      assert.ok(++syncRequests <= 10, 'Synthetic accepted bootstrap writes must not sync forever');
+      const sent = route.request().postDataJSON();
+      assert.equal(sent.protocolVersion, 1);
+      const changes = {};
+      const acknowledged = [];
+      const accept = (entityType, entity) => {
+        acknowledged.push({ entityType, entityId: entity.id });
+        return { ...entity, version: ++revision, serverUpdatedAt: new Date().toISOString() };
+      };
+      for (const key of ['workoutTypes', 'logs', 'workouts'])
+        if (sent.changes[key]) changes[key] = sent.changes[key].map(entity => accept(key, entity));
+      if (sent.changes.profile) changes.profile = accept('profile', sent.changes.profile);
+      return route.fulfill({ json: { protocolVersion: 1, acknowledged, cursor: revision, changes, conflicts: [], hasMore: false } });
+    }
     if (url.pathname.includes('/api/profiles/')) {
       const name = url.pathname.split('/').at(-1);
       if (name === 'activation' && ++activationCalls === 1) await new Promise(resolve => { releaseActivation = resolve; });
@@ -106,6 +122,8 @@ try {
   releaseActivation();
   await page.waitForLoadState('networkidle');
   await page.getByText('activation', { exact: true }).waitFor();
+  assert.equal(await page.evaluate(async () => (await import('/src/db.ts')).db.dirtyEntities.count()), 0);
+  assert.ok(syncRequests > 0 && syncRequests <= 10);
   await page.reload();
   await page.getByText('activation', { exact: true }).waitFor();
   assert.ok(page.url().endsWith('/profile/activation'));

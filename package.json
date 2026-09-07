@@ -20,6 +20,11 @@
     "docker:down": "docker compose down"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "concurrently": "^9.2.4"
+  },
+  "overrides": {
+    "@better-auth/core": "1.6.30",
+    "kysely": "^0.28.17",
+    "vite": "^6.4.3"
   }
 }

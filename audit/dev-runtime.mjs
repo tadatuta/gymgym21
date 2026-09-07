@@ -1,6 +1,6 @@
 // Isolated real-source dev smoke test. Never reads the project's .env or user data.
 import assert from 'node:assert/strict';
-import { cp, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -60,6 +60,14 @@ try {
   }
   for (const [name, target] of [['client', 'apps/client'], ['server', 'apps/server'], ['contracts', 'packages/contracts']])
     await symlink(join(fixture, target), join(fixture, 'node_modules/@gym21', name));
+  // npm may keep peer-dependent packages in a workspace instead of hoisting them.
+  for (const workspace of ['apps/client', 'apps/server', 'packages/contracts']) {
+    const dependencies = join(root, workspace, 'node_modules');
+    if (await stat(dependencies).then(info => info.isDirectory(), error => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    })) await symlink(dependencies, join(fixture, workspace, 'node_modules'));
+  }
   const env = `DATABASE_URL=${url}\nBETTER_AUTH_SECRET=isolated-dev-test-secret-at-least-32-chars\nHOST=127.0.0.1\nPORT=49872\n`;
   await writeFile(join(fixture, '.env'), env);
   await writeFile(join(fixture, 'apps/server/.env'), 'PORT=1\nDATABASE_URL=invalid\n');

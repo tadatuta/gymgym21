@@ -52,6 +52,26 @@ test('PostgreSQL: real auth endpoints reserve technical emails and never join by
     assert.equal(registered.status, 200, await registered.clone().text());
     const user = (await registered.json()).user;
     const token = (await pool.query('SELECT token FROM session WHERE user_id = $1', [user.id])).rows[0].token;
+    await t.test('upgraded passkey plugin reads the existing schema and requires a session for registration', async () => {
+      const get = (path, authenticated = true) => getAuth().handler(new Request(`http://localhost:3000/api/auth/passkey/${path}`, {
+        headers: authenticated ? { authorization: `Bearer ${token}` } : {},
+      }));
+      for (const path of ['list-user-passkeys', 'generate-register-options']) {
+        const denied = await get(path, false);
+        assert.equal(denied.status, 401, await denied.text());
+      }
+      const list = await get('list-user-passkeys');
+      assert.equal(list.status, 200, await list.clone().text());
+      assert.deepEqual(await list.json(), []);
+      const registration = await get('generate-register-options');
+      assert.equal(registration.status, 200, await registration.clone().text());
+      const options = await registration.json();
+      assert.equal(typeof options.challenge, 'string');
+      assert.ok(options.challenge.length > 20);
+      assert.equal(options.user.name, payload.email);
+      assert.ok(registration.headers.get('set-cookie'));
+      assert.equal((await pool.query('SELECT * FROM passkey')).rowCount, 0);
+    });
     await t.test('migration and standard email mutations reject reserved domain', async () => {
       for (const [path, body] of [
         ['/migration/complete', { ...payload, email: 'telegram-123@telegram.local.invalid' }],
