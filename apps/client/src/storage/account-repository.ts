@@ -46,12 +46,14 @@ export class AccountRepository {
     }
 
     async mutate<T>(tables: Table[], operation: () => Promise<MutationResult<T>>): Promise<T> {
-        return this.transaction([...tables, this.database.dirtyEntities], async () => {
+        const result = await this.transaction([...tables, this.database.dirtyEntities], async () => {
             const result = await operation();
             this.context.assertCurrent();
             await this.sync.markDirtyMany(result.dirty);
             this.context.assertCurrent();
-            return result.value;
+            return result;
         });
+        this.sync.recordCacheChanges({ entities: result.dirty, conflicts: [] });
+        return result.value;
     }
 }

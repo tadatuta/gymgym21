@@ -1,4 +1,4 @@
-import type { AppData, SyncItem } from '../types';
+import type { SyncItem } from '../types';
 
 function canonical(value: unknown): unknown {
     if (Array.isArray(value)) return value.map(canonical);
@@ -10,11 +10,7 @@ function canonical(value: unknown): unknown {
 }
 
 /** Only transport bookkeeping is omitted; identity, tombstones and all domain fields remain. */
-export function domainSnapshot(data: AppData): string {
-    const entity = (item: SyncItem) => Object.fromEntries(Object.entries(item)
-        .filter(([key]) => !['version', 'serverUpdatedAt', 'updatedAt'].includes(key)));
-    return JSON.stringify(canonical({
-        workouts: data.workouts.map(entity), logs: data.logs.map(entity),
-        workoutTypes: data.workoutTypes.map(entity), profile: data.profile && entity(data.profile),
-    }));
+export function recordDomainSnapshot(item: SyncItem | undefined): string | undefined {
+    return item && JSON.stringify(canonical(Object.fromEntries(Object.entries(item)
+        .filter(([key]) => !['version', 'serverUpdatedAt', 'updatedAt'].includes(key)))));
 }

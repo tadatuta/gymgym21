@@ -13,7 +13,8 @@ export function createDefaultWorkoutTypes(): WorkoutType[] {
 
 export async function ensureProfileTimeZoneAfterBootstrap(repository: AccountRepository, reads: AccountReads): Promise<boolean> {
     // Run only after the complete pull. Recheck inside the transaction so another tab's choice wins.
-    if (!reads.data.profile || reads.data.profile.timeZone) return false;
+    const cachedProfile = reads.getProfile();
+    if (!cachedProfile || cachedProfile.timeZone) return false;
     const context = repository.context;
     const database = context.database;
     const sync = repository.sync;
@@ -31,7 +32,7 @@ export async function ensureProfileTimeZoneAfterBootstrap(repository: AccountRep
         changed = true;
     });
     context.assertCurrent();
-    if (changed) { await reads.reload(); context.assertCurrent(); }
+    if (changed) { repository.sync.recordCacheChanges({ entities: [{entityType: 'profile', entityId: PROFILE_ID}], conflicts: [] }); await reads.flush(); context.assertCurrent(); }
     return changed;
 }
 
@@ -51,7 +52,8 @@ export async function ensureDefaultWorkoutTypesAfterBootstrap(repository: Accoun
         );
     });
     context.assertCurrent();
-    await reads.reload();
+    repository.sync.recordCacheChanges({entities: defaults.map(item => ({entityType: 'workoutTypes', entityId: item.id})), conflicts: []});
+    await reads.flush();
     context.assertCurrent();
     return true;
 }

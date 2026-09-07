@@ -29,7 +29,7 @@ try {
     const storage = {
       isActive: () => true, getStorageKey: () => 'synthetic',
       getSyncState: () => ({ pendingCount: 2, error: { message: 'Запись слишком большая: уменьшите описание' } }),
-      getWorkoutTypes: () => [], getLogs: () => [], getWorkouts: () => [],
+      getWorkoutTypes: () => [], getLogs: () => [], getWorkouts: () => [], getLatestLog: () => undefined, getLogsInDayRange: () => [],
       getTimeZone: () => 'UTC', getProfile: () => ({ isPublic: false }), getActiveWorkout: () => undefined,
       onUpdate: () => () => { }, onUnauthorized: () => () => { },
       onSyncStatusChange: callback => { statusChange = callback; return () => { counts.unsubscribe++; }; },

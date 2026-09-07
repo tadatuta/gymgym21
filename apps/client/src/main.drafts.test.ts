@@ -1,3 +1,4 @@
+import { getLatestLog } from './utils/latest-log';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApplication } from './ui/application';
 import type { UiDependencies } from './ui/dependencies';
@@ -29,6 +30,11 @@ function setup(page: 'main' | 'stats' | 'settings' | 'profile-settings' = 'main'
     const storage = {
         isActive: () => true, getSyncState: () => ({ pendingCount: 0 }),
         getWorkoutTypes: () => types, getLogs: () => logs, getWorkouts: () => workouts,
+        getLatestLog: () => getLatestLog(logs.map(log => ({...log, updatedAt: log.date}))), getLogById: (id: string) => logs.find(log => log.id === id),
+        getWorkoutById: (id: string) => workouts.find(workout => workout.id === id),
+        getLogsInDayRange: (start: string, end: string) => logs.filter(log => {
+            const key = trainingTime.dayKey(log.date, storage.getTimeZone()); return key >= start && key <= end;
+        }),
         getActiveWorkout: () => active ? { ...workouts[0], status: 'active' } : null, getWorkoutDuration: () => 0, getProfile: () => profile, getProfileIdentifier: () => '',
         getTimeZone: () => 'UTC', getConflicts: () => [], getStorageKey: () => account,
         onUpdate: (fn: () => void) => { refresh = fn; return () => { refresh = () => {}; }; },

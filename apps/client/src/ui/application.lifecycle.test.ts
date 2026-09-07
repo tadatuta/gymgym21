@@ -21,7 +21,7 @@ function fixture(overrides: Partial<UiDependencies> = {}) {
   const storage = {
     isActive: () => true, getStorageKey: () => 'fixture',
     getSyncState: vi.fn(() => syncState), sync: vi.fn(async () => { }),
-    getWorkoutTypes: () => [], getLogs: () => [], getWorkouts: () => [],
+    getWorkoutTypes: () => [], getLogs: () => [], getWorkouts: () => [], getLatestLog: () => undefined, getLogsInDayRange: () => [],
     getTimeZone: () => 'UTC', getProfile: () => ({ isPublic: false }),
     getActiveWorkout: () => ({ id: 'w', startTime: new Date().toISOString(), status: 'active', pauseIntervals: [] }),
     onUpdate: vi.fn((callback: () => void) => { refresh = callback; return unsubscribes[0]; }),

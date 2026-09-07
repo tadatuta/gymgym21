@@ -1,3 +1,4 @@
+import { CacheChangeJournal, type CacheChanges } from '../storage/cache-changes';
 import { parseSyncResponse, syncEntitySchemas } from './sync-validation';
 import { SyncError, syncResponseError } from './sync-error';
 import { authorizedApiFetch } from '../auth';
@@ -94,6 +95,9 @@ function createBatchId(cursor: number, dirtyEntries: Map<string, DirtyEntityReco
 }
 
 export class SyncService {
+  readonly cacheChanges = new CacheChangeJournal();
+  readonly outgoingChanges = new CacheChangeJournal();
+  recordCacheChanges(changes: CacheChanges) { this.cacheChanges.add(changes); this.outgoingChanges.add(changes); }
   private readonly db;
   constructor(private readonly context = captureAccountContext()) { this.db = context.database; }
   static sync(signal?: AbortSignal) { return new SyncService().sync(signal); }
@@ -404,6 +408,15 @@ export class SyncService {
         this.context.assertCurrent();
       },
     );
+    this.context.assertCurrent();
+    this.recordCacheChanges({
+      entities: [
+        ...(['logs', 'workouts', 'workoutTypes'] as const).flatMap(entityType =>
+          (response.changes[entityType] ?? []).map(item => ({ entityType, entityId: item.id }))),
+        ...(response.changes.profile ? [{ entityType: 'profile' as const, entityId: PROFILE_ID }] : []),
+      ],
+      conflicts: [...acknowledged, ...conflicts],
+    });
   }
 
   private async applyArrayDelta<K extends ArrayEntityType>(

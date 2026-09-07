@@ -77,7 +77,11 @@ try {
     const logs = Array.from({ length: 10001 }, (_, i) => ({ id: `L${i}`, workoutTypeId: 'T', workoutId: 'W', date: user.updatedAt, updatedAt: user.updatedAt, reps: 1 }));
     await db.logs.bulkPut(logs);
     await SyncService.markDirtyMany([...logs.map(({ id }) => ({ entityType: 'logs', entityId: id })), { entityType: 'logs', entityId: 'missing' }]);
-    window.a11 = { storage, db };
+    await storage.reloadCache();
+    window.a11 = { storage, db, fullReads: 0, updates: 0 };
+    const originalReadAll = SyncService.prototype.readAll;
+    SyncService.prototype.readAll = function(...args) { window.a11.fullReads++; return originalReadAll.apply(this, args); };
+    storage.onUpdate(() => window.a11.updates++);
     await storage.sync();
   }, user);
   const deadline = Date.now() + 60000;
@@ -87,12 +91,15 @@ try {
   }
   const result = await page.evaluate(async () => {
     const logs = await window.a11.db.logs.toArray();
+    const cached = window.a11.storage.getLogs();
+    const result = { count: logs.length, versioned: logs.filter(x => x.version > 0).length,
+      cached: cached.length, cachedVersioned: cached.filter(x => x.version > 0).length, fullReads: window.a11.fullReads, updates: window.a11.updates };
     window.a11.storage.dispose();
-    return { count: logs.length, versioned: logs.filter(x => x.version > 0).length };
+    return result;
   });
-  assert.deepEqual(result, { count: 10001, versioned: 10001 });
+  assert.deepEqual(result, { count: 10001, versioned: 10001, cached: 10001, cachedVersioned: 10001, fullReads: 0, updates: 0 });
   assert.equal(seen.size, 10001); assert.equal(requests, 21); assert.equal(attempts, 23);
-  console.log(JSON.stringify({ browser: 'Chromium', logs: seen.size, requests, attempts, largestBody, outbox: 0 }));
+  console.log(JSON.stringify({ browser: 'Chromium', logs: seen.size, requests, attempts, largestBody, outbox: 0, cacheFullReads: result.fullReads, metadataOnlyUiUpdates: result.updates }));
 } finally {
   await browser?.close();
   await server.close();

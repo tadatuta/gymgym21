@@ -177,12 +177,22 @@ export class DomainMutations {
     }
 
     private async ensureActiveWorkoutInTransaction(now: string, useActive = true): Promise<string> {
-        const workouts = await this.repository.database.workouts.toArray();
-        const active = workouts.find(w => !w.isDeleted && (w.status === 'active' || w.status === 'paused'));
-        if (useActive && active) return active.id;
-        const today = dayKey(now, this.reads.getTimeZone());
+        const table = this.repository.database.workouts;
+        if (useActive) {
+            const active = (await table.where('status').anyOf('active', 'paused').filter(w => !w.isDeleted).toArray())
+                .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)[0];
+            if (active) return active.id;
+        }
+        const timeZone = this.reads.getTimeZone();
+        const today = dayKey(now, timeZone);
+        // ISO timestamps may retain an explicit offset. A conservative date window
+        // covers that offset and the owner zone; the final owner-day predicate is exact.
+        const anchor = Date.parse(`${today}T12:00:00Z`);
+        const lower = new Date(anchor - 2 * 86400000).toISOString().slice(0, 10);
+        const upper = new Date(anchor + 3 * 86400000).toISOString().slice(0, 10);
+        const workouts = await table.where('startTime').between(lower, upper, true, false).toArray();
         const existing = workouts.filter(w => !w.isDeleted && !w.isManual && w.status === 'finished'
-            && dayKey(w.startTime, this.reads.getTimeZone()) === today)
+            && dayKey(w.startTime, timeZone) === today)
             .sort((a, b) => a.id.localeCompare(b.id))[0];
         if (existing) return existing.id;
         const id = createEntityId();
@@ -316,7 +326,7 @@ export class DomainMutations {
     }
 
     async addFriend(friend: { identifier: string; displayName: string; photoUrl?: string }): Promise<void> {
-        const profile = this.reads.data.profile;
+        const profile = this.reads.getProfile();
         if (!profile || profile.friends?.some((entry) => entry.identifier === friend.identifier)) return;
         await this.updateProfileSettings({
             friends: [
@@ -327,7 +337,7 @@ export class DomainMutations {
     }
 
     async removeFriend(identifier: string): Promise<void> {
-        const profile = this.reads.data.profile;
+        const profile = this.reads.getProfile();
         if (!profile) return;
         await this.updateProfileSettings({
             friends: (profile.friends || []).filter((friend) => friend.identifier !== identifier),
@@ -339,7 +349,7 @@ export class DomainMutations {
             const now = new Date().toISOString();
             const updates: WorkoutType[] = [];
             ids.forEach((id, order) => {
-                const type = this.reads.data.workoutTypes.find((entry) => entry.id === id);
+                const type = this.reads.getWorkoutTypeById(id);
                 if (type) {
                     updates.push({ ...type, order, updatedAt: now });
                 }
@@ -391,11 +401,13 @@ export class DomainMutations {
             await this.repository.sync.markDirty(conflict.entityType, conflict.entityId);
             await this.repository.database.syncConflicts.delete(key);
         });
+        this.repository.sync.recordCacheChanges({ entities: [{ entityType: conflict.entityType, entityId: rebased.id }], conflicts: [key] });
         await this.changed();
     }
 
     async dismissConflict(key: string): Promise<void> {
         await this.repository.transaction([this.repository.database.syncConflicts], () => this.repository.database.syncConflicts.delete(key));
+        this.repository.sync.recordCacheChanges({ entities: [], conflicts: [key] });
         await this.changed();
     }
 }

@@ -1,3 +1,4 @@
+import type { CacheChanges } from './cache-changes';
 import { hasVerifiedOnlineAccount } from '../auth';
 import { SyncError, retryDelay } from '../services/sync-error';
 import type { SyncExecutionResult } from '../services/sync';
@@ -18,6 +19,9 @@ export class SyncCoordinator {
     private syncFailure?: SyncError;
     syncQueued = false;
     private broadcastChannel?: BroadcastChannel;
+    private readonly broadcastSender = crypto.randomUUID();
+    private broadcastSequence = 0;
+    private readonly senderSequences = new Map<string, number>();
     private readonly activeStorageKey;
     private disposed = false;
     private readonly handleVisibilityChange = () => {
@@ -73,8 +77,8 @@ export class SyncCoordinator {
         }
     }
 
-    private async refresh() {
-        try { await this.reads.reload(); }
+    private async refresh(full = true) {
+        try { if (full) await this.reads.reload(); else await this.reads.flush(); }
         catch (error) { if (this.isActive()) console.warn('Local cache refresh failed', error); }
     }
 
@@ -92,8 +96,24 @@ export class SyncCoordinator {
         }
 
         this.broadcastChannel = new BroadcastChannel(`gym21:${storageKey}`);
-        this.broadcastChannel.addEventListener('message', () => {
-            if (this.isActive()) void this.refresh();
+        this.broadcastChannel.addEventListener('message', ({data}) => {
+            if (!this.isActive()) return;
+            const previous = this.senderSequences.get(data?.sender);
+            const valid = typeof data?.sender === 'string' && Number.isSafeInteger(data.sequence)
+                && data.sequence > 0 && data.type === 'local-data-updated';
+            if (valid && previous !== undefined && data.sequence <= previous) return;
+            if (valid) this.senderSequences.set(data.sender, data.sequence);
+            const delta = data?.changes as CacheChanges | undefined;
+            const bounded = delta && Array.isArray(delta.entities) && Array.isArray(delta.conflicts)
+                && delta.entities.length + delta.conflicts.length <= 2000
+                && delta.entities.every(item => ['logs', 'workouts', 'workoutTypes', 'profile'].includes(item?.entityType) && typeof item.entityId === 'string')
+                && delta.conflicts.every(key => typeof key === 'string');
+            // Unknown senders, skipped messages and bulk writes require reconciliation.
+            if (!valid || previous === undefined || data.sequence !== previous + 1 || !bounded) {
+                void this.refresh(); return;
+            }
+            this.repository.sync.cacheChanges.add(delta);
+            void this.refresh(false);
         });
     }
 
@@ -102,9 +122,14 @@ export class SyncCoordinator {
         this.broadcastChannel = undefined;
     }
 
-    broadcastUpdate() {
+    broadcastUpdate(changes?: CacheChanges) {
         if (!this.isActive()) return;
-        this.broadcastChannel?.postMessage({ type: 'local-data-updated' });
+        const outgoing = this.repository.sync.outgoingChanges.take();
+        // Cache readers may consume local IDs before their originating operation resumes.
+        // Outgoing commits are independent from that read journal (and incoming messages).
+        if (changes) changes = outgoing;
+        this.broadcastChannel?.postMessage({ type: 'local-data-updated', sender: this.broadcastSender, sequence: ++this.broadcastSequence,
+            changes: changes && changes.entities.length + changes.conflicts.length <= 2000 ? changes : undefined });
     }
 
     clearScheduledSync() {
@@ -170,9 +195,10 @@ export class SyncCoordinator {
                 this.retryAt = 0;
                 this.syncFailure = undefined;
                 context.assertCurrent();
-                await this.reads.reload();
+                const changes = await this.reads.flush();
                 context.assertCurrent();
-                if (!result.hasMore && await ensureProfileTimeZoneAfterBootstrap(this.repository, this.reads)) this.syncQueued = true;
+                const seededProfile = !result.hasMore && await ensureProfileTimeZoneAfterBootstrap(this.repository, this.reads);
+                if (seededProfile) this.syncQueued = true;
                 context.assertCurrent();
                 const seededDefaults = result.hasMore
                     ? false
@@ -180,7 +206,7 @@ export class SyncCoordinator {
                 context.assertCurrent();
                 completed = result;
                 this.setStatus('success');
-                this.broadcastUpdate();
+                this.broadcastUpdate(seededProfile || seededDefaults ? undefined : changes);
 
                 if (seededDefaults) {
                     this.syncQueued = true;
@@ -202,9 +228,9 @@ export class SyncCoordinator {
                 : new SyncError(error instanceof Error ? error.message : 'Ошибка локальной синхронизации', 'LOCAL_ERROR');
             if (['INVALID_LOCAL_RECORD', 'RECORD_TOO_LARGE'].includes(this.syncFailure.code)) {
                 // The bounded empty push may have successfully pulled remote changes.
-                await this.reads.reload();
+                const changes = await this.reads.flush();
                 if (!context.isCurrent() || controller.signal.aborted) return;
-                this.broadcastUpdate();
+                this.broadcastUpdate(changes);
             }
             this.syncQueued = false;
             if (this.syncFailure.retryable && navigator.onLine) {

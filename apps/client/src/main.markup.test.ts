@@ -6,7 +6,7 @@ import type { UiDependencies } from './ui/dependencies';
 import * as trainingTime from './utils/training-time';
 
 function historyRenderer(timeZone = 'UTC') {
-    return createApplication({ storage: { getTimeZone: () => timeZone, getWorkouts: () => [] } } as unknown as Partial<UiDependencies>).pages.workout.generateLogsListHtml;
+    return createApplication({ storage: { getTimeZone: () => timeZone, getWorkoutById: () => undefined, getWorkouts: () => [] } } as unknown as Partial<UiDependencies>).pages.workout.generateLogsListHtml;
 }
 const hostile = '"><img src=x data-injected=true><svg onload=alert(1)>';
 function parse(markup: string) {
@@ -39,8 +39,8 @@ describe('old persisted records remain text at HTML boundaries', () => {
         const log = { id: 'old', workoutTypeId: 'type', date: '2026-09-01T00:00:00Z', weight: hostile as unknown as number, reps: hostile as unknown as number, durationSeconds: hostile };
         for (const editingLogId of ['old', null]) {
             const ui = createApplication({ storage: {
-                getWorkoutTypes: () => [{ id: 'type', name: hostile }], getLogs: () => [log],
-                getWorkouts: () => [], getActiveWorkout: () => null, getTimeZone: () => 'UTC',
+                getWorkoutTypes: () => [{ id: 'type', name: hostile }], getLogs: () => [log], getLatestLog: () => log, getLogById: () => log, getLogsInDayRange: () => [log],
+                getWorkoutById: () => undefined, getWorkouts: () => [], getActiveWorkout: () => null, getTimeZone: () => 'UTC',
             } } as unknown as Partial<UiDependencies>);
             ui.state.editingLogId = editingLogId;
             const render = ui.pages.workout.render;

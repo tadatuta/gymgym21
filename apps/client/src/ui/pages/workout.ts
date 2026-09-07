@@ -2,7 +2,6 @@ import type { PublicLog, PublicWorkoutType } from '@gym21/contracts';
 import { bindTypeahead, getTypeaheadValue, registerTypeaheadItems, renderTypeahead } from '../../components/typeahead/Typeahead';
 import { WorkoutSession, WorkoutSet } from '../../types';
 import { formatDuration } from '../../utils/duration';
-import { getLatestLog } from '../../utils/latest-log';
 import { escapeAttribute, escapeHtml, renderOption } from '../../utils/safe-html';
 import { datetimeValue, dayKey, dayLabel, parseDatetimeValue } from '../../utils/training-time';
 import type { PageContext } from '../context';
@@ -121,10 +120,9 @@ export function createWorkoutPage(context: PageContext) {
 
   function renderMainPage() {
     const types = storage.getWorkoutTypes();
-    const logs = storage.getLogs();
-    const lastLog = getLatestLog(logs);
+    const lastLog = storage.getLatestLog();
     const lastTypeId = types.find(t => !t.isDeleted && t.id === lastLog?.workoutTypeId)?.id;
-    const editingLog = state.editingLogId ? logs.find(l => l.id === state.editingLogId) : null;
+    const editingLog = state.editingLogId ? storage.getLogById(state.editingLogId!) : null;
     const selectedWorkoutTypeId = state.editingLogId
       ? editingLog?.workoutTypeId
       : lastTypeId;
@@ -225,14 +223,10 @@ export function createWorkoutPage(context: PageContext) {
   }
 
   function renderLogsList() {
-    const allLogs = storage.getLogs();
     const types = storage.getWorkoutTypes();
     const { start, end } = getWeekRange(state.currentWeekOffset);
 
-    let weekLogs = allLogs.filter(log => {
-      const key = dayKey(log.date, storage.getTimeZone());
-      return key >= dayKey(start) && key <= dayKey(end);
-    });
+    let weekLogs = storage.getLogsInDayRange(dayKey(start), dayKey(end));
 
     // Apply filter by selected exercise type if enabled
     if (state.isFilterEnabled) {
@@ -328,7 +322,7 @@ export function createWorkoutPage(context: PageContext) {
         const endTimeLocal = formData.get('endTime') as string;
 
         const updates: { name?: string; startTime?: string; endTime?: string } = { name };
-        const original = storage.getWorkouts().find(w => w.id === state.editingWorkoutId);
+        const original = storage.getWorkoutById(state.editingWorkoutId!);
         try {
           if (startTimeLocal) updates.startTime = parseDatetimeValue(startTimeLocal, storage.getTimeZone(), original?.startTime);
           if (endTimeLocal) updates.endTime = parseDatetimeValue(endTimeLocal, storage.getTimeZone(), original?.endTime);
@@ -367,7 +361,7 @@ export function createWorkoutPage(context: PageContext) {
 
         const logId = el.getAttribute('data-id');
         if (logId) {
-          const log = storage.getLogs().find(l => l.id === logId);
+          const log = storage.getLogById(logId);
           if (log) {
             setWorkoutTypeInForm(log.workoutTypeId);
 
@@ -461,7 +455,8 @@ export function createWorkoutPage(context: PageContext) {
       logsByDay.get(dateKey)!.push(log);
     });
 
-    const workouts = isEditable ? storage.getWorkouts() : [];
+    const typesById = new Map(types.map(type => [type.id, type]));
+    const workoutById = (id: string) => isEditable ? storage.getWorkoutById(id) : undefined;
     let html = '';
 
     logsByDay.forEach((dayLogs, dayDateStr) => {
@@ -473,18 +468,25 @@ export function createWorkoutPage(context: PageContext) {
         if (l.workoutId) dayWorkouts.add(l.workoutId);
       });
 
+      const logsByWorkout = new Map<string, PublicLog[]>();
+      for (const log of dayLogs) {
+        if (!log.workoutId) continue;
+        let group = logsByWorkout.get(log.workoutId);
+        if (!group) logsByWorkout.set(log.workoutId, group = []);
+        group.push(log);
+      }
       // Sort workouts by time (using stored workout or log time)
       const sortedWorkoutIds = Array.from(dayWorkouts).sort((a, b) => {
-        const wA = workouts.find(w => w.id === a);
-        const wB = workouts.find(w => w.id === b);
-        const timeA = wA?.startTime || dayLogs.find(l => l.workoutId === a)?.date || '';
-        const timeB = wB?.startTime || dayLogs.find(l => l.workoutId === b)?.date || '';
+        const wA = workoutById(a);
+        const wB = workoutById(b);
+        const timeA = wA?.startTime || logsByWorkout.get(a)?.[0]?.date || '';
+        const timeB = wB?.startTime || logsByWorkout.get(b)?.[0]?.date || '';
         // Descending order for display? Usually logs are descending.
         return new Date(timeB).getTime() - new Date(timeA).getTime();
       });
 
       const singleWorkoutId = sortedWorkoutIds.length === 1 ? sortedWorkoutIds[0] : null;
-      const singleWorkout = singleWorkoutId ? workouts.find(w => w.id === singleWorkoutId) : null;
+      const singleWorkout = singleWorkoutId ? workoutById(singleWorkoutId) : null;
       const showNameInHeader = singleWorkout && singleWorkout.name;
       const singleWorkoutDuration = singleWorkout ? formatDuration(storage.getWorkoutDuration(singleWorkout) * 60) : 0;
 
@@ -504,8 +506,8 @@ export function createWorkoutPage(context: PageContext) {
 
       // Render each workout group
       sortedWorkoutIds.forEach(workoutId => {
-        const workout = workouts.find(w => w.id === workoutId);
-        const workoutLogs = dayLogs.filter(l => l.workoutId === workoutId);
+        const workout = workoutById(workoutId);
+        const workoutLogs = logsByWorkout.get(workoutId) ?? [];
 
         const hideSubheader = sortedWorkoutIds.length === 1 && (showNameInHeader || !workout?.name);
 
@@ -536,7 +538,7 @@ export function createWorkoutPage(context: PageContext) {
         });
 
         exerciseGroups.forEach((sets, typeId) => {
-          const type = types.find(t => t.id === typeId);
+          const type = typesById.get(typeId);
           html += `
             <div class="log-exercise">
               <div class="log-exercise__name" data-type-id="${escapeAttribute(type?.id || '')}" style="cursor: pointer;">${escapeHtml(type?.name || 'Удалено')}</div>
@@ -578,7 +580,7 @@ export function createWorkoutPage(context: PageContext) {
         });
 
         exerciseGroups.forEach((sets, typeId) => {
-          const type = types.find(t => t.id === typeId);
+          const type = typesById.get(typeId);
           html += `
             <div class="log-exercise">
               <div class="log-exercise__name" data-type-id="${escapeAttribute(type?.id || '')}" style="cursor: pointer;">${escapeHtml(type?.name || 'Удалено')}</div>
@@ -696,11 +698,8 @@ export function createWorkoutPage(context: PageContext) {
   }
 
   function formatWorkoutForShare(dateStr: string): string {
-    const allLogs = storage.getLogs();
     const types = storage.getWorkoutTypes();
-
-    // Get logs for the specific date
-    const dayLogs = allLogs.filter(log => dayKey(log.date, storage.getTimeZone()) === dateStr);
+    const dayLogs = storage.getLogsInDayRange(dateStr, dateStr);
     if (dayLogs.length === 0) return '';
 
     // Format the date for display
@@ -786,8 +785,7 @@ export function createWorkoutPage(context: PageContext) {
     lifecycle.listen(form, 'submit', e => { void submitLog(form, e); });
     const duplicateBtn = document.getElementById('duplicate-last-btn');
     lifecycle.listen(duplicateBtn, 'click', async () => {
-      const logs = storage.getLogs();
-      const lastLog = getLatestLog(logs);
+      const lastLog = storage.getLatestLog();
       if (lastLog && storage.getWorkoutTypes().some(type => !type.isDeleted && type.id === lastLog.workoutTypeId)) {
         const newLog = await storage.addLog({
           workoutTypeId: lastLog.workoutTypeId,
@@ -876,8 +874,7 @@ export function createWorkoutPage(context: PageContext) {
     }
 
     if (state.editingLogId) {
-      const logs = storage.getLogs();
-      const existingLog = logs.find(l => l.id === state.editingLogId);
+      const existingLog = storage.getLogById(state.editingLogId!);
       if (existingLog) {
         const dateStr = formData.get('date') as string;
         let newDate = existingLog.date;

@@ -1,3 +1,4 @@
+import type { CacheChanges } from './cache-changes';
 import type { UserProfile, WorkoutSession, WorkoutSet } from '../types';
 import { activateAccountDatabase, captureAccountContext, closeActiveDatabase } from '../db';
 import { AccountRepository } from './account-repository';
@@ -25,7 +26,7 @@ interface AccountServices {
 export class StorageService {
     private account?: AccountServices;
     private activation = 0;
-    private onUpdateCallback?: () => void;
+    private onUpdateCallback?: (changes?: CacheChanges) => void;
     private onSyncStatusChangeCallback?: (status: SyncStatus) => void;
     private onUnauthorizedCallback?: () => void;
     private readonly handleAuthChange = () => {
@@ -55,9 +56,9 @@ export class StorageService {
         if (activation !== this.activation) throw new Error('Stale storage activation');
         const repository = new AccountRepository(captureAccountContext());
         const current = () => this.account?.repository === repository && repository.context.isCurrent();
-        const reads = new AccountReads(repository, (changed, pendingChanged) => {
+        const reads = new AccountReads(repository, (changed, pendingChanged, changes) => {
             if (!current()) return;
-            if (changed) this.onUpdateCallback?.();
+            if (changed) this.onUpdateCallback?.(changes);
             if (current() && pendingChanged) this.onSyncStatusChangeCallback?.(coordinator.status);
         });
         const coordinator = new SyncCoordinator(repository, reads, status => {
@@ -65,9 +66,9 @@ export class StorageService {
         }, this.options.syncDebounceMs ?? 1500, this.options.enableBroadcast ?? true);
         const mutations = new DomainMutations(repository, reads, async () => {
             repository.context.assertCurrent();
-            await reads.reload();
+            const changes = await reads.flush();
             repository.context.assertCurrent();
-            coordinator.broadcastUpdate();
+            coordinator.broadcastUpdate(changes);
             coordinator.scheduleSync();
         });
         this.account = { repository, reads, coordinator, mutations, remote: new RemoteReads(repository, coordinator) };
@@ -89,7 +90,7 @@ export class StorageService {
     scheduleSync(delay?: number) { this.account?.coordinator.scheduleSync(delay); }
     async sync() { return this.account?.coordinator.sync(); }
     async reloadCache() { if (this.isActive()) await this.requireAccount().reads.reload(); }
-    onUpdate(callback: () => void) {
+    onUpdate(callback: (changes?: CacheChanges) => void) {
         this.onUpdateCallback = callback;
         return () => {
             if (this.onUpdateCallback === callback) this.onUpdateCallback = undefined;
@@ -128,6 +129,11 @@ export class StorageService {
     async dismissConflict(key: string) { return this.requireAccount().mutations.dismissConflict(key); }
     private activeReads() { return this.isActive() ? this.account?.reads : undefined; }
     getWorkoutTypes() { return this.activeReads()?.getWorkoutTypes() ?? []; }
+    getLogsInDayRange(start: string, end: string) { return this.activeReads()?.getLogsInDayRange(start, end) ?? []; }
+    getLatestLog() { return this.activeReads()?.getLatestLog(); }
+    getLogById(id: string) { return this.activeReads()?.getLogById(id); }
+    getWorkoutById(id: string) { return this.activeReads()?.getWorkoutById(id); }
+    getWorkoutTypeById(id: string) { return this.activeReads()?.getWorkoutTypeById(id); }
     getLogs() { return this.activeReads()?.getLogs() ?? []; }
     getWorkouts() { return this.activeReads()?.getWorkouts() ?? []; }
     getActiveWorkout() { return this.activeReads()?.getActiveWorkout() ?? undefined; }

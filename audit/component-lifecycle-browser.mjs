@@ -26,7 +26,7 @@ try {
     const types = Array.from({ length: 11 }, (_, i) => ({ id: `t${i}`, name: i === 1 ? 'Running' : `Exercise ${i}`, category: i === 1 ? 'time' : 'strength' }));
     window.orders = [];
     const storage = { isActive: () => true, getStorageKey: () => 'synthetic', getSyncState: () => ({ pendingCount: 0 }),
-      getWorkoutTypes: () => types, getLogs: () => [], getWorkouts: () => [], getTimeZone: () => 'UTC', getProfile: () => ({}), getActiveWorkout: () => null,
+      getWorkoutTypes: () => types, getLogs: () => [], getWorkouts: () => [], getLatestLog: () => undefined, getLogsInDayRange: () => [], getTimeZone: () => 'UTC', getProfile: () => ({}), getActiveWorkout: () => null,
       onUpdate: fn => { refresh = fn; return () => {}; }, onUnauthorized: () => () => {}, onSyncStatusChange: () => () => {},
       updateWorkoutTypeOrder: async ids => { window.orders.push(ids); }
     };

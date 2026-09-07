@@ -211,7 +211,7 @@ describe('StorageService sync scheduling', () => {
         const service = new StorageService({ enableBroadcast: false });
         await service.activate(`recovery-${Math.random()}`);
         await db.workoutTypes.put({ id: 'existing', name: 'Existing', updatedAt: new Date().toISOString() });
-        vi.spyOn(AccountReads.prototype, 'reload').mockResolvedValue();
+        vi.spyOn(AccountReads.prototype, 'flush').mockResolvedValue(undefined);
         vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
         await service.sync();
         service.scheduleSync(0);
@@ -245,7 +245,7 @@ describe('StorageService sync scheduling', () => {
         const storage = new StorageService({ syncDebounceMs: 50, enableBroadcast: false });
         await storage.activate('sync-scheduling-test');
         await db.workoutTypes.put({ id: 'existing', name: 'Existing', updatedAt: new Date().toISOString() });
-        vi.spyOn(AccountReads.prototype, 'reload').mockResolvedValue();
+        vi.spyOn(AccountReads.prototype, 'flush').mockResolvedValue(undefined);
         vi.useFakeTimers();
 
         storage.scheduleSync();
@@ -274,7 +274,7 @@ describe('StorageService sync scheduling', () => {
         const storage = new StorageService({ syncDebounceMs: 10, enableBroadcast: false });
         await storage.activate('sync-scheduling-test');
         await db.workoutTypes.put({ id: 'existing', name: 'Existing', updatedAt: new Date().toISOString() });
-        vi.spyOn(AccountReads.prototype, 'reload').mockResolvedValue();
+        vi.spyOn(AccountReads.prototype, 'flush').mockResolvedValue(undefined);
         vi.useFakeTimers();
 
         storage.scheduleSync();
