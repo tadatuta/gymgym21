@@ -28,6 +28,60 @@ function client(storageKey) {
 
 test('PostgreSQL: push receipts do not cache pull freshness', { skip: !testUrl }, async (t) => {
   try {
+    await t.test('mixed entities preserve revision order, type normalization, tombstones, conflicts and retry', async () => {
+      const sync = client('mixed');
+      const date = '2026-09-01T00:00:00.000Z';
+      const changes = {
+        workoutTypes: [{ ...entity('type'), updatedAt: undefined }, { ...entity('unknown-type'), isDeleted: true }],
+        workouts: [{ id: 'workout', startTime: date, status: 'completed', isManual: false, pauseIntervals: [{ start: date, end: date }] }, { id: 'unknown-workout', startTime: date, status: 'completed', isManual: false, isDeleted: true }],
+        logs: [{ id: 'log', workoutTypeId: 'type', workoutId: 'workout', date, reps: 7 }, { id: 'unknown-log', workoutTypeId: 'type', date, isDeleted: true }],
+      };
+      const started = Date.now();
+      const initial = await sync('mixed-initial', 0, changes);
+      assert.ok(Date.parse(initial.changes.workoutTypes[0].updatedAt) >= started);
+      assert.ok(Date.parse(initial.changes.workoutTypes[0].updatedAt) <= Date.now());
+      assert.equal(initial.cursor, 3);
+      for (const [key, version] of [['workoutTypes', 1], ['workouts', 2], ['logs', 3]]) {
+        assert.equal(initial.changes[key].length, 1);
+        assert.equal(initial.changes[key][0].version, version);
+        if (key !== 'workoutTypes') assert.equal(initial.changes[key][0].updatedAt, date);
+        assert.equal(initial.changes[key][0].isDeleted, false);
+      }
+      assert.deepEqual(initial.changes.workouts[0].pauseIntervals, changes.workouts[0].pauseIntervals);
+      const conflict = await sync('mixed-stale', 3, changes);
+      assert.deepEqual(conflict.conflicts.map(x => [x.entityType, x.serverVersion]), [['workoutTypes', 1], ['workouts', 2], ['logs', 3]]);
+      const edits = Object.fromEntries(['workoutTypes', 'workouts', 'logs'].map(key => [key, initial.changes[key].map(x => ({ ...x, isDeleted: true }))]));
+      await sync('mixed-delete', 3, edits);
+      const retry = await sync('mixed-stale', 6, changes);
+      assert.equal(retry.cursor, 6);
+      assert.deepEqual(retry.acknowledged, conflict.acknowledged);
+      assert.deepEqual(retry.conflicts.map(x => [x.entityType, x.serverVersion]), [['workoutTypes', 4], ['workouts', 5], ['logs', 6]]);
+      for (const key of ['workoutTypes', 'workouts', 'logs']) assert.equal(retry.changes[key][0].isDeleted, true);
+      assert.equal((await repository.readSnapshot('mixed')).revision, 6);
+    });
+    await t.test('late SQL failure rolls back every entity, root, aliases, cache and receipt', async () => {
+      const sync = client('rollback');
+      const initial = await sync('seed', 0, { workoutTypes: [entity('seed')], profile: { id: 'me', isPublic: true, displayName: 'Before', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' } });
+      await repository.getPublicProfileByStorageKey('rollback');
+      const before = await repository.readSnapshot('rollback');
+      const pool = getDatabasePool();
+      const tables = ['storage_roots', 'storage_profiles', 'storage_workout_types', 'storage_workouts', 'storage_logs', 'public_profile_aliases', 'public_profile_cache', 'storage_sync_receipts'];
+      const stored = async () => Promise.all(tables.map(async table => (await pool.query(`SELECT row_to_json(t) AS data FROM ${table} t WHERE storage_key = $1 ORDER BY row_to_json(t)::text`, ['rollback'])).rows));
+      const beforeRows = await stored();
+      await pool.query(`CREATE FUNCTION reject_test_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test receipt failure'; END $$`);
+      await pool.query(`CREATE TRIGGER reject_test_receipt BEFORE INSERT ON storage_sync_receipts FOR EACH ROW WHEN (NEW.batch_id = 'rollback-fail') EXECUTE FUNCTION reject_test_receipt()`);
+      try {
+        await assert.rejects(sync('rollback-fail', initial.cursor, {
+          workoutTypes: [entity('new-type')],
+          workouts: [{ id: 'new-workout', startTime: '2026-09-01T00:00:00Z', status: 'completed', isManual: false }],
+          logs: [{ id: 'new-log', workoutTypeId: 'new-type', date: '2026-09-01T00:00:00Z' }],
+          profile: { ...before.profile, displayName: 'Must roll back', isPublic: false },
+        }), /test receipt failure/);
+        assert.deepEqual(await repository.readSnapshot('rollback'), before);
+        assert.deepEqual(await stored(), beforeRows);
+        assert.equal((await pool.query("SELECT * FROM storage_sync_receipts WHERE batch_id = 'rollback-fail'")).rowCount, 0);
+      } finally { await pool.query('DROP TRIGGER reject_test_receipt ON storage_sync_receipts'); await pool.query('DROP FUNCTION reject_test_receipt()'); }
+    });
     await t.test('oversized count and UTF-8 push are rejected before writing', async () => {
       const sync = client('limits');
       await assert.rejects(sync('count', 0, { workoutTypes: Array.from({ length: 501 }, (_, i) => entity(`T${i}`)) }), { statusCode: 413 });
