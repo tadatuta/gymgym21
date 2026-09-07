@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signOutMock = vi.hoisted(() => vi.fn());
+const signInMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@better-auth/passkey/client', () => ({
   passkeyClient: () => ({}),
@@ -13,7 +14,7 @@ vi.mock('better-auth/client', () => ({
     getSession: getSessionMock,
     signOut: signOutMock,
     signIn: {
-      email: vi.fn(),
+      email: signInMock,
       passkey: vi.fn(),
     },
     passkey: {
@@ -121,9 +122,9 @@ describe('offline account identity', () => {
     await auth.signOut();
 
     expect(auth.getOfflineAccount()).toBeNull();
-    expect(localStorage.getItem('gym21_pending_sign_out_v1')).toBe('1');
+    expect(localStorage.getItem('gym21_pending_sign_out_v1')).toBeTruthy();
 
-    signOutMock.mockResolvedValueOnce(undefined);
+    signOutMock.mockResolvedValueOnce({ data: { success: true }, error: null });
     vi.resetModules();
     const reloadedAuth = await import('./auth');
     const restore = await reloadedAuth.restoreSessionState();
@@ -188,4 +189,92 @@ it('auth channel invalidates received changes without rebroadcasting read-only v
   auth.clearAuthState();
   expect(postMessage).toHaveBeenCalledTimes(1);
   vi.unstubAllGlobals();
+});
+
+
+describe('durable sign-out', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.unstubAllGlobals();
+    vi.stubGlobal('localStorage', createMemoryStorage());
+    getSessionMock.mockReset();
+    signOutMock.mockReset();
+    signInMock.mockReset();
+  });
+
+  it('locks before network completion, preserves accounts, and retains resolved SDK errors across startup retries', async () => {
+    const auth = await import('./auth');
+    const status = migrationStatus('pending-a');
+    auth.cacheOfflineAccount(status.user, status);
+    let finish!: (value: unknown) => void;
+    signOutMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const exiting = auth.signOut();
+    expect(auth.getCurrentUser()).toBeNull();
+    expect(auth.hasOfflineAccount()).toBe(false);
+    expect(JSON.parse(localStorage.getItem('gym21_offline_accounts_v1')!).accounts['pending-a']).toBeTruthy();
+    const marker = localStorage.getItem('gym21_pending_sign_out_v1');
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    finish({ data: null, error: { status: 503, message: 'Unavailable' } });
+    await exiting;
+    expect(localStorage.getItem('gym21_pending_sign_out_v1')).toBe(marker);
+    vi.resetModules();
+    const reloaded = await import('./auth');
+    signOutMock.mockResolvedValue({ data: null, error: { status: 503 } });
+    expect((await reloaded.restoreSessionState()).status).toBe('unavailable');
+    expect((await reloaded.restoreSessionState()).status).toBe('unavailable');
+    expect(localStorage.getItem('gym21_pending_sign_out_v1')).toBe(marker);
+    expect(getSessionMock).not.toHaveBeenCalled();
+    signOutMock.mockResolvedValue({ data: { success: true }, error: null });
+    expect((await reloaded.restoreSessionState()).status).toBe('unauthenticated');
+    expect(localStorage.getItem('gym21_pending_sign_out_v1')).toBeNull();
+  });
+
+  it('serializes a new login behind an outstanding logout and never replays it against B', async () => {
+    const auth = await import('./auth');
+    let finish!: (value: unknown) => void;
+    signOutMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const exiting = auth.signOut();
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    const b = { ...migrationStatus('b').user, id: 'user-b' };
+    signInMock.mockResolvedValue({ data: { user: b }, error: null });
+    getSessionMock.mockResolvedValue({ data: { session: {}, user: b }, error: null });
+    const entering = auth.signInWithEmail('b@example.com', 'test');
+    await Promise.resolve();
+    expect(signInMock).not.toHaveBeenCalled();
+    finish({ data: { success: true }, error: null });
+    await exiting;
+    expect((await entering).user.id).toBe('user-b');
+    await auth.restoreSessionState();
+    expect(signOutMock).toHaveBeenCalledTimes(1);
+    expect(auth.getCurrentUser()?.id).toBe('user-b');
+  });
+
+  it('cancels a queued login when a later logout is the latest user intent', async () => {
+    const auth = await import('./auth');
+    let finish!: (value: unknown) => void;
+    signOutMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const first = auth.signOut();
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    const entering = auth.signInWithEmail('b@example.com', 'test');
+    const rejected = expect(entering).rejects.toThrow('Stale auth operation');
+    const last = auth.signOut();
+    signOutMock.mockResolvedValue({ data: { success: true }, error: null });
+    finish({ data: { success: true }, error: null });
+    await Promise.all([first, last, rejected]);
+    expect(signInMock).not.toHaveBeenCalled();
+    expect(auth.getCurrentUser()).toBeNull();
+    expect(localStorage.getItem('gym21_pending_sign_out_v1')).toBeNull();
+  });
+
+  it('does not delete a newer pending intent when an older response succeeds', async () => {
+    const auth = await import('./auth');
+    let finish!: (value: unknown) => void;
+    signOutMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const exiting = auth.signOut();
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    localStorage.setItem('gym21_pending_sign_out_v1', 'newer-intent');
+    finish({ data: { success: true }, error: null });
+    await exiting;
+    expect(localStorage.getItem('gym21_pending_sign_out_v1')).toBe('newer-intent');
+  });
 });

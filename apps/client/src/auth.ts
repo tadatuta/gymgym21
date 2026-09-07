@@ -133,6 +133,7 @@ const authClient = createAuthClient({
 let currentSession: AuthSession | null = null;
 let currentOfflineAccount: OfflineAccount | null = null;
 let authGeneration = 0;
+let logoutIntent = 0;
 const authChannel = typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined'
   ? new BroadcastChannel('gym21-auth-v1') : null;
 function invalidateAuth(broadcast = true) {
@@ -142,11 +143,58 @@ function invalidateAuth(broadcast = true) {
 }
 if (authChannel) authChannel.onmessage = (event) => {
   if (event.data?.type !== 'auth-changed') return;
+  logoutIntent += 1;
   invalidateAuth(false);
   currentSession = null;
   currentOfflineAccount = null;
   window.dispatchEvent(new Event('gym21-auth-changed'));
 };
+
+// Serialize cookie mutations, including across same-origin tabs where Web Locks exists.
+// Ignoring a stale response body cannot undo its Set-Cookie header.
+let authMutationTail: Promise<unknown> = Promise.resolve();
+function withAuthMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const run = async (): Promise<T> => typeof navigator !== 'undefined' && navigator.locks
+    ? await navigator.locks.request('gym21-auth-cookie-mutation', operation)
+    : operation();
+  const result = authMutationTail.then(run, run);
+  authMutationTail = result.catch(() => undefined);
+  return result;
+}
+
+let memoryPendingSignOut: string | null = null;
+function pendingSignOut(): string | null {
+  return typeof localStorage === 'undefined' ? memoryPendingSignOut : localStorage.getItem(PENDING_SIGN_OUT_KEY);
+}
+
+async function completePendingSignOut(): Promise<void> {
+  const marker = pendingSignOut();
+  if (!marker) return;
+  const result = await authClient.signOut();
+  if (result.error || result.data?.success !== true) {
+    throw new Error(toErrorMessage(result.error, 'Не удалось завершить выход из аккаунта'));
+  }
+  if (pendingSignOut() === marker) {
+    memoryPendingSignOut = null;
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(PENDING_SIGN_OUT_KEY);
+  }
+}
+
+function withSignInMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const intent = logoutIntent;
+  return withAuthMutation(async () => {
+    if (intent !== logoutIntent) throw new Error('Stale auth operation');
+    return operation();
+  });
+}
+
+async function beginSignIn(): Promise<void> {
+  // Never replay an older logout after a new cookie has been issued.
+  const intent = logoutIntent;
+  await completePendingSignOut();
+  if (intent !== logoutIntent) throw new Error('Stale auth operation');
+  invalidateAuth();
+}
 
 function emptyOfflineAccountRegistry(): OfflineAccountRegistry {
   return {
@@ -218,7 +266,7 @@ function purgeLegacyAuthToken() {
 }
 
 purgeLegacyAuthToken();
-currentOfflineAccount = loadActiveOfflineAccount();
+currentOfflineAccount = pendingSignOut() ? null : loadActiveOfflineAccount();
 
 function toErrorMessage(message: unknown, fallback: string): string {
   if (typeof message === 'string' && message.length > 0) {
@@ -356,15 +404,20 @@ function getErrorStatus(error: unknown): number | undefined {
 }
 
 export async function restoreSessionState(): Promise<SessionRestoreState> {
+  if (pendingSignOut()) return withAuthMutation(restoreSessionStateUnlocked);
+  return restoreSessionStateUnlocked();
+}
+
+async function restoreSessionStateUnlocked(): Promise<SessionRestoreState> {
   const requestGeneration = authGeneration;
   purgeLegacyAuthToken();
 
   try {
-    if (typeof localStorage !== 'undefined' && localStorage.getItem(PENDING_SIGN_OUT_KEY) === '1') {
-      await authClient.signOut();
-      if (requestGeneration !== authGeneration) return { status: 'unavailable', error: new Error('Stale auth operation') };
-      localStorage.removeItem(PENDING_SIGN_OUT_KEY);
+    if (pendingSignOut()) {
       currentSession = null;
+      clearOfflineAccountSelection();
+      await completePendingSignOut();
+      if (requestGeneration !== authGeneration) return { status: 'unavailable', error: new Error('Stale auth operation') };
       return { status: 'unauthenticated' };
     }
 
@@ -419,11 +472,12 @@ export function openBrowserHandoff() {
 }
 
 export async function signInWithEmail(email: string, password: string): Promise<AuthSession> {
-  invalidateAuth();
-  const requestGeneration = authGeneration;
-  const result = await authClient.signIn.email({
-    email,
-    password,
+  return withSignInMutation(async () => {
+    await beginSignIn();
+    const requestGeneration = authGeneration;
+    const result = await authClient.signIn.email({
+      email,
+      password,
   });
 
   if (requestGeneration !== authGeneration) throw new Error('Stale auth operation');
@@ -432,49 +486,50 @@ export async function signInWithEmail(email: string, password: string): Promise<
   }
 
   invalidateAuth();
-  const session = await restoreSession();
+  const session = await restoreSessionStateUnlocked().then(state => state.status === 'authenticated' ? state.session : null);
   if (!session) {
     throw new Error('Не удалось восстановить сессию');
   }
 
   return session;
+  });
 }
 
 export async function signOut(): Promise<void> {
-  invalidateAuth();
-  const requestGeneration = authGeneration;
-  try {
-    await authClient.signOut();
-    if (requestGeneration !== authGeneration) return;
-    if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem(PENDING_SIGN_OUT_KEY);
-    }
-  } catch {
-    if (requestGeneration !== authGeneration) return;
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(PENDING_SIGN_OUT_KEY, '1');
-    }
-  } finally {
-    if (requestGeneration === authGeneration) clearAuthState({ clearOfflineAccount: true });
+  logoutIntent += 1;
+  // Persist intent and lock local identity before waiting for any network operation.
+  memoryPendingSignOut = crypto.randomUUID();
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(PENDING_SIGN_OUT_KEY, memoryPendingSignOut);
   }
+  clearAuthState({ clearOfflineAccount: true });
+  await withAuthMutation(async () => {
+    try {
+      await completePendingSignOut();
+    } catch {
+      console.warn('Server sign-out unavailable; local account locked, retry pending');
+    }
+  });
 }
 
 export async function signInWithPasskey(): Promise<AuthSession> {
-  invalidateAuth();
-  const requestGeneration = authGeneration;
-  const result = await authClient.signIn.passkey();
-  if (requestGeneration !== authGeneration) throw new Error('Stale auth operation');
-  if (result.error) {
-    throw new Error(toErrorMessage(result.error.message, 'Не удалось войти по Passkey'));
-  }
+  return withSignInMutation(async () => {
+    await beginSignIn();
+    const requestGeneration = authGeneration;
+    const result = await authClient.signIn.passkey();
+    if (requestGeneration !== authGeneration) throw new Error('Stale auth operation');
+    if (result.error) {
+      throw new Error(toErrorMessage(result.error.message, 'Не удалось войти по Passkey'));
+    }
 
-  invalidateAuth();
-  const session = await restoreSession();
-  if (!session) {
-    throw new Error('Не удалось восстановить сессию');
-  }
+    invalidateAuth();
+    const session = await restoreSessionStateUnlocked().then(state => state.status === 'authenticated' ? state.session : null);
+    if (!session) {
+      throw new Error('Не удалось восстановить сессию');
+    }
 
-  return session;
+    return session;
+  });
 }
 
 export async function addPasskey(name?: string): Promise<void> {
@@ -488,26 +543,31 @@ export async function addPasskey(name?: string): Promise<void> {
 }
 
 export async function signInWithTelegram(initData: string): Promise<AuthMutationResponse> {
-  invalidateAuth();
-  const result = await requestJson<AuthMutationResponse>('/telegram/sign-in', {
-    method: 'POST',
-    body: JSON.stringify({ initData }),
+  return withSignInMutation(async () => {
+    await beginSignIn();
+    const result = await requestJson<AuthMutationResponse>('/telegram/sign-in', {
+      method: 'POST',
+      body: JSON.stringify({ initData }),
   });
   invalidateAuth();
-  const session = await restoreSession();
+  const session = await restoreSessionStateUnlocked().then(state => state.status === 'authenticated' ? state.session : null);
   if (!session || session.user.id !== result.user.id) throw new Error('Stale auth operation');
   return result;
+  });
 }
 
 export async function linkTelegramAccount(initData: string): Promise<AuthMutationResponse> {
-  const result = await requestJson<AuthMutationResponse>('/telegram/link', {
-    method: 'POST',
-    body: JSON.stringify({ initData }),
+  return withSignInMutation(async () => {
+    await beginSignIn();
+    const result = await requestJson<AuthMutationResponse>('/telegram/link', {
+      method: 'POST',
+      body: JSON.stringify({ initData }),
   });
   invalidateAuth();
-  const session = await restoreSession();
+  const session = await restoreSessionStateUnlocked().then(state => state.status === 'authenticated' ? state.session : null);
   if (!session || session.user.id !== result.user.id) throw new Error('Stale auth operation');
   return result;
+  });
 }
 
 export async function registerWithEmail(input: {
@@ -516,14 +576,17 @@ export async function registerWithEmail(input: {
   username: string;
   name?: string;
 }): Promise<AuthMutationResponse> {
-  const result = await requestJson<AuthMutationResponse>('/register/email', {
-    method: 'POST',
-    body: JSON.stringify(input),
+  return withSignInMutation(async () => {
+    await beginSignIn();
+    const result = await requestJson<AuthMutationResponse>('/register/email', {
+      method: 'POST',
+      body: JSON.stringify(input),
   });
   invalidateAuth();
-  const session = await restoreSession();
+  const session = await restoreSessionStateUnlocked().then(state => state.status === 'authenticated' ? state.session : null);
   if (!session || session.user.id !== result.user.id) throw new Error('Stale auth operation');
   return result;
+  });
 }
 
 export async function completeMigration(input: {
@@ -532,14 +595,17 @@ export async function completeMigration(input: {
   username: string;
   name?: string;
 }): Promise<AuthMutationResponse> {
-  const result = await requestJson<AuthMutationResponse>('/migration/complete', {
-    method: 'POST',
-    body: JSON.stringify(input),
+  return withSignInMutation(async () => {
+    await beginSignIn();
+    const result = await requestJson<AuthMutationResponse>('/migration/complete', {
+      method: 'POST',
+      body: JSON.stringify(input),
   });
   invalidateAuth();
-  const session = await restoreSession();
+  const session = await restoreSessionStateUnlocked().then(state => state.status === 'authenticated' ? state.session : null);
   if (!session || session.user.id !== result.user.id) throw new Error('Stale auth operation');
   return result;
+  });
 }
 
 export async function getMigrationStatus(): Promise<MigrationStatus> {
