@@ -1,9 +1,9 @@
-import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import { ensureDatabaseReady } from './database.js';
 import { config } from './config.js';
 
-export type AliasType = 'canonical' | 'telegram_username' | 'telegram_id';
+import { normalizeIdentifier, claimUserAliasTx, AliasOwnershipError, setCanonicalAliasTx, upsertStorageBindingTx, ensureStorageBindingTx, type AliasType } from './auth-identity.js';
+export { normalizeIdentifier, normalizeUsername, isValidUsername, claimUserAliasTx, type AliasType } from './auth-identity.js';
 
 export interface AliasRecord {
     alias: string;
@@ -138,18 +138,6 @@ export async function closeAuthPool() {
     await currentPool.end();
 }
 
-export function normalizeIdentifier(identifier: string): string {
-    return identifier.trim().replace(/^@/, '').toLowerCase();
-}
-
-export function normalizeUsername(username: string): string {
-    return username.trim().replace(/^@/, '').toLowerCase();
-}
-
-export function isValidUsername(username: string): boolean {
-    return /^[a-z0-9_]{5,32}$/i.test(username);
-}
-
 export function createPlaceholderEmail(telegramUserId: number): string {
     return `telegram-${telegramUserId}@${config.TELEGRAM_PLACEHOLDER_EMAIL_DOMAIN}`;
 }
@@ -158,27 +146,24 @@ export function isPlaceholderEmail(email: string): boolean {
     return email.trim().toLowerCase().endsWith(`@${config.TELEGRAM_PLACEHOLDER_EMAIL_DOMAIN.toLowerCase()}`);
 }
 
-/** All alias writers share a transaction lock across the auth and public registries. */
-export async function claimUserAliasTx(client: PoolClient, userId: string, alias: string, type: AliasType): Promise<void> {
-    const normalized = normalizeIdentifier(alias);
+/** Prepare both registries before acquiring a transaction client; helpers never run DDL. */
+export async function connectIdentityClient(): Promise<PoolClient> {
+    await ensureAuthDatabaseSchema();
     await ensureDatabaseReady();
-    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`gym21-alias:${normalized}`]);
-    const publicOwner = await client.query(
-        `SELECT 1 FROM public_profile_aliases p
-         WHERE p.alias_lower = $1 AND NOT EXISTS (
-           SELECT 1 FROM user_storage_binding b WHERE b.user_id = $2 AND b.storage_key = p.storage_key
-         )`, [normalized, userId],
-    );
-    if (publicOwner.rowCount) throw new Error(`Alias already taken: ${normalized}`);
-    const claimed = await client.query(
-        `INSERT INTO user_alias (id, user_id, alias, alias_lower, type, created_at, updated_at)
-         VALUES ($1, $2, $3, $3, $4, NOW(), NOW())
-         ON CONFLICT (alias_lower)
-         DO UPDATE SET alias = EXCLUDED.alias, type = EXCLUDED.type, updated_at = NOW()
-         WHERE user_alias.user_id = EXCLUDED.user_id
-         RETURNING user_id`, [randomUUID(), userId, normalized, type],
-    );
-    if (!claimed.rowCount) throw new Error(`Alias already taken: ${normalized}`);
+    return getAuthPool().connect();
+}
+
+export async function withIdentityTransaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await connectIdentityClient();
+    try {
+        await client.query('BEGIN');
+        const result = await operation(client);
+        await client.query('COMMIT');
+        return result;
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally { client.release(); }
 }
 
 export class AuthMetaService {
@@ -192,24 +177,12 @@ export class AuthMetaService {
     }
 
     static async upsertStorageBinding(userId: string, storageKey: string): Promise<string> {
-        await ensureAuthDatabaseSchema();
-        await getAuthPool().query(
-            `
-                INSERT INTO user_storage_binding (user_id, storage_key, created_at, updated_at)
-                VALUES ($1, $2, NOW(), NOW())
-                ON CONFLICT (user_id)
-                DO UPDATE SET storage_key = EXCLUDED.storage_key, updated_at = NOW()
-            `,
-            [userId, storageKey],
-        );
+        await withIdentityTransaction(client => upsertStorageBindingTx(client, userId, storageKey));
         return storageKey;
     }
 
     static async ensureStorageBinding(userId: string, storageKeyFactory?: () => string): Promise<string> {
-        const existing = await this.getStorageKeyForUser(userId);
-        if (existing) return existing;
-        const storageKey = storageKeyFactory ? storageKeyFactory() : `u_${userId}`;
-        return this.upsertStorageBinding(userId, storageKey);
+        return withIdentityTransaction(client => ensureStorageBindingTx(client, userId, storageKeyFactory ? storageKeyFactory() : `u_${userId}`));
     }
 
     static async getAlias(alias: string): Promise<AliasRecord | null> {
@@ -247,58 +220,21 @@ export class AuthMetaService {
     }
 
     static async claimAlias(userId: string, alias: string, type: AliasType): Promise<void> {
-        await ensureAuthDatabaseSchema();
-        const client = await getAuthPool().connect();
-        try {
-            await client.query('BEGIN');
-            await claimUserAliasTx(client, userId, alias, type);
-            await client.query('COMMIT');
-        } catch (error) {
-            await client.query('ROLLBACK');
-            throw error;
-        } finally {
-            client.release();
-        }
+        await withIdentityTransaction(client => claimUserAliasTx(client, userId, alias, type));
     }
 
     static async tryClaimAlias(userId: string, alias: string, type: AliasType): Promise<boolean> {
         try {
             await this.claimAlias(userId, alias, type);
             return true;
-        } catch {
+        } catch (error) {
+            if (!(error instanceof AliasOwnershipError)) throw error;
             return false;
         }
     }
 
     static async setCanonicalAlias(userId: string, username: string): Promise<void> {
-        const normalizedUsername = normalizeUsername(username);
-        if (!isValidUsername(normalizedUsername)) {
-            throw new Error('Invalid username');
-        }
-
-        const client = await getAuthPool().connect();
-        try {
-            await client.query('BEGIN');
-            const existing = await client.query<{ user_id: string }>(
-                'SELECT user_id FROM user_alias WHERE alias_lower = $1 LIMIT 1',
-                [normalizedUsername],
-            );
-            if (existing.rows[0] && existing.rows[0].user_id !== userId) {
-                throw new Error('Username already taken');
-            }
-
-            await client.query(
-                'DELETE FROM user_alias WHERE user_id = $1 AND type = $2 AND alias_lower <> $3',
-                [userId, 'canonical', normalizedUsername],
-            );
-            await claimUserAliasTx(client, userId, normalizedUsername, 'canonical');
-            await client.query('COMMIT');
-        } catch (error) {
-            await client.query('ROLLBACK');
-            throw error;
-        } finally {
-            client.release();
-        }
+        await withIdentityTransaction(client => setCanonicalAliasTx(client, userId, username));
     }
 
     static async resolveStorageKeyByIdentifier(identifier: string): Promise<string | null> {

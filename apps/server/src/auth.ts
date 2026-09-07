@@ -1,3 +1,20 @@
+import {
+  getUserById,
+  getUserByEmail,
+  getAccountsForUser,
+  getUserIdByProviderAccount,
+  getCanonicalAlias,
+  getPasskeyCount,
+  claimUserAliasTx,
+  AliasOwnershipError,
+  setCanonicalAliasTx,
+  upsertStorageBindingTx,
+  ensureStorageBindingTx,
+  linkProviderAccountTx,
+  type AuthUserRecord,
+  type AccountRecord,
+} from './auth-identity.js';
+export type { AuthUserRecord } from './auth-identity.js';
 import { randomUUID } from 'node:crypto';
 import { betterAuth, APIError } from 'better-auth';
 import { createAuthEndpoint, createAuthMiddleware, sessionMiddleware } from 'better-auth/api';
@@ -11,7 +28,7 @@ import { z } from 'zod';
 import { config, HAS_DATABASE } from './config.js';
 import {
   AuthMetaService,
-  claimUserAliasTx,
+  connectIdentityClient,
   closeAuthPool,
   createPlaceholderEmail,
   ensureAuthDatabaseSchema,
@@ -24,28 +41,6 @@ import { defaultStorageRepository } from './storage.js';
 import { extractTelegramUser, parseTelegramInitData, type TelegramUser, validateTelegramInitData } from './telegram.js';
 
 const TELEGRAM_PROVIDER_ID = 'telegram';
-
-export interface AuthUserRecord {
-  id: string;
-  name: string;
-  email: string;
-  emailVerified: boolean;
-  image: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  username: string | null;
-  displayUsername: string | null;
-  migrationCompleted: boolean;
-}
-
-interface AccountRecord {
-  id: string;
-  accountId: string;
-  providerId: string;
-  userId: string;
-  password: string | null;
-  telegramUsername: string | null;
-}
 
 export interface AuthenticatedRequestContext {
   kind: 'better-auth' | 'telegram';
@@ -69,169 +64,6 @@ const trustedOrigins = Array.from(
       .map(normalizeOrigin),
   ),
 );
-
-function mapUserRow(row: {
-  id: string;
-  name: string;
-  email: string;
-  email_verified: boolean;
-  image: string | null;
-  created_at: string | Date;
-  updated_at: string | Date;
-  username: string | null;
-  display_username: string | null;
-  migration_completed: boolean;
-}): AuthUserRecord {
-  return {
-    id: row.id,
-    name: row.name,
-    email: row.email,
-    emailVerified: row.email_verified,
-    image: row.image,
-    createdAt: new Date(row.created_at),
-    updatedAt: new Date(row.updated_at),
-    username: row.username,
-    displayUsername: row.display_username,
-    migrationCompleted: row.migration_completed,
-  };
-}
-
-async function getUserById(userId: string): Promise<AuthUserRecord | null> {
-  await ensureAuthDatabaseSchema();
-  const result = await getAuthPool().query<{
-    id: string;
-    name: string;
-    email: string;
-    email_verified: boolean;
-    image: string | null;
-    created_at: string | Date;
-    updated_at: string | Date;
-    username: string | null;
-    display_username: string | null;
-    migration_completed: boolean;
-  }>(
-    `
-      SELECT
-        id,
-        name,
-        email,
-        email_verified,
-        image,
-        created_at,
-        updated_at,
-        username,
-        display_username,
-        migration_completed
-      FROM "user"
-      WHERE id = $1
-      LIMIT 1
-    `,
-    [userId],
-  );
-  const row = result.rows[0];
-  return row ? mapUserRow(row) : null;
-}
-
-async function getUserByEmail(email: string): Promise<AuthUserRecord | null> {
-  await ensureAuthDatabaseSchema();
-  const result = await getAuthPool().query<{
-    id: string;
-    name: string;
-    email: string;
-    email_verified: boolean;
-    image: string | null;
-    created_at: string | Date;
-    updated_at: string | Date;
-    username: string | null;
-    display_username: string | null;
-    migration_completed: boolean;
-  }>(
-    `
-      SELECT
-        id,
-        name,
-        email,
-        email_verified,
-        image,
-        created_at,
-        updated_at,
-        username,
-        display_username,
-        migration_completed
-      FROM "user"
-      WHERE email = $1
-      LIMIT 1
-    `,
-    [email.toLowerCase()],
-  );
-  const row = result.rows[0];
-  return row ? mapUserRow(row) : null;
-}
-
-async function getAccountsForUser(userId: string): Promise<AccountRecord[]> {
-  await ensureAuthDatabaseSchema();
-  const result = await getAuthPool().query<{
-    id: string;
-    account_id: string;
-    provider_id: string;
-    user_id: string;
-    password: string | null;
-    telegram_username: string | null;
-  }>(
-    `
-      SELECT id, account_id, provider_id, user_id, password, telegram_username
-      FROM account
-      WHERE user_id = $1
-    `,
-    [userId],
-  );
-
-  return result.rows.map((row) => ({
-    id: row.id,
-    accountId: row.account_id,
-    providerId: row.provider_id,
-    userId: row.user_id,
-    password: row.password,
-    telegramUsername: row.telegram_username,
-  }));
-}
-
-async function getUserIdByProviderAccount(accountId: string, providerId: string): Promise<string | null> {
-  await ensureAuthDatabaseSchema();
-  const result = await getAuthPool().query<{ user_id: string }>(
-    `
-      SELECT user_id
-      FROM account
-      WHERE account_id = $1 AND provider_id = $2
-      LIMIT 1
-    `,
-    [accountId, providerId],
-  );
-  return result.rows[0]?.user_id ?? null;
-}
-
-async function getCanonicalAlias(userId: string): Promise<string | null> {
-  await ensureAuthDatabaseSchema();
-  const result = await getAuthPool().query<{ alias: string }>(
-    `
-      SELECT alias
-      FROM user_alias
-      WHERE user_id = $1 AND type = $2
-      LIMIT 1
-    `,
-    [userId, 'canonical'],
-  );
-  return result.rows[0]?.alias ?? null;
-}
-
-async function getPasskeyCount(userId: string): Promise<number> {
-  await ensureAuthDatabaseSchema();
-  const result = await getAuthPool().query<{ count: string }>(
-    'SELECT COUNT(*)::text AS count FROM passkey WHERE user_id = $1',
-    [userId],
-  );
-  return Number(result.rows[0]?.count ?? 0);
-}
 
 function getTelegramDisplayName(telegramUser: TelegramUser): string {
   const fullName = [telegramUser.first_name, telegramUser.last_name].filter(Boolean).join(' ').trim();
@@ -274,33 +106,9 @@ function parseTelegramUserOrThrow(initData: string): TelegramUser {
   return user;
 }
 
-async function chooseStorageKeyForUser(userId: string, telegramUserId?: number): Promise<string> {
-  return AuthMetaService.ensureStorageBinding(userId, () => (telegramUserId ? `u_${userId}` : `u_${userId}`));
-}
-
 async function assertNoStorageConflictForTelegramLink(userId: string, telegramUserId: number) {
   void userId;
   void telegramUserId;
-}
-
-async function upsertStorageBindingTx(client: PoolClient, userId: string, storageKey: string) {
-  await client.query(
-    `
-      INSERT INTO user_storage_binding (user_id, storage_key, created_at, updated_at)
-      VALUES ($1, $2, NOW(), NOW())
-      ON CONFLICT (user_id)
-      DO UPDATE SET storage_key = EXCLUDED.storage_key, updated_at = NOW()
-    `,
-    [userId, storageKey],
-  );
-}
-
-async function getAliasOwnerTx(client: PoolClient, alias: string): Promise<string | null> {
-  const result = await client.query<{ user_id: string }>(
-    'SELECT user_id FROM user_alias WHERE alias_lower = $1 LIMIT 1',
-    [alias.trim().toLowerCase().replace(/^@/, '')],
-  );
-  return result.rows[0]?.user_id ?? null;
 }
 
 export async function upsertAliasTx(client: PoolClient, userId: string, alias: string, type: 'canonical' | 'telegram_username' | 'telegram_id') {
@@ -310,7 +118,7 @@ export async function upsertAliasTx(client: PoolClient, userId: string, alias: s
   try {
     await claimUserAliasTx(client, userId, normalizedAlias, type);
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Alias already taken:')) {
+    if (error instanceof AliasOwnershipError) {
       throw APIError.fromStatus('BAD_REQUEST', { message: `Identifier already taken: ${normalizedAlias}` });
     }
     throw error;
@@ -322,34 +130,20 @@ async function tryUpsertAliasTx(client: PoolClient, userId: string, alias: strin
   const normalizedAlias = normalizeUsername(alias);
   if (!isValidUsername(normalizedAlias)) return;
   try {
-    await upsertAliasTx(client, userId, normalizedAlias, type);
-  } catch {
+    await claimUserAliasTx(client, userId, normalizedAlias, type);
+  } catch (error) {
+    if (!(error instanceof AliasOwnershipError)) throw error;
     // Keep auth linking flowing even if a secondary alias is already occupied.
   }
 }
 
 async function setCanonicalUsernameTx(client: PoolClient, userId: string, username: string) {
-  const normalizedUsername = validateCanonicalUsername(username);
-  const ownerId = await getAliasOwnerTx(client, normalizedUsername);
-  if (ownerId && ownerId !== userId) {
-    throw APIError.fromStatus('BAD_REQUEST', { message: 'Username already taken' });
+  try {
+    await setCanonicalAliasTx(client, userId, validateCanonicalUsername(username));
+  } catch (error) {
+    if (error instanceof AliasOwnershipError) throw APIError.fromStatus('BAD_REQUEST', { message: 'Username already taken' });
+    throw error;
   }
-
-  await client.query(
-    `
-      UPDATE "user"
-      SET username = $2, display_username = $3, updated_at = NOW()
-      WHERE id = $1
-    `,
-    [userId, normalizedUsername, normalizedUsername],
-  );
-
-  await client.query(
-    'DELETE FROM user_alias WHERE user_id = $1 AND type = $2 AND alias_lower <> $3',
-    [userId, 'canonical', normalizedUsername],
-  );
-
-  await upsertAliasTx(client, userId, normalizedUsername, 'canonical');
 }
 
 async function linkCredentialPasswordTx(client: PoolClient, userId: string, passwordHash: string) {
@@ -377,19 +171,8 @@ async function linkCredentialPasswordTx(client: PoolClient, userId: string, pass
 
 async function linkTelegramAccountTx(client: PoolClient, userId: string, telegramUserId: number) {
   const accountId = String(telegramUserId);
-  const existingUserId = await getUserIdByProviderAccount(accountId, TELEGRAM_PROVIDER_ID);
-  if (existingUserId && existingUserId !== userId) {
+  if (!(await linkProviderAccountTx(client, userId, accountId, TELEGRAM_PROVIDER_ID))) {
     throw APIError.fromStatus('BAD_REQUEST', { message: 'Этот Telegram уже привязан к другому аккаунту' });
-  }
-
-  if (!existingUserId) {
-    await client.query(
-      `
-        INSERT INTO account (id, account_id, provider_id, user_id, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, NOW(), NOW())
-      `,
-      [randomUUID(), accountId, TELEGRAM_PROVIDER_ID, userId],
-    );
   }
 }
 
@@ -465,7 +248,7 @@ function needsCompletion(user: AuthUserRecord, accounts: AccountRecord[]): boole
 }
 
 async function getSuggestedUsername(userId: string, telegramUserId?: number): Promise<string | null> {
-  const user = await getUserById(userId);
+  const user = await getUserById(getAuthPool(), userId);
   if (user?.username) {
     return user.username;
   }
@@ -482,55 +265,39 @@ async function getSuggestedUsername(userId: string, telegramUserId?: number): Pr
   return null;
 }
 
-async function ensureTelegramStateForUser(userId: string, telegramUser: TelegramUser): Promise<{ user: AuthUserRecord; storageKey: string }> {
+async function ensureTelegramStateTx(client: PoolClient, userId: string, telegramUser: TelegramUser): Promise<{ user: AuthUserRecord; storageKey: string }> {
   const preferredUsername = [telegramUser.username]
     .map((value) => value ? normalizeUsername(value) : null)
     .find((value): value is string => Boolean(value && isValidUsername(value)));
-  const storageKey = await chooseStorageKeyForUser(userId, telegramUser.id);
+  const storageKey = await ensureStorageBindingTx(client, userId, `u_${userId}`);
+  await client.query(
+    "UPDATE account SET telegram_username = $3, updated_at = NOW() WHERE user_id = $1 AND provider_id = 'telegram' AND account_id = $2",
+    [userId, String(telegramUser.id), telegramUser.username ?? null],
+  );
+  await upsertAliasTx(client, userId, `id_${telegramUser.id}`, 'telegram_id');
 
-  const client = await getAuthPool().connect();
-  try {
-    await client.query('BEGIN');
-    await upsertStorageBindingTx(client, userId, storageKey);
-    await client.query(
-      "UPDATE account SET telegram_username = $3, updated_at = NOW() WHERE user_id = $1 AND provider_id = 'telegram' AND account_id = $2",
-      [userId, String(telegramUser.id), telegramUser.username ?? null],
-    );
-    await upsertAliasTx(client, userId, `id_${telegramUser.id}`, 'telegram_id');
+  const currentUser = await getUserById(client, userId);
+  let currentCanonical = currentUser?.username ?? null;
 
-    const currentUser = await getUserById(userId);
-    const currentCanonical = currentUser?.username ?? null;
-
-    if (!currentCanonical && preferredUsername && (await AuthMetaService.isAliasAvailable(preferredUsername, userId))) {
-      await setCanonicalUsernameTx(client, userId, preferredUsername);
+  if (!currentCanonical && preferredUsername) {
+    try {
+      await setCanonicalAliasTx(client, userId, preferredUsername);
+      currentCanonical = preferredUsername;
     }
-
-    if (telegramUser.username) {
-      const normalizedTelegramUsername = normalizeUsername(telegramUser.username);
-      if ((!currentCanonical || currentCanonical !== normalizedTelegramUsername) && isValidUsername(normalizedTelegramUsername)) {
-        await tryUpsertAliasTx(client, userId, normalizedTelegramUsername, 'telegram_username');
-      }
-    }
-
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
+    catch (error) { if (!(error instanceof AliasOwnershipError)) throw error; }
   }
 
-  const refreshedUser = await getUserById(userId);
+  if (telegramUser.username) {
+    const normalizedTelegramUsername = normalizeUsername(telegramUser.username);
+    if ((!currentCanonical || currentCanonical !== normalizedTelegramUsername) && isValidUsername(normalizedTelegramUsername)) {
+      await tryUpsertAliasTx(client, userId, normalizedTelegramUsername, 'telegram_username');
+    }
+  }
+
+  const refreshedUser = await getUserById(client, userId);
   if (!refreshedUser) {
     throw APIError.fromStatus('INTERNAL_SERVER_ERROR', { message: 'Не удалось загрузить пользователя' });
   }
-
-  await syncStorageProfile(storageKey, {
-    username: refreshedUser.username,
-    name: refreshedUser.name,
-    image: refreshedUser.image,
-    telegramUser,
-  });
 
   return { user: refreshedUser, storageKey };
 }
@@ -574,10 +341,11 @@ function telegramPlugin() {
         const displayName = getTelegramDisplayName(telegramUser);
         const rememberMe = ctx.body.rememberMe !== false;
 
-        let userId = await getUserIdByProviderAccount(telegramAccountId, TELEGRAM_PROVIDER_ID);
+        let telegramState: { user: AuthUserRecord; storageKey: string };
+        let userId = await getUserIdByProviderAccount(getAuthPool(), telegramAccountId, TELEGRAM_PROVIDER_ID);
 
         if (!userId) {
-          const client = await getAuthPool().connect();
+          const client = await connectIdentityClient();
           try {
             await client.query('BEGIN');
             userId = randomUUID();
@@ -617,6 +385,7 @@ function telegramPlugin() {
               userId = linked.rows[0].user_id;
             }
             await linkTelegramAccountTx(client, userId, telegramUser.id);
+            telegramState = await ensureTelegramStateTx(client, userId, telegramUser);
             await client.query('COMMIT');
           } catch (error) {
             await client.query('ROLLBACK');
@@ -625,10 +394,11 @@ function telegramPlugin() {
             client.release();
           }
         } else {
-          const client = await getAuthPool().connect();
+          const client = await connectIdentityClient();
           try {
             await client.query('BEGIN');
             await linkTelegramAccountTx(client, userId, telegramUser.id);
+            telegramState = await ensureTelegramStateTx(client, userId, telegramUser);
             await client.query('COMMIT');
           } catch (error) {
             await client.query('ROLLBACK');
@@ -638,12 +408,13 @@ function telegramPlugin() {
           }
         }
 
-        const { user, storageKey } = await ensureTelegramStateForUser(userId, telegramUser);
-        const accounts = await getAccountsForUser(user.id);
+        const { user, storageKey } = telegramState;
+        await syncStorageProfile(storageKey, { username: user.username, name: user.name, image: user.image, telegramUser });
+        const accounts = await getAccountsForUser(getAuthPool(), user.id);
         const completionRequired = needsCompletion(user, accounts);
 
         if (user.migrationCompleted === completionRequired) {
-          const client = await getAuthPool().connect();
+          const client = await connectIdentityClient();
           try {
             await client.query('BEGIN');
             await updateMigrationCompletedTx(client, user.id, !completionRequired);
@@ -656,7 +427,7 @@ function telegramPlugin() {
           }
         }
 
-        const refreshedUser = await getUserById(user.id);
+        const refreshedUser = await getUserById(getAuthPool(), user.id);
         if (!refreshedUser) {
           throw APIError.fromStatus('INTERNAL_SERVER_ERROR', { message: 'Не удалось загрузить пользователя после миграции' });
         }
@@ -689,10 +460,12 @@ function telegramPlugin() {
 
         await assertNoStorageConflictForTelegramLink(sessionUser.id, telegramUser.id);
 
-        const client = await getAuthPool().connect();
+        let telegramState: { user: AuthUserRecord; storageKey: string };
+        const client = await connectIdentityClient();
         try {
           await client.query('BEGIN');
           await linkTelegramAccountTx(client, sessionUser.id, telegramUser.id);
+          telegramState = await ensureTelegramStateTx(client, sessionUser.id, telegramUser);
           await client.query('COMMIT');
         } catch (error) {
           await client.query('ROLLBACK');
@@ -701,12 +474,13 @@ function telegramPlugin() {
           client.release();
         }
 
-        const { user, storageKey } = await ensureTelegramStateForUser(sessionUser.id, telegramUser);
-        const accounts = await getAccountsForUser(user.id);
+        const { user, storageKey } = telegramState;
+        await syncStorageProfile(storageKey, { username: user.username, name: user.name, image: user.image, telegramUser });
+        const accounts = await getAccountsForUser(getAuthPool(), user.id);
         const completionRequired = needsCompletion(user, accounts);
 
         if (user.migrationCompleted === completionRequired) {
-          const updateClient = await getAuthPool().connect();
+          const updateClient = await connectIdentityClient();
           try {
             await updateClient.query('BEGIN');
             await updateMigrationCompletedTx(updateClient, user.id, !completionRequired);
@@ -744,7 +518,7 @@ function telegramPlugin() {
           ctx.context.password.config.maxPasswordLength,
         );
 
-        if (await getUserByEmail(email)) {
+        if (await getUserByEmail(getAuthPool(), email)) {
           throw APIError.fromStatus('BAD_REQUEST', { message: 'Пользователь с таким email уже существует' });
         }
 
@@ -755,7 +529,7 @@ function telegramPlugin() {
         const passwordHash = await ctx.context.password.hash(password);
         const userId = randomUUID();
 
-        const client = await getAuthPool().connect();
+        const client = await connectIdentityClient();
         try {
           await client.query('BEGIN');
           await client.query(
@@ -787,7 +561,7 @@ function telegramPlugin() {
           client.release();
         }
 
-        const user = await getUserById(userId);
+        const user = await getUserById(getAuthPool(), userId);
         if (!user) {
           throw APIError.fromStatus('INTERNAL_SERVER_ERROR', { message: 'Не удалось загрузить пользователя' });
         }
@@ -821,17 +595,17 @@ function telegramPlugin() {
       }, async (ctx) => {
         await ensureAuthDatabaseSchema();
         const sessionUser = ctx.context.session.user as AuthUserRecord;
-        const user = await getUserById(sessionUser.id);
+        const user = await getUserById(getAuthPool(), sessionUser.id);
         if (!user) {
           throw APIError.fromStatus('NOT_FOUND', { message: 'User not found' });
         }
 
-        const accounts = await getAccountsForUser(user.id);
+        const accounts = await getAccountsForUser(getAuthPool(), user.id);
         const hasPassword = accounts.some((account) => account.providerId === 'credential' && Boolean(account.password));
         const telegramAccount = accounts.find((account) => account.providerId === TELEGRAM_PROVIDER_ID);
         const storageKey = await AuthMetaService.getStorageKeyForUser(user.id);
-        const passkeyCount = await getPasskeyCount(user.id);
-        const canonicalAlias = await getCanonicalAlias(user.id);
+        const passkeyCount = await getPasskeyCount(getAuthPool(), user.id);
+        const canonicalAlias = await getCanonicalAlias(getAuthPool(), user.id);
         const suggestedUsername = await getSuggestedUsername(user.id, telegramAccount ? Number(telegramAccount.accountId) : undefined);
 
         return ctx.json({
@@ -856,7 +630,7 @@ function telegramPlugin() {
       }, async (ctx) => {
         await ensureAuthDatabaseSchema();
         const sessionUser = ctx.context.session.user as AuthUserRecord;
-        const user = await getUserById(sessionUser.id);
+        const user = await getUserById(getAuthPool(), sessionUser.id);
         if (!user) {
           throw APIError.fromStatus('NOT_FOUND', { message: 'User not found' });
         }
@@ -872,7 +646,7 @@ function telegramPlugin() {
           ctx.context.password.config.maxPasswordLength,
         );
 
-        const existingUserWithEmail = await getUserByEmail(email);
+        const existingUserWithEmail = await getUserByEmail(getAuthPool(), email);
         if (existingUserWithEmail && existingUserWithEmail.id !== user.id) {
           throw APIError.fromStatus('BAD_REQUEST', { message: 'Этот email уже используется' });
         }
@@ -883,7 +657,7 @@ function telegramPlugin() {
 
         const passwordHash = await ctx.context.password.hash(password);
 
-        const client = await getAuthPool().connect();
+        const client = await connectIdentityClient();
         try {
           await client.query('BEGIN');
           await setCanonicalUsernameTx(client, user.id, username);
@@ -901,7 +675,7 @@ function telegramPlugin() {
           client.release();
         }
 
-        const refreshedUser = await getUserById(user.id);
+        const refreshedUser = await getUserById(getAuthPool(), user.id);
         if (!refreshedUser) {
           throw APIError.fromStatus('INTERNAL_SERVER_ERROR', { message: 'Не удалось обновить пользователя' });
         }
@@ -1102,7 +876,7 @@ export async function resolveBetterAuthSession(headers: Headers): Promise<{ sess
     return null;
   }
 
-  const user = await getUserById(payload.user.id);
+  const user = await getUserById(getAuthPool(), payload.user.id);
   if (!user) {
     return null;
   }
@@ -1114,7 +888,7 @@ export async function resolveBetterAuthSession(headers: Headers): Promise<{ sess
 }
 
 async function getLinkedTelegramUser(user: AuthUserRecord): Promise<TelegramUser | undefined> {
-  const accounts = await getAccountsForUser(user.id);
+  const accounts = await getAccountsForUser(getAuthPool(), user.id);
   const account = accounts.find((entry) => entry.providerId === TELEGRAM_PROVIDER_ID);
   return account ? { id: Number(account.accountId), first_name: user.name, username: account.telegramUsername ?? undefined } : undefined;
 }
@@ -1146,8 +920,9 @@ export async function resolveRequestContext(headers: Headers): Promise<Authentic
     return null;
   }
 
-  const linkedUserId = await getUserIdByProviderAccount(String(telegramUser.id), TELEGRAM_PROVIDER_ID);
-  const authUser = linkedUserId ? await getUserById(linkedUserId) : null;
+  await ensureAuthReady();
+  const linkedUserId = await getUserIdByProviderAccount(getAuthPool(), String(telegramUser.id), TELEGRAM_PROVIDER_ID);
+  const authUser = linkedUserId ? await getUserById(getAuthPool(), linkedUserId) : null;
   const storageKey = authUser
     ? await AuthMetaService.ensureStorageBinding(authUser.id, () => `u_${authUser.id}`)
     : `telegram_${telegramUser.id}`;

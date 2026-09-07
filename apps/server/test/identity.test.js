@@ -56,6 +56,28 @@ test('PostgreSQL: HTTP sync and concurrent alias writers preserve identity owner
     }
     await AuthMetaService.claimAlias('victim-user', 'victim', 'canonical');
     await repository.updateProfileFromAuth('victim-user', { username: 'victim' });
+    await t.test('identity transaction sees own writes and rolls back every registry on unexpected failure', async () => {
+      const { withIdentityTransaction } = await import('../dist/auth-meta.js');
+      const identity = await import('../dist/auth-identity.js');
+      await assert.rejects(withIdentityTransaction(async client => {
+        await client.query('INSERT INTO "user" (id, name, email) VALUES ($1, $1, $2)', ['atomic-user', 'atomic@example.test']);
+        await identity.ensureStorageBindingTx(client, 'atomic-user', 'atomic-storage');
+        assert.equal(await identity.linkProviderAccountTx(client, 'atomic-user', 'atomic-provider', 'telegram'), true);
+        assert.equal(await identity.getUserIdByProviderAccount(client, 'atomic-provider', 'telegram'), 'atomic-user');
+        await identity.setCanonicalAliasTx(client, 'atomic-user', 'atomicname');
+        assert.equal((await identity.getUserById(client, 'atomic-user')).username, 'atomicname');
+        await client.query('SELECT s07_deliberately_missing_function()');
+      }), /s07_deliberately_missing_function/);
+      for (const [table, column, value] of [['user', 'id', 'atomic-user'], ['account', 'user_id', 'atomic-user'], ['user_alias', 'user_id', 'atomic-user'], ['user_storage_binding', 'user_id', 'atomic-user']]) {
+        assert.equal((await pool.query(`SELECT 1 FROM "${table}" WHERE ${column} = $1`, [value])).rowCount, 0);
+      }
+      const outcomes = await Promise.all(['victim-user', 'attacker-user'].map(id => withIdentityTransaction(client => identity.linkProviderAccountTx(client, id, 'race-provider', 'test-provider'))));
+      assert.deepEqual(outcomes.sort(), [false, true]);
+      const bindingBefore = await pool.query("SELECT xmin::text FROM user_storage_binding WHERE user_id = 'victim-user'");
+      assert.equal(await AuthMetaService.ensureStorageBinding('victim-user', () => 'changed-storage'), 'victim-user');
+      assert.deepEqual((await pool.query("SELECT xmin::text FROM user_storage_binding WHERE user_id = 'victim-user'")).rows, bindingBefore.rows);
+      await assert.rejects(AuthMetaService.tryClaimAlias('missing-user', 'unexpected', 'telegram_username'), /foreign key/);
+    });
     await t.test('cookie identity comes from linked account even when Telegram username equals canonical', async () => {
       await pool.query("INSERT INTO account (id, account_id, provider_id, user_id, telegram_username) VALUES ('telegram-victim', '999', 'telegram', 'victim-user', 'victim')");
       await pool.query("UPDATE \"user\" SET username = 'victim' WHERE id = 'victim-user'");

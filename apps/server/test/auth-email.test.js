@@ -24,8 +24,8 @@ const { getAuth, closeAuthResources } = await import('../dist/auth.js');
 const { ensureAuthDatabaseSchema, getAuthPool } = await import('../dist/auth-meta.js');
 const { closeDatabasePool } = await import('../dist/database.js');
 const payload = { email: 'person@example.test', password: 'test-password-long', name: 'Test', username: 'testperson' };
-function telegram(id) {
-  const data = { id: String(id), first_name: 'Telegram', auth_date: String(Math.floor(Date.now() / 1000)) };
+function telegram(id, username) {
+  const data = { id: String(id), first_name: 'Telegram', ...(username ? { username } : {}), auth_date: String(Math.floor(Date.now() / 1000)) };
   const signed = Object.entries(data).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join('\n');
   const hash = createHmac('sha256', createHash('sha256').update('test_token').digest()).update(signed).digest('hex');
   return new URLSearchParams({ ...data, hash }).toString();
@@ -84,6 +84,26 @@ test('PostgreSQL: real auth endpoints reserve technical emails and never join by
       assert.equal(login.status, 200, await login.clone().text());
       assert.equal((await login.json()).user.id, user.id);
     });
+    await t.test('unexpected secondary alias SQL failure rolls back user, provider and binding', async () => {
+      await pool.query(`CREATE FUNCTION reject_secondary_alias() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.alias_lower = 'brokenalias' THEN RAISE EXCEPTION 'injected alias failure'; END IF; RETURN NEW; END $$;
+        CREATE TRIGGER reject_secondary_alias BEFORE INSERT ON user_alias FOR EACH ROW EXECUTE FUNCTION reject_secondary_alias()`);
+      try {
+        const userBefore = (await pool.query('SELECT * FROM "user" WHERE id = $1', [user.id])).rows;
+        const bindingBefore = (await pool.query('SELECT * FROM user_storage_binding WHERE user_id = $1', [user.id])).rows;
+        const response = await post('/telegram/sign-in', { initData: telegram(887766, 'brokenalias') });
+        assert.equal(response.status, 500);
+        const linked = await post('/telegram/link', { initData: telegram(887766, 'brokenalias') }, token);
+        assert.equal(linked.status, 500);
+        assert.deepEqual((await pool.query('SELECT * FROM "user" WHERE id = $1', [user.id])).rows, userBefore);
+        assert.deepEqual((await pool.query('SELECT * FROM user_storage_binding WHERE user_id = $1', [user.id])).rows, bindingBefore);
+        assert.equal((await pool.query("SELECT 1 FROM account WHERE account_id = '887766'")).rowCount, 0);
+        assert.equal((await pool.query("SELECT 1 FROM \"user\" WHERE email = 'telegram-887766@telegram.local.invalid'")).rowCount, 0);
+        assert.equal((await pool.query("SELECT 1 FROM user_alias WHERE alias_lower = 'id_887766'")).rowCount, 0);
+      } finally {
+        await pool.query('DROP TRIGGER reject_secondary_alias ON user_alias; DROP FUNCTION reject_secondary_alias()');
+      }
+    });
     await t.test('concurrent first Telegram logins converge on a verified provider binding', async () => {
       const responses = await Promise.all([post('/telegram/sign-in', { initData: telegram(789) }), post('/telegram/sign-in', { initData: telegram(789) })]);
       const ids = [];
@@ -95,12 +115,13 @@ test('PostgreSQL: real auth endpoints reserve technical emails and never join by
       assert.equal((await pool.query("SELECT id FROM account WHERE provider_id = 'telegram' AND account_id = '789'")).rowCount, 1);
     });
     await t.test('new and repeat Telegram sign-in use provider binding even after changing email', async () => {
-      const first = await post('/telegram/sign-in', { initData: telegram(456) });
+      const first = await post('/telegram/sign-in', { initData: telegram(456, 'freshcanonical') });
       assert.equal(first.status, 200, await first.clone().text());
       const id = (await first.json()).user.id;
       assert.notEqual(id, user.id);
+      assert.equal((await pool.query("SELECT type FROM user_alias WHERE alias_lower = 'freshcanonical'")).rows[0].type, 'canonical');
       await pool.query('UPDATE "user" SET email = $1 WHERE id = $2', ['telegram-owner@example.test', id]);
-      const repeat = await post('/telegram/sign-in', { initData: telegram(456) });
+      const repeat = await post('/telegram/sign-in', { initData: telegram(456, 'freshcanonical') });
       assert.equal(repeat.status, 200, await repeat.clone().text());
       assert.equal((await repeat.json()).user.id, id);
       assert.equal((await pool.query("SELECT user_id FROM account WHERE provider_id = 'telegram' AND account_id = '456'")).rows[0].user_id, id);
