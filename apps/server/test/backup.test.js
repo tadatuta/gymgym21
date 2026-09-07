@@ -87,6 +87,55 @@ test('PostgreSQL backup import is atomic and revision guarded', { skip: !testUrl
       assert.equal(rejected.status, 409);
       assert.deepEqual(await repository.readSnapshot(key), snapshot);
     });
+    await t.test('malformed backup fields always return 400 before any PostgreSQL changes', async () => {
+      const key = 'malformed-fields';
+      const initial = await client(key)('init', 0, { workoutTypes: [entity('A')] });
+      const before = await repository.readSnapshot(key);
+      const now = '2026-09-01T00:00:00Z';
+      const log = { id: 'L', workoutTypeId: 'A', workoutId: 'orphan', date: now, weight: 10, reps: 1 };
+      const workout = { id: 'W', startTime: now, status: 'finished', isManual: true, pauseIntervals: [] };
+      const profile = { id: 'me', createdAt: now, isPublic: false };
+      const malformed = [
+        ...['<img>', null, -1, 1e30].map((weight) => ({ ...backup, logs: [{ ...log, weight }] })),
+        ...['2026-02-30T00:00:00Z', '2025-02-29T00:00:00Z', '2026-09-01', '0000-01-01T00:00:00Z'].map((date) => ({ ...backup, logs: [{ ...log, date }] })),
+        { ...backup, logs: [{ ...log, reps: 0.5 }] },
+        { ...backup, logs: [{ ...log, durationSeconds: 60 }] },
+        { ...backup, logs: [{ ...log, workoutTypeId: {} }] },
+        { ...backup, logs: [{ ...log, workoutId: [] }] },
+        { ...backup, logs: [log, log] },
+        { ...backup, logs: [{ ...log, id: ' '.repeat(3) }] },
+        { ...backup, logs: [{ ...log, id: 'x'.repeat(201) }] },
+        { ...backup, workoutTypes: [null] },
+        { ...backup, workoutTypes: [{ ...entity('A'), order: 2147483648 }] },
+        { ...backup, workoutTypes: [{ ...entity('A'), name: 'bad\0name' }] },
+        { ...backup, workouts: [{ ...workout, pauseIntervals: [{ start: now, end: '2026-02-30T00:00:00Z' }] }] },
+        { ...backup, workouts: [{ ...workout, status: 'unknown' }] },
+        { ...backup, profile: [] },
+        { ...backup, profile: { ...profile, birthDate: '2026-02-30' } },
+        { ...backup, profile: { ...profile, height: -1 } },
+        { ...backup, profile: { ...profile, friends: [{ identifier: 'friend', displayName: 'Friend', addedAt: 'yesterday' }] } },
+      ];
+      for (const mode of ['merge', 'replace']) for (const data of malformed) {
+        const response = await api(key)(mode, initial.cursor, data);
+        assert.equal(response.status, 400, JSON.stringify({ data, response: response.body }));
+        assert.deepEqual(await repository.readSnapshot(key), before);
+      }
+    });
+    await t.test('valid orphan references and cleared birth date roundtrip in both modes', async () => {
+      const now = '2026-09-01T00:00:00Z';
+      for (const mode of ['merge', 'replace']) {
+        const key = `orphans-${mode}`;
+        const data = { workoutTypes: [], workouts: [], logs: [{ id: 'L', workoutTypeId: 'deleted-type', workoutId: 'legacy-workout', date: now, weight: 0, reps: 0 }],
+          profile: { id: 'me', isPublic: false, createdAt: now, birthDate: '' } };
+        const response = await api(key)(mode, 0, data);
+        assert.equal(response.status, 200, JSON.stringify(response.body));
+        const snapshot = await repository.readSnapshot(key);
+        assert.equal(snapshot.logs[0].workoutTypeId, 'deleted-type');
+        assert.equal(snapshot.logs[0].workoutId, 'legacy-workout');
+        assert.equal(snapshot.profile.birthDate, undefined);
+        assert.deepEqual(snapshot.workoutTypes, []);
+      }
+    });
     await t.test('endpoint rejects invalid payload and wrong account without changes', async () => {
       const key = 'invalid-backup';
       await client(key)('init', 0, { workoutTypes: [entity('A')] });

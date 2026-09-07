@@ -1,3 +1,4 @@
+import { backupDataSchema, backupEnvelopeSchema } from './backup-validation';
 import type { AppData, SyncItem, UserProfile, WorkoutSession, WorkoutSet, WorkoutType } from '../types';
 
 export type BackupMode = 'merge' | 'replace';
@@ -37,16 +38,17 @@ export function readBackup(input: unknown): AppData {
     if (!input || typeof input !== 'object') throw new Error('Неверный формат файла');
     const envelope = input as Record<string, unknown>;
     if ('format' in envelope && (envelope.format !== 'gym21-backup' || envelope.version !== 1)) throw new Error('Неподдерживаемая версия резервной копии');
-    const data = ('format' in envelope ? envelope.data : input) as AppData;
-    if (!data || !Array.isArray(data.workoutTypes) || !Array.isArray(data.logs) || (data.workouts !== undefined && !Array.isArray(data.workouts))) throw new Error('Неверный формат файла');
+    // Only the old AppData format may omit workouts. Never coerce values in records.
+    const candidate = 'format' in envelope ? input : { ...envelope, workouts: envelope.workouts === undefined ? [] : envelope.workouts };
+    const result = 'format' in envelope ? backupEnvelopeSchema.safeParse(candidate) : backupDataSchema.safeParse(candidate);
+    if (!result.success) {
+        const issue = result.error.issues[0];
+        throw new Error(`Неверная резервная копия: ${issue.path.join('.') || 'файл'}: ${issue.message}`);
+    }
+    const data = ('data' in result.data ? result.data.data : result.data) as AppData;
     const now = new Date().toISOString();
     const normalize = <T extends SyncItem & { id: string }>(items: T[]): T[] => {
-        const ids = new Set<string>();
-        return items.filter((item) => {
-            if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id || ids.has(item.id)) throw new Error('Неверный или повторяющийся ID в файле');
-            ids.add(item.id);
-            return !item.isDeleted;
-        }).map((item) => ({ ...stripMetadata(item), updatedAt: now }));
+        return items.filter((item) => !item.isDeleted).map((item) => ({ ...stripMetadata(item), updatedAt: now }));
     };
     return {
         workoutTypes: normalize(data.workoutTypes), logs: normalize(data.logs), workouts: normalize(data.workouts ?? []),

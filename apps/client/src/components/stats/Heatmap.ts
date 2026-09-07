@@ -1,3 +1,4 @@
+import { escapeAttribute } from '../../utils/safe-html';
 /**
  * Renders a contribution heatmap similar to GitHub's.
  * @param dateSet Set of date strings (YYYY-MM-DD) where workouts occurred.
@@ -28,7 +29,7 @@ export function renderHeatmap(dateSet: Set<string>, months: number = 6): string 
         const cssClass = `heatmap-cell level-${level}`;
         const title = `${dateStr}: ${hasWorkout ? 'Workout' : 'No workout'}`;
 
-        html += `<div class="${cssClass}" title="${title}"></div>`;
+        html += `<div class="${escapeAttribute(cssClass)}" title="${escapeAttribute(title)}"></div>`;
 
         // Next day
         currentDate.setDate(currentDate.getDate() + 1);

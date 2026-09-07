@@ -1,3 +1,4 @@
+import { invalidBackupCases, validBackupData } from './backup-fixtures.test-helper';
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '../db';
@@ -31,6 +32,42 @@ describe('StorageService sync scheduling', () => {
         }
         vi.useRealTimers();
         vi.unstubAllGlobals();
+    });
+
+    it('rejects the entire file before online preflight or any IndexedDB table mutation in both modes', async () => {
+        const service = new StorageService({ enableBroadcast: false });
+        try {
+            await service.activate(`invalid-backup-${Math.random()}`);
+            await service.addWorkoutType('Keep');
+            await db.aiResultCache.put({ type: 'general', markdown: 'cached', updatedAt: '2026-09-01T00:00:00Z' });
+            const before = await Promise.all(db.tables.map((table) => table.toArray()));
+            const preflight = vi.spyOn(SyncService.prototype, 'importBackup');
+            for (const online of [true, false]) {
+                Object.defineProperty(navigator, 'onLine', { configurable: true, value: online });
+                for (const mode of ['merge', 'replace'] as const) {
+                    for (const [path, input] of invalidBackupCases) {
+                        await expect(service.importData(input, mode)).rejects.toThrow(path);
+                        expect(await Promise.all(db.tables.map((table) => table.toArray()))).toEqual(before);
+                    }
+                }
+            }
+            expect(preflight).not.toHaveBeenCalled();
+        } finally {
+            service.dispose();
+            Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+        }
+    });
+
+    it('valid envelope reaches the same preflight in merge and replace modes', async () => {
+        const service = new StorageService({ enableBroadcast: false });
+        try {
+            await service.activate(`valid-backup-${Math.random()}`);
+            const preflight = vi.spyOn(SyncService.prototype, 'importBackup').mockResolvedValue(undefined);
+            for (const mode of ['merge', 'replace'] as const) {
+                await service.importData({ format: 'gym21-backup', version: 1, exportedAt: '2026-09-01T00:00:00Z', data: validBackupData() }, mode);
+                expect(preflight).toHaveBeenLastCalledWith(expect.objectContaining({ logs: validBackupData().logs.map((log) => expect.objectContaining(log)) }), mode);
+            }
+        } finally { service.dispose(); }
     });
 
     it('offline merge rebases on local versions, keeps other records, and offline replace is non-destructive', async () => {

@@ -521,12 +521,12 @@ function renderMainPage() {
             <div class="form-row">
               <div class="form-group">
                 <label class="label">Вес (кг)</label>
-                <input class="input" type="number" name="weight" step="0.5" placeholder="0" value="${editingLogId && editingLog ? (editingLog.weight ?? '') : ''}">
+                <input class="input" type="number" name="weight" step="0.5" placeholder="0" value="${escapeAttribute(editingLogId && editingLog ? (editingLog.weight ?? '') : '')}">
 
               </div>
               <div class="form-group">
                 <label class="label">Повторений</label>
-                <input class="input" type="number" name="reps" placeholder="0" value="${editingLogId && editingLog ? (editingLog.reps ?? '') : ''}">
+                <input class="input" type="number" name="reps" placeholder="0" value="${escapeAttribute(editingLogId && editingLog ? (editingLog.reps ?? '') : '')}">
 
               </div>
             </div>
@@ -536,15 +536,15 @@ function renderMainPage() {
             <div class="form-row">
                 <div class="form-group">
                     <label class="label">Часы</label>
-                    <input class="input" type="number" name="duration_hours" placeholder="0" value="${editingLogId && editingLog && editingLog.duration !== undefined ? Math.floor(editingLog.duration / 60) : ''}">
+                    <input class="input" type="number" name="duration_hours" placeholder="0" value="${escapeAttribute(editingLogId && editingLog && editingLog.duration !== undefined ? Math.floor(editingLog.duration / 60) : '')}">
                 </div>
                 <div class="form-group">
                     <label class="label">Минуты</label>
-                    <input class="input" type="number" name="duration_minutes" placeholder="0" value="${editingLogId && editingLog && editingLog.duration !== undefined ? (editingLog.duration % 60) : ''}">
+                    <input class="input" type="number" name="duration_minutes" placeholder="0" value="${escapeAttribute(editingLogId && editingLog && editingLog.duration !== undefined ? (editingLog.duration % 60) : '')}">
                 </div>
                 <div class="form-group">
                     <label class="label">Секунды</label>
-                    <input class="input" type="number" name="duration_seconds" placeholder="0" value="${editingLogId && editingLog && editingLog.durationSeconds !== undefined ? editingLog.durationSeconds : ''}">
+                    <input class="input" type="number" name="duration_seconds" placeholder="0" value="${escapeAttribute(editingLogId && editingLog && editingLog.durationSeconds !== undefined ? editingLog.durationSeconds : '')}">
                 </div>
             </div>
         </div>
@@ -552,13 +552,13 @@ function renderMainPage() {
         ${editingLogId && editingLog ? `
         <div class="form-group">
           <label class="label">Дата и время</label>
-          <input class="input" type="datetime-local" name="date" required value="${toLocalDatetimeValue(editingLog.date)}">
+          <input class="input" type="datetime-local" name="date" required value="${escapeAttribute(toLocalDatetimeValue(editingLog.date))}">
         </div>
         ` : ''}
 
         <button class="button" type="submit">${editingLogId ? 'Сохранить изменения' : 'Зафиксировать'}</button>
         ${editingLogId ? `<button class="button button_secondary" type="button" id="cancel-edit-btn" style="margin-top: 12px;">Отмена</button>` : ''}
-        ${!editingLogId && lastLog ? `<button class="button button_secondary" type="button" id="duplicate-last-btn" style="margin-top: 12px;">Повторить: ${duplicateWorkoutTypeName} ${lastLog.weight !== undefined ? `${lastLog.weight}кг × ${lastLog.reps}` : `${lastLog.duration || 0} мин${lastLog.durationSeconds ? ` ${lastLog.durationSeconds} сек` : ''}`}</button>` : ''}
+        ${!editingLogId && lastLog ? `<button class="button button_secondary" type="button" id="duplicate-last-btn" style="margin-top: 12px;">Повторить: ${duplicateWorkoutTypeName} ${lastLog.weight !== undefined ? `${escapeHtml(lastLog.weight)}кг × ${escapeHtml(lastLog.reps)}` : `${escapeHtml(lastLog.duration || 0)} мин${lastLog.durationSeconds ? ` ${escapeHtml(lastLog.durationSeconds)} сек` : ''}`}</button>` : ''}
 
       </form>
       <div class="recent-logs">
@@ -567,9 +567,9 @@ function renderMainPage() {
            <div id="week-label-container" style="display: flex; align-items: center; gap: 8px; position: relative;">
              <span style="font-size: 18px; position: relative; display: inline-block;">
                📅
-               <input type="date" id="calendar-input" value="${lastCalendarValue}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer;">
+               <input type="date" id="calendar-input" value="${escapeAttribute(lastCalendarValue)}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer;">
              </span>
-             <h2 class="subtitle" style="margin: 0;">${currentWeekOffset === 0 ? 'Последние 7 дней' : label}</h2>
+             <h2 class="subtitle" style="margin: 0;">${escapeHtml(currentWeekOffset === 0 ? 'Последние 7 дней' : label)}</h2>
              <label class="filter-toggle" title="Фильтр по типу упражнения">
                <input type="checkbox" id="filter-toggle-input" ${isFilterEnabled ? 'checked' : ''}>
                <span class="filter-toggle__icon">🔍</span>
@@ -783,11 +783,11 @@ function renderWorkoutEditForm(workout: WorkoutSession): string {
         <div class="form-row">
           <div class="form-group">
             <label class="label">Начало</label>
-            <input class="input" type="datetime-local" name="startTime" value="${startVal}" required>
+            <input class="input" type="datetime-local" name="startTime" value="${escapeAttribute(startVal)}" required>
           </div>
           <div class="form-group">
             <label class="label">Конец</label>
-            <input class="input" type="datetime-local" name="endTime" value="${endVal}">
+            <input class="input" type="datetime-local" name="endTime" value="${escapeAttribute(endVal)}">
           </div>
         </div>
         <div style="display: flex; gap: 8px; margin-top: 8px;">
@@ -840,7 +840,7 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
 
     html += `<div class="log-day">`;
     html += `<div class="log-day__header">
-      <span>${dateLabel}${showNameInHeader ? ` • ${escapeHtml(singleWorkout.name || '')}` : ''}${singleWorkout ? ` • ${singleWorkoutDuration} мин` : ''}</span>
+      <span>${escapeHtml(dateLabel)}${showNameInHeader ? ` • ${escapeHtml(singleWorkout.name || '')}` : ''}${singleWorkout ? ` • ${escapeHtml(singleWorkoutDuration)} мин` : ''}</span>
       <div class="log-day__header-actions">
         ${isEditable && singleWorkout ? `<button class="workout-header__edit" data-workout-id="${escapeAttribute(singleWorkout.id)}" title="Редактировать тренировку">✏️</button>` : ''}
         ${isEditable ? `<button class="share-btn" data-date="${escapeAttribute(dayDateStr)}" title="Поделиться">📤</button>` : ''}
@@ -865,7 +865,7 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
         html += `<h3 class="workout-subheader">
                 <span>${escapeHtml(workout?.name || 'Тренировка')}</span>
                 <div class="workout-subheader__actions">
-                  <span class="workout-subheader__time">${duration} мин</span>
+                  <span class="workout-subheader__time">${escapeHtml(duration)} мин</span>
                   ${isEditable && workout ? `<button class="workout-header__edit" data-workout-id="${escapeAttribute(workout.id)}" title="Редактировать тренировку">✏️</button>` : ''}
                 </div>
             </h3>`;
@@ -895,11 +895,11 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
                   <div class="log-set ${set.id === editingLogId ? 'log-set_active-edit' : ''} ${set.id === lastAddedLogId ? 'log-set_new' : ''}" data-id="${escapeAttribute(set.id)}" style="cursor: pointer;">
                     <div class="log-set__info">
                       ${set.weight !== undefined && set.reps !== undefined ? `
-                        <span class="log-set__weight">${set.weight} кг</span>
+                        <span class="log-set__weight">${escapeHtml(set.weight)} кг</span>
                         <span class="log-set__times">×</span>
-                        <span class="log-set__reps">${set.reps}</span>
+                        <span class="log-set__reps">${escapeHtml(set.reps)}</span>
                       ` : `
-                        <span class="log-set__reps">⏱ ${set.duration || 0} мин${set.durationSeconds ? ` ${set.durationSeconds} сек` : ''}</span>
+                        <span class="log-set__reps">⏱ ${escapeHtml(set.duration || 0)} мин${set.durationSeconds ? ` ${escapeHtml(set.durationSeconds)} сек` : ''}</span>
                       `}
                     </div>
                     ${isEditable ? `
@@ -937,11 +937,11 @@ function generateLogsListHtml(logs: WorkoutSet[], types: WorkoutType[], isEditab
                   <div class="log-set ${set.id === editingLogId ? 'log-set_active-edit' : ''} ${set.id === lastAddedLogId ? 'log-set_new' : ''}" data-id="${escapeAttribute(set.id)}" style="cursor: pointer;">
                     <div class="log-set__info">
                       ${set.weight !== undefined && set.reps !== undefined ? `
-                        <span class="log-set__weight">${set.weight} кг</span>
+                        <span class="log-set__weight">${escapeHtml(set.weight)} кг</span>
                         <span class="log-set__times">×</span>
-                        <span class="log-set__reps">${set.reps}</span>
+                        <span class="log-set__reps">${escapeHtml(set.reps)}</span>
                       ` : `
-                        <span class="log-set__reps">⏱ ${set.duration || 0} мин${set.durationSeconds ? ` ${set.durationSeconds} сек` : ''}</span>
+                        <span class="log-set__reps">⏱ ${escapeHtml(set.duration || 0)} мин${set.durationSeconds ? ` ${escapeHtml(set.durationSeconds)} сек` : ''}</span>
                       `}
                     </div>
                     ${isEditable ? `
@@ -1029,7 +1029,7 @@ function renderProfileTabContent(tab: 'ai' | 'public' | 'data'): string {
   if (tab === 'public') {
     return `${profile?.friends && profile.friends.length > 0 ? `
       <div class="settings-section">
-          <div class="settings-section-title">Друзья (${profile.friends.length})</div>
+          <div class="settings-section-title">Друзья (${escapeHtml(profile.friends.length)})</div>
           <div class="friends-list">
               ${profile.friends.map((f) => `
                   <a
@@ -1780,7 +1780,7 @@ function renderPublicProfilePage() {
     <div class="page-content profile-page">
       ${profile.cacheMetadata?.cached ? `
         <div class="hint" style="margin-bottom:12px; padding:10px 12px; border-radius:12px; background:var(--surface-color-alt);">
-          Оффлайн-копия от ${new Date(profile.cacheMetadata.cachedAt).toLocaleString()}
+          Оффлайн-копия от ${escapeHtml(new Date(profile.cacheMetadata.cachedAt).toLocaleString())}
         </div>
       ` : ''}
       <div class="profile-header">
@@ -1817,8 +1817,8 @@ function renderPublicProfilePage() {
           <h2 class="subtitle">Недавняя активность</h2>
           ${profile.recentActivity.map(a => `
             <div class="activity-item">
-              <span class="activity-date">${new Date(a.date).toLocaleDateString()}</span>
-              <span class="activity-count">${a.exerciseCount} упражнений</span>
+              <span class="activity-date">${escapeHtml(new Date(a.date).toLocaleDateString())}</span>
+              <span class="activity-count">${escapeHtml(a.exerciseCount)} упражнений</span>
             </div>
           `).join('')}
         </div>
@@ -1874,19 +1874,19 @@ function renderStatsPage() {
         <div class="stats-summary">
             <div class="stat-metric">
                 <div class="stat-metric__label">Всего тренировок</div>
-                <div class="stat-metric__value">${dates.size}</div>
+                <div class="stat-metric__value">${escapeHtml(dates.size)}</div>
             </div>
             <div class="stat-metric">
                 <div class="stat-metric__label">Сред. длительность</div>
-                <div class="stat-metric__value">${durationStats.averageMinutes}<span class="stat-metric__unit">мин</span></div>
+                <div class="stat-metric__value">${escapeHtml(durationStats.averageMinutes)}<span class="stat-metric__unit">мин</span></div>
             </div>
              <div class="stat-metric">
                 <div class="stat-metric__label">Общий объем</div>
-                <div class="stat-metric__value">${Math.round(totalVolume / 1000)}<span class="stat-metric__unit">т</span></div>
+                <div class="stat-metric__value">${escapeHtml(Math.round(totalVolume / 1000))}<span class="stat-metric__unit">т</span></div>
             </div>
             <div class="stat-metric">
                 <div class="stat-metric__label">Всего повторений</div>
-                <div class="stat-metric__value">${totalReps}</div>
+                <div class="stat-metric__value">${escapeHtml(totalReps)}</div>
             </div>
         </div>
 

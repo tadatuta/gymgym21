@@ -1,3 +1,4 @@
+import { escapeHtml, escapeAttribute } from '../../utils/safe-html';
 import { WorkoutSet, WorkoutSession } from '../../types';
 
 /**
@@ -91,17 +92,17 @@ function renderBarChart(data: DataPoint[], unit: string): string {
         const barWidth = (1 / data.length) * 80; // 80% of allocated slot width
 
         return `
-            <rect x="${x + 5}%" y="${100 - barHeight}%" width="${barWidth}%" height="${barHeight}%" fill="var(--color-button)" rx="2" opacity="0.8">
-               <title>${d.label}: ${d.value}${unit}</title>
+            <rect x="${escapeAttribute(x + 5)}%" y="${escapeAttribute(100 - barHeight)}%" width="${escapeAttribute(barWidth)}%" height="${escapeAttribute(barHeight)}%" fill="var(--color-button)" rx="2" opacity="0.8">
+               <title>${escapeHtml(d.label)}: ${escapeHtml(d.value)}${escapeHtml(unit)}</title>
             </rect>
-            <text x="${x + 5 + barWidth / 2}%" y="95%" font-size="10" text-anchor="middle" fill="var(--color-text)" style="pointer-events: none;">
-                ${d.label}
+            <text x="${escapeAttribute(x + 5 + barWidth / 2)}%" y="95%" font-size="10" text-anchor="middle" fill="var(--color-text)" style="pointer-events: none;">
+                ${escapeHtml(d.label)}
             </text>
         `;
     }).join('');
 
     return `
-        <svg width="${width}%" height="${height}" preserveAspectRatio="none">
+        <svg width="${escapeAttribute(width)}%" height="${escapeAttribute(height)}" preserveAspectRatio="none">
             ${bars}
         </svg>
     `;
@@ -125,26 +126,26 @@ function renderLineChart(data: DataPoint[], unit: string): string {
     const points = data.map((d, i) => `${getX(i)},${getY(d.value)}`).join(' ');
 
     const circles = data.map((d, i) => `
-        <circle cx="${getX(i)}" cy="${getY(d.value)}" r="4" fill="var(--color-bg)" stroke="var(--color-button)" stroke-width="2">
-            <title>${d.label}: ${d.value}${unit}</title>
+        <circle cx="${escapeAttribute(getX(i))}" cy="${escapeAttribute(getY(d.value))}" r="4" fill="var(--color-bg)" stroke="var(--color-button)" stroke-width="2">
+            <title>${escapeHtml(d.label)}: ${escapeHtml(d.value)}${escapeHtml(unit)}</title>
         </circle>
     `).join('');
 
     return `
-        <svg viewBox="0 0 ${vbWidth} ${height}" class="chart">
+        <svg viewBox="0 0 ${escapeAttribute(vbWidth)} ${escapeAttribute(height)}" class="chart">
              <polyline
                 fill="none"
                 stroke="var(--color-button)"
                 stroke-width="3"
                 stroke-linejoin="round"
                 stroke-linecap="round"
-                points="${points}"
+                points="${escapeAttribute(points)}"
             />
             ${circles}
         </svg>
         <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 12px; color: var(--color-hint);">
-            <span>${Math.round(min)}${unit}</span>
-            <span>${Math.round(max)}${unit}</span>
+            <span>${escapeHtml(Math.round(min))}${escapeHtml(unit)}</span>
+            <span>${escapeHtml(Math.round(max))}${escapeHtml(unit)}</span>
         </div>
     `;
 }

@@ -17,11 +17,11 @@ export function renderProfileStats(stats: ProfileStats, logDates?: Set<string>):
   return `
       <div class="profile-stats">
         <div class="stat-card">
-          <div class="stat-value">${stats.totalWorkouts}</div>
+          <div class="stat-value">${escapeHtml(stats.totalWorkouts)}</div>
           <div class="stat-label">Тренировок</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value">${volumeDisplay}</div>
+          <div class="stat-value">${escapeHtml(volumeDisplay)}</div>
           <div class="stat-label">Общий объём</div>
         </div>
         ${stats.favoriteExercise ? `
@@ -32,7 +32,7 @@ export function renderProfileStats(stats: ProfileStats, logDates?: Set<string>):
         ` : ''}
         ${stats.lastWorkoutDate ? `
           <div class="stat-card">
-            <div class="stat-value" style="font-size: 1rem;">${new Date(stats.lastWorkoutDate).toLocaleDateString()}</div>
+            <div class="stat-value" style="font-size: 1rem;">${escapeHtml(new Date(stats.lastWorkoutDate).toLocaleDateString())}</div>
             <div class="stat-label">Последняя тренировка</div>
           </div>
         ` : ''}

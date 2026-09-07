@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { HttpError } from '../errors.js';
+import { backupDataSchema } from '../../backup-validation.js';
 import { config } from '../../config.js';
 import type { AppDependencies } from '../app-types.js';
 import { createRateLimitMiddleware, createStorageRateLimitKey } from '../middleware/rate-limit.js';
@@ -122,22 +122,9 @@ export function createMeRouter(dependencies: AppDependencies): Router {
     const payload = z.object({
       mode: z.enum(['merge', 'replace']),
       expectedRevision: z.number().int().nonnegative(),
-      data: z.object({
-        workoutTypes: z.array(workoutTypeSyncSchema),
-        logs: z.array(logSyncSchema),
-        workouts: z.array(workoutSyncSchema),
-        profile: profileSyncSchema.optional(),
-      }).strict(),
+      data: backupDataSchema,
     }).strict().parse(req.body);
-    for (const items of [payload.data.workoutTypes, payload.data.workouts, payload.data.logs]) {
-      const ids = items.map((item) => item.id);
-      if (ids.some((id) => !id) || new Set(ids).size !== ids.length) throw new HttpError(400, 'Backup IDs must be nonempty and unique');
-    }
-    if (payload.data.profile) {
-      delete payload.data.profile.username;
-      delete payload.data.profile.telegramUsername;
-      delete payload.data.profile.telegramUserId;
-    }
+    // backupDataSchema strips all client-supplied trusted identity fields.
     const result = await dependencies.storageRepository.sync(req.authContext!.storageKey, {
       cursor: payload.expectedRevision, changes: payload.data,
     }, req.authContext!, payload);

@@ -1,0 +1,25 @@
+export const validBackupData = () => ({
+    workoutTypes: [{ id: 'type', name: 'Exercise' }],
+    workouts: [{ id: 'workout', startTime: '2026-09-01T12:00:00Z', status: 'finished', isManual: true, pauseIntervals: [] }],
+    logs: [{ id: 'log', workoutTypeId: 'type', workoutId: 'workout', date: '2026-09-01T12:00:00Z', weight: 12.5, reps: 10 }],
+    profile: { id: 'me', isPublic: false, createdAt: '2026-09-01T12:00:00Z', birthDate: '', friends: [] },
+});
+export const invalidBackupCases: [string, unknown][] = [
+    ...['<img src=x onerror=alert(1)>', NaN, Infinity, -1, null, {}, 1e30].map((weight): [string, unknown] => ['logs.0.weight', { ...validBackupData(), logs: [{ ...validBackupData().logs[0], weight }] }]),
+    ...['2026-02-30T00:00:00Z', '2025-02-29T00:00:00Z', '2026-09-01', '2026-09-01T25:00:00Z', '0000-01-01T00:00:00Z'].map((date): [string, unknown] => ['logs.0.date', { ...validBackupData(), logs: [{ ...validBackupData().logs[0], date }] }]),
+    ['logs.0.reps', { ...validBackupData(), logs: [{ ...validBackupData().logs[0], reps: 1.5 }] }],
+    ['logs.0.durationSeconds', { ...validBackupData(), logs: [{ ...validBackupData().logs[0], durationSeconds: 60 }] }],
+    ['logs.0.workoutId', { ...validBackupData(), logs: [{ ...validBackupData().logs[0], workoutId: {} }] }],
+    ['logs.0.workoutTypeId', { ...validBackupData(), logs: [{ ...validBackupData().logs[0], workoutTypeId: '' }] }],
+    ['logs.0.id', { ...validBackupData(), logs: [{ ...validBackupData().logs[0], id: 'x'.repeat(201) }] }],
+    ['logs.1.id', { ...validBackupData(), logs: [validBackupData().logs[0], validBackupData().logs[0]] }],
+    ['workoutTypes.0', { ...validBackupData(), workoutTypes: [[]] }],
+    ['workoutTypes.0.order', { ...validBackupData(), workoutTypes: [{ id: 'type', name: 'A', order: 2147483648 }] }],
+    ['workouts', { ...validBackupData(), workouts: null }],
+    ['workouts.0.pauseIntervals', { ...validBackupData(), workouts: [{ ...validBackupData().workouts[0], pauseIntervals: {} }] }],
+    ['workouts.0.status', { ...validBackupData(), workouts: [{ ...validBackupData().workouts[0], status: 'unknown' }] }],
+    ['profile', { ...validBackupData(), profile: [] }],
+    ['profile.birthDate', { ...validBackupData(), profile: { ...validBackupData().profile, birthDate: '2026-02-30' } }],
+    ['profile.height', { ...validBackupData(), profile: { ...validBackupData().profile, height: -1 } }],
+    ['profile.friends.0.addedAt', { ...validBackupData(), profile: { ...validBackupData().profile, friends: [{ identifier: 'friend', displayName: 'Friend', addedAt: 'yesterday' }] } }],
+];
