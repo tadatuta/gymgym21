@@ -14,7 +14,7 @@ export async function refreshPublicAliases(client: PoolClient, storageKey: strin
   const desired = new Map<string, { alias: string; type: string }>();
   desired.set(`id_${storageKey}`.toLowerCase(), { alias: `id_${storageKey}`, type: 'storage_id' });
 
-  await ensureAuthDatabaseSchema();
+  // The caller prepares the unified schema before acquiring its transaction client.
   const binding = await client.query<{ user_id: string }>(
     'SELECT user_id FROM user_storage_binding WHERE storage_key = $1', [storageKey],
   );

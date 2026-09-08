@@ -45,43 +45,66 @@ async function readMigrationFiles(): Promise<Array<{ name: string; sql: string }
   );
 }
 
-export async function ensureDatabaseReady() {
-  if (!migrationsPromise) {
-    migrationsPromise = (async () => {
-      const currentPool = getDatabasePool();
-
-      await currentPool.query(`
-        CREATE TABLE IF NOT EXISTS app_migrations (
-          name TEXT PRIMARY KEY,
-          applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-      `);
-
-      const applied = await currentPool.query<AppliedMigrationRow>('SELECT name FROM app_migrations');
-      const appliedNames = new Set(applied.rows.map((row) => row.name));
-      const migrations = await readMigrationFiles();
-
-      for (const migration of migrations) {
-        if (appliedNames.has(migration.name)) {
-          continue;
-        }
-
-        const client = await currentPool.connect();
-        try {
-          await client.query('BEGIN');
-          await client.query(migration.sql);
-          await client.query('INSERT INTO app_migrations (name) VALUES ($1)', [migration.name]);
-          await client.query('COMMIT');
-        } catch (error) {
-          await client.query('ROLLBACK');
-          throw error;
-        } finally {
-          client.release();
-        }
+/** A session lock covers registry creation, discovery and every migration transaction. */
+async function migrate(currentPool: Pool): Promise<void> {
+  const migrations = await readMigrationFiles();
+  const client = await currentPool.connect();
+  let locked = false;
+  let destroy = false;
+  let lockKey: string | undefined;
+  try {
+    // Database/schema scope lets isolated schemas migrate independently. Keep the key
+    // on this connection so migration SQL cannot change the unlock target.
+    const key = await client.query<{ key: string }>(
+      "SELECT hashtextextended(current_database() || ':' || current_schema() || ':gym21:migrations', 0)::text AS key",
+    );
+    lockKey = key.rows[0]!.key;
+    await client.query('SELECT pg_advisory_lock($1::bigint)', [lockKey]);
+    locked = true;
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS app_migrations (
+        name TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    const applied = await client.query<AppliedMigrationRow>('SELECT name FROM app_migrations');
+    const appliedNames = new Set(applied.rows.map(row => row.name));
+    for (const migration of migrations) {
+      if (appliedNames.has(migration.name)) continue;
+      console.info('[database] migration start', { migration: migration.name });
+      try {
+        await client.query('BEGIN');
+        await client.query(migration.sql);
+        await client.query('INSERT INTO app_migrations (name) VALUES ($1)', [migration.name]);
+        await client.query('COMMIT');
+        console.info('[database] migration complete', { migration: migration.name });
+      } catch (error) {
+        console.error('[database] migration failed', { migration: migration.name });
+        try { await client.query('ROLLBACK'); } catch { destroy = true; }
+        throw error;
       }
-    })();
+    }
+  } finally {
+    if (locked && !destroy) {
+      try {
+        const result = await client.query<{ unlocked: boolean }>('SELECT pg_advisory_unlock($1::bigint) AS unlocked', [lockKey]);
+        destroy = result.rows[0]?.unlocked !== true;
+      } catch { destroy = true; }
+      if (destroy) console.error('[database] migration lock release failed; discarding connection');
+    }
+    // Destroy also covers an uncertain lock acquisition (e.g. a disconnected session).
+    client.release(destroy || !locked);
   }
+}
 
+export function ensureDatabaseReady(): Promise<void> {
+  if (!migrationsPromise) {
+    const attempt = migrate(getDatabasePool()).catch(error => {
+      if (migrationsPromise === attempt) migrationsPromise = null;
+      throw error;
+    });
+    migrationsPromise = attempt;
+  }
   return migrationsPromise;
 }
 

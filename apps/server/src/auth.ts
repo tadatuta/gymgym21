@@ -817,12 +817,16 @@ function createAuthInstance() {
   });
 }
 
+let authPool: ReturnType<typeof getAuthPool> | null = null;
 let authInstance: ReturnType<typeof createAuthInstance> | null = null;
 let authNodeHandler: ReturnType<typeof toNodeHandler> | null = null;
 
 export function getAuth() {
-  if (!authInstance) {
+  const currentPool = getAuthPool();
+  if (!authInstance || authPool !== currentPool) {
     authInstance = createAuthInstance();
+    authPool = currentPool;
+    authNodeHandler = null;
   }
 
   return authInstance;
@@ -837,8 +841,9 @@ export async function ensureAuthReady() {
 }
 
 export function createAuthNodeHandler() {
+  const auth = getAuth();
   if (!authNodeHandler) {
-    authNodeHandler = toNodeHandler(getAuth());
+    authNodeHandler = toNodeHandler(auth);
   }
 
   return authNodeHandler;
@@ -929,6 +934,7 @@ export async function resolveRequestContext(headers: Headers): Promise<Authentic
 }
 
 export async function closeAuthResources() {
+  authPool = null;
   authNodeHandler = null;
   authInstance = null;
   await closeAuthPool();
