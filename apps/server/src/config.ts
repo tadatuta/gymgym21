@@ -1,5 +1,11 @@
 import process from 'node:process';
 
+function parseDatabaseSsl(value: string | undefined): boolean {
+  if (value === undefined || value === '' || value === 'false') return false;
+  if (value === 'true') return true;
+  throw new Error('DATABASE_SSL must be true or false');
+}
+
 function parseList(value: string | undefined, fallback: string[]): string[] {
   if (!value) return fallback;
   return value
@@ -91,7 +97,8 @@ export const config = {
   RATE_LIMIT_AI_MAX_CONCURRENT: parsePositiveInteger(process.env.RATE_LIMIT_AI_MAX_CONCURRENT, 1),
   BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET || '',
   DATABASE_URL: process.env.DATABASE_URL || '',
-  DATABASE_SSL: process.env.DATABASE_SSL === 'true',
+  DATABASE_SSL: parseDatabaseSsl(process.env.DATABASE_SSL),
+  DATABASE_SSL_CA_FILE: process.env.DATABASE_SSL_CA_FILE || '',
   PASSKEY_RP_ID: process.env.PASSKEY_RP_ID || 'localhost',
   PASSKEY_RP_NAME: process.env.PASSKEY_RP_NAME || 'Gym Gym 21',
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',

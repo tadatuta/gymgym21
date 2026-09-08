@@ -1,3 +1,4 @@
+import { DatabaseTlsConfigurationError } from './database-tls.js';
 import { createServer, type Server } from 'node:http';
 import type { Socket } from 'node:net';
 import { pathToFileURL } from 'node:url';
@@ -134,7 +135,7 @@ export async function startServer(): Promise<Server> {
     console.info('[server] listening', { host: config.HOST, port: (server.address() as { port: number }).port });
     return server;
   } catch (error) {
-    console.error('[server] startup failed', { phase, code: safeErrorCode(error) });
+    console.error('[server] startup failed', { phase, code: safeErrorCode(error), ...(error instanceof DatabaseTlsConfigurationError ? { message: error.message } : {}) });
     await shutdown();
     throw error;
   }

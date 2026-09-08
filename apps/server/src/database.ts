@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Pool, type PoolClient, type Client } from 'pg';
+import { databaseConnectionOptions } from './database-tls.js';
 import { config } from './config.js';
 
 interface AppliedMigrationRow {
@@ -29,8 +30,7 @@ export function getDatabasePool(): Pool {
       statement_timeout: config.DB_STATEMENT_TIMEOUT_MS,
       query_timeout: config.DB_QUERY_TIMEOUT_MS,
       idle_in_transaction_session_timeout: config.DB_STATEMENT_TIMEOUT_MS,
-      connectionString: config.DATABASE_URL,
-      ssl: config.DATABASE_SSL ? { rejectUnauthorized: false } : undefined,
+      ...databaseConnectionOptions(config),
     });
     const state = { clients: new Set<PoolClient>(), forced: false };
     poolClients.set(pool, state);
