@@ -109,6 +109,10 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 Он публикует только `127.0.0.1:${POSTGRES_HOST_PORT:-5432}`; при занятом порте задайте `POSTGRES_HOST_PORT=5433`. Для production используйте базовый файл без override. Все `RATE_LIMIT_*`, `AI_*` и настройки Telegram из примера передаются API явно.
 
+Серверный образ устанавливает только production-зависимости server/contracts и содержит compiled `dist`, SQL-миграции и Docker startup wrapper. Он запускается пользователем `node`; nginx клиента остаётся на внутреннем порту 80. Корневая `.dockerignore` исключает env/секреты, локальные данные и build/test outputs. JSON допускается только для явно перечисленных package manifests/lockfile/tsconfig: при добавлении необходимых JSON-ресурсов обновите allowlist.
+
+Проверка реальных образов: `node audit/docker-runtime.mjs`. Нужен Docker; скрипт копирует только tracked исходники в временный контекст, добавляет синтетические canary-файлы и проверяет их исключение, production dependencies/nonroot, миграции и HTTP auth/health с отдельной PostgreSQL, SPA/assets/service worker клиента. Созданные контейнеры, сеть, образы и временный контекст удаляются; рабочие `.env` и пользовательские данные не читаются.
+
 Проверка конфигурации без запуска контейнеров и чтения рабочей `.env`: `node audit/compose-config.mjs` (нужен Docker Compose; используются временные синтетические env-файлы).
 
 Persistent data:

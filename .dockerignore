@@ -1,0 +1,37 @@
+# Local dependencies, generated outputs and development metadata at any depth.
+**/node_modules
+**/dist
+**/.git
+**/.vscode
+**/.idea
+**/.DS_Store
+**/.cache
+**/coverage
+**/test-results
+**/playwright-report
+**/*.log
+.agents
+.codex
+audit
+old-data-storage
+trash
+s.svg
+# No environment files, private keys, credentials or local data in either build.
+**/.env*
+**/*.env
+**/.npmrc
+**/secrets
+**/credentials
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.json
+!package.json
+!package-lock.json
+!apps/client/package.json
+!apps/client/tsconfig.json
+!apps/server/package.json
+!apps/server/tsconfig.json
+!packages/contracts/package.json
+!packages/contracts/tsconfig.json
