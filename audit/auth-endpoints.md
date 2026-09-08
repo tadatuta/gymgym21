@@ -22,7 +22,7 @@ node --test apps/server/test/auth-http.test.js
 npm run test:integration
 ```
 
-Для browser fixture нужен Playwright с Chromium. До T05 используется установленный runtime либо явно заданные пути; новые зависимости в T04 не добавлялись:
+Для browser fixture нужен Playwright с Chromium. T05 объявляет Playwright в проекте: `npm run test:browser:install`. Fixture входит в `npm run test:browser`; для отдельного запуска можно использовать стандартный Chromium либо явно заданные пути:
 
 ```sh
 PLAYWRIGHT_MODULE_PATH=/absolute/path/to/playwright/index.mjs \
@@ -36,6 +36,6 @@ Fixture прерывается сразу после неуспешного Post
 
 Целевой HTTP suite: 6 passed, 0 skipped. Chromium сценарий прошёл с настоящей PostgreSQL; повторный 503 после reload также проверен. Server typecheck/ESLint и полный explicit integration — см. итоговую строку T04 в `AUDIT_PROGRESS.md`.
 
-HTTP suite входит в `npm test` (без URL явно skipped) и обязательный CI `test:integration` с PostgreSQL service. Browser fixture пока запускается отдельно: общее браузерное покрытие/portable dependencies/CI — T05; унификация исторических fixtures — T06. Физическая Passkey ceremony, настоящий Telegram, production TLS cookies и hosted GitHub runner этой проверкой не заявляются. Rate limits отключены только в изолированном fixture для проверки auth ownership; общий limiter проверяется отдельно в O05.
+HTTP suite входит в `npm test` (без URL явно skipped) и обязательный CI `test:integration` с PostgreSQL service. Browser fixture включён в [переносимый T05 suite и CI](browser-tests.md); унификация исторических fixtures — T06. Физическая Passkey ceremony, настоящий Telegram, production TLS cookies и hosted GitHub runner этой проверкой не заявляются. Rate limits отключены только в изолированном fixture для проверки auth ownership; общий limiter проверяется отдельно в O05.
 
 Подключение Express сверено через Context7 с [официальным Better Auth v1.6.23](https://github.com/better-auth/better-auth/blob/v1.6.23/docs/content/docs/integrations/express.mdx) — ближайшей доступной документированной версией к установленной 1.6.30 — и текущими production `createApp`/`createAuthNodeHandler`: auth handler подключён до JSON middleware.

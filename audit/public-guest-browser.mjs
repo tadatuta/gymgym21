@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'vite';
-const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href);
+const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : 'playwright');
 const envDir = await mkdtemp(join(tmpdir(), 'gym21-a18-env-'));
 const server = await createServer({ root: resolve('apps/client'), configFile: false, envDir,
   server: { host: '127.0.0.1', port: 0, hmr: false },

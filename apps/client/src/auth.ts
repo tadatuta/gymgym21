@@ -650,6 +650,16 @@ export async function authorizedApiFetch(path: string, init: RequestInit = {}, c
   });
   context.assertCurrent();
   if (init.signal?.aborted) throw init.signal.reason;
-  if (response.status === 401 || response.status === 409) clearAuthState({ clearOfflineAccount: true });
+  let accountMismatch = false;
+  if (response.status === 409) {
+    // Revision/AI conflicts are recoverable within the same session. Only the
+    // explicit identity guard means another cookie account owns this request.
+    const body: unknown = await response.clone().json().catch(() => null);
+    context.assertCurrent();
+    if (init.signal?.aborted) throw init.signal.reason;
+    accountMismatch = typeof body === 'object' && body !== null && 'code' in body
+      && body.code === 'ACCOUNT_CONTEXT_MISMATCH';
+  }
+  if (response.status === 401 || accountMismatch) clearAuthState({ clearOfflineAccount: true });
   return response;
 }

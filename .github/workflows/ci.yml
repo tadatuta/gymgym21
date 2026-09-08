@@ -50,3 +50,9 @@ jobs:
         env:
           # Disposable job service only; each fixture creates and drops its UUID schema.
           GYM21_TEST_DATABASE_URL: postgres://gym21_test:gym21_test_only@127.0.0.1:5432/gym21_ci_test
+      - name: Install Chromium and system dependencies
+        run: npx playwright install --with-deps chromium
+      - name: Run bounded Chromium integration suite
+        run: npm run test:browser
+        env:
+          GYM21_TEST_DATABASE_URL: postgres://gym21_test:gym21_test_only@127.0.0.1:5432/gym21_ci_test

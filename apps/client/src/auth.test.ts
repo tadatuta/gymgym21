@@ -278,3 +278,49 @@ describe('durable sign-out', () => {
     expect(localStorage.getItem('gym21_pending_sign_out_v1')).toBe('newer-intent');
   });
 });
+
+for (const body of [JSON.stringify({ code: 'backup_revision_conflict' }), JSON.stringify({ code: 'AI_CONTEXT_STALE' }), 'invalid JSON']) {
+  it(`preserves verified identity and response body for recoverable 409: ${body}`, async () => {
+    vi.resetModules(); vi.stubGlobal('localStorage', createMemoryStorage());
+    const auth = await import('./auth'); const databases = await import('./db');
+    const status = migrationStatus(`conflict-${Math.random()}`);
+    auth.cacheOfflineAccount(status.user, status);
+    getSessionMock.mockResolvedValue({ data: { session: {}, user: status.user } });
+    await auth.restoreSessionState(); await databases.activateAccountDatabase(status.storageKey);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 409 })));
+    const response = await auth.authorizedApiFetch('/me/storage/backup');
+    expect(await response.text()).toBe(body);
+    expect(auth.hasVerifiedOnlineAccount(status.storageKey)).toBe(true);
+    expect(databases.captureAccountContext().isCurrent()).toBe(true);
+  });
+}
+it('only explicit account mismatch 409 locks the current identity', async () => {
+  vi.resetModules(); vi.stubGlobal('localStorage', createMemoryStorage());
+  const auth = await import('./auth'); const databases = await import('./db');
+  const status = migrationStatus('mismatch-current'); auth.cacheOfflineAccount(status.user, status);
+  getSessionMock.mockResolvedValue({ data: { session: {}, user: status.user } });
+  await auth.restoreSessionState(); await databases.activateAccountDatabase(status.storageKey);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: 'ACCOUNT_CONTEXT_MISMATCH' }), { status: 409 })));
+  await auth.authorizedApiFetch('/me/storage/sync');
+  expect(auth.hasActiveSession()).toBe(false); expect(auth.getOfflineAccount()).toBeNull();
+});
+it('a delayed mismatch body cannot invalidate a newer account', async () => {
+  vi.resetModules(); vi.stubGlobal('localStorage', createMemoryStorage());
+  const auth = await import('./auth'); const databases = await import('./db');
+  const a = migrationStatus('body-a'); auth.cacheOfflineAccount(a.user, a);
+  getSessionMock.mockResolvedValue({ data: { session: {}, user: a.user } });
+  await auth.restoreSessionState(); await databases.activateAccountDatabase(a.storageKey);
+  let release!: (body: unknown) => void;
+  const parsing = new Promise(resolve => { release = resolve; });
+  const response = new Response('', { status: 409 });
+  vi.spyOn(response, 'clone').mockReturnValue({ json: () => parsing } as Response);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+  const request = auth.authorizedApiFetch('/me/storage/sync');
+  const rejected = expect(request).rejects.toThrow('Stale account operation');
+  await vi.waitFor(() => expect(response.clone).toHaveBeenCalledOnce());
+  const b = migrationStatus('body-b'); b.user.id = 'new-user'; auth.cacheOfflineAccount(b.user, b);
+  getSessionMock.mockResolvedValue({ data: { session: {}, user: b.user } });
+  await auth.restoreSessionState(); await databases.activateAccountDatabase(b.storageKey);
+  release({ code: 'ACCOUNT_CONTEXT_MISMATCH' }); await rejected;
+  expect(auth.hasVerifiedOnlineAccount(b.storageKey)).toBe(true);
+});
