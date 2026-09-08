@@ -1,0 +1,174 @@
+{
+  "validRequests": [
+    {
+      "name": "empty pull",
+      "value": {
+        "protocolVersion": 1,
+        "cursor": 0,
+        "changes": {}
+      }
+    },
+    {
+      "name": "push",
+      "value": {
+        "protocolVersion": 1,
+        "cursor": 0,
+        "batchId": "fixture-push",
+        "changes": {
+          "workoutTypes": [
+            {
+              "id": "bench",
+              "name": "Bench Press",
+              "updatedAt": "2026-03-01T12:00:00.000Z"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "invalidRequests": [
+    {
+      "name": "unsupported version",
+      "status": 409,
+      "value": {
+        "protocolVersion": 2,
+        "cursor": 0,
+        "changes": {}
+      }
+    },
+    {
+      "name": "negative cursor",
+      "status": 400,
+      "value": {
+        "protocolVersion": 1,
+        "cursor": -1,
+        "changes": {}
+      }
+    },
+    {
+      "name": "string cursor",
+      "status": 400,
+      "value": {
+        "protocolVersion": 1,
+        "cursor": "0",
+        "changes": {}
+      }
+    },
+    {
+      "name": "unknown collection",
+      "status": 400,
+      "value": {
+        "protocolVersion": 1,
+        "cursor": 0,
+        "changes": {
+          "surprise": []
+        }
+      }
+    }
+  ],
+  "validResponses": [
+    {
+      "name": "empty pull",
+      "value": {
+        "protocolVersion": 1,
+        "cursor": 0,
+        "hasMore": false,
+        "changes": {},
+        "acknowledged": [],
+        "conflicts": []
+      }
+    },
+    {
+      "name": "authoritative conflict",
+      "value": {
+        "protocolVersion": 1,
+        "cursor": 2,
+        "hasMore": false,
+        "changes": {
+          "workoutTypes": [
+            {
+              "id": "bench",
+              "name": "Bench Press",
+              "updatedAt": "2026-03-01T12:00:00.000Z",
+              "version": 2
+            }
+          ]
+        },
+        "acknowledged": [
+          {
+            "entityType": "workoutTypes",
+            "entityId": "bench"
+          }
+        ],
+        "conflicts": [
+          {
+            "entityType": "workoutTypes",
+            "entityId": "bench",
+            "reason": "stale-version",
+            "serverVersion": 2
+          }
+        ]
+      }
+    }
+  ],
+  "invalidResponses": [
+    {
+      "name": "missing protocol",
+      "value": {
+        "cursor": 0,
+        "changes": {},
+        "acknowledged": [],
+        "conflicts": []
+      }
+    },
+    {
+      "name": "invalid ack entity",
+      "value": {
+        "protocolVersion": 1,
+        "cursor": 0,
+        "changes": {},
+        "acknowledged": [
+          {
+            "entityType": "unknown",
+            "entityId": "x"
+          }
+        ],
+        "conflicts": []
+      }
+    }
+  ],
+  "publicProfile": {
+    "timeZone": "UTC",
+    "displayName": "Demo User",
+    "identifier": "demo_user",
+    "stats": {
+      "totalWorkouts": 1,
+      "totalVolume": 0,
+      "favoriteExercise": "Squat"
+    },
+    "recentActivity": [
+      {
+        "date": "2026-03-20",
+        "exerciseCount": 1
+      }
+    ],
+    "logs": [
+      {
+        "id": "log-1",
+        "workoutTypeId": "squat",
+        "durationSeconds": 30,
+        "date": "2026-03-20T10:00:00.000Z"
+      }
+    ],
+    "workoutTypes": [
+      {
+        "id": "squat",
+        "name": "Squat",
+        "category": "time"
+      }
+    ],
+    "history": {
+      "nextCursor": null
+    }
+  }
+}

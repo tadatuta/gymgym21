@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, test } from 'node:test';
 import request from 'supertest';
 
@@ -13,10 +13,9 @@ process.env.BETTER_AUTH_SECRET = 'test-secret';
 delete process.env.DATABASE_URL;
 delete process.env.DATABASE_SSL;
 
-const [{ createApp }, { HttpError }] = await Promise.all([
-  import('../dist/app.js'),
-  import('../dist/http/errors.js'),
-]);
+const { createApp } = await import('../dist/app.js');
+const fixtures = JSON.parse(readFileSync(new URL('../../../test/fixtures/contracts.json', import.meta.url), 'utf8'));
+const { syncResponseSchema } = await import('@gym21/contracts');
 const { createMemoryRateLimitStore } = await import('../dist/http/middleware/rate-limit-store.js');
 const { config } = await import('../dist/config.js');
 
@@ -40,10 +39,6 @@ function resetGuardrailConfig() {
   Object.assign(config, defaultGuardrailConfig);
 }
 
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
 function createStubAuthHandler() {
   return async (req, res) => {
     if (
@@ -65,282 +60,23 @@ function createStubAuthHandler() {
   };
 }
 
-function normalizeAlias(value) {
-  return value.trim().replace(/^@/, '').toLowerCase();
-}
-
-function buildPublicProfile(snapshot, fallbackIdentifier) {
-  const profile = snapshot.profile;
-  if (!profile || profile.isDeleted || !profile.isPublic) {
-    return null;
-  }
-
-  const workoutTypes = (snapshot.workoutTypes ?? []).filter((entry) => !entry.isDeleted);
-  const visibleTypeIds = new Set(workoutTypes.map((entry) => entry.id));
-  const logs = (snapshot.logs ?? []).filter((entry) => !entry.isDeleted && visibleTypeIds.has(entry.workoutTypeId));
-
-  const totalVolume = logs.reduce((sum, entry) => sum + ((entry.weight ?? 0) * (entry.reps ?? 0)), 0);
-  const counts = new Map();
-  for (const log of logs) {
-    counts.set(log.workoutTypeId, (counts.get(log.workoutTypeId) ?? 0) + 1);
-  }
-
-  const favoriteId = [...counts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
-  const favoriteExercise = favoriteId ? workoutTypes.find((entry) => entry.id === favoriteId)?.name : undefined;
-  const activityMap = new Map();
-  for (const log of logs) {
-    const day = log.date.slice(0, 10);
-    activityMap.set(day, (activityMap.get(day) ?? 0) + 1);
-  }
-
-  return {
-    displayName: profile.displayName || profile.username || profile.telegramUsername || fallbackIdentifier,
-    identifier: profile.username || profile.telegramUsername || fallbackIdentifier,
-    photoUrl: profile.photoUrl,
-    stats: {
-      totalWorkouts: logs.length,
-      totalVolume,
-      favoriteExercise,
-      lastWorkoutDate: logs.length ? [...logs].sort((left, right) => left.date.localeCompare(right.date)).at(-1).date : undefined,
-    },
-    recentActivity: [...activityMap.entries()]
-      .sort((left, right) => left[0].localeCompare(right[0]))
-      .map(([date, exerciseCount]) => ({ date, exerciseCount })),
-    ...(profile.showFullHistory ? { logs, workoutTypes } : {}),
-  };
-}
-
-function createMemoryStorageRepository() {
-  const snapshots = new Map();
-
-  function ensureSnapshot(storageKey) {
-    if (!snapshots.has(storageKey)) {
-      snapshots.set(storageKey, {
-        cursor: 0,
-        workoutTypes: [],
-        logs: [],
-        workouts: [],
-        profile: undefined,
-      });
-    }
-
-    return snapshots.get(storageKey);
-  }
-
-  function bumpEntity(snapshot, entity) {
-    snapshot.cursor += 1;
-    return {
-      ...clone(entity),
-      updatedAt: entity.updatedAt ?? new Date().toISOString(),
-      version: snapshot.cursor,
-      serverUpdatedAt: new Date().toISOString(),
-    };
-  }
-
-  function applyEntity(snapshot, collectionName, entity) {
-    const collection = snapshot[collectionName];
-    const index = collection.findIndex((entry) => entry.id === entity.id);
-    if (index >= 0) {
-      collection[index] = entity;
-    } else {
-      collection.push(entity);
-    }
-  }
-
-  function listAliases(storageKey, snapshot) {
-    const aliases = new Set([`id_${storageKey}`.toLowerCase()]);
-    if (snapshot.profile?.username) {
-      aliases.add(normalizeAlias(snapshot.profile.username));
-    }
-    if (snapshot.profile?.telegramUsername) {
-      aliases.add(normalizeAlias(snapshot.profile.telegramUsername));
-    }
-    return aliases;
-  }
-
-  return {
-    async readSnapshot(storageKey) {
-      const snapshot = ensureSnapshot(String(storageKey));
-      return {
-        revision: snapshot.cursor,
-        workoutTypes: clone(snapshot.workoutTypes),
-        logs: clone(snapshot.logs),
-        workouts: clone(snapshot.workouts),
-        profile: snapshot.profile ? clone(snapshot.profile) : undefined,
+// HTTP dependency seam only: no alias, revision, conflict, or statistics algorithms.
+function createPresetRepository(presets = {}) {
+  const calls = [];
+  return new Proxy({ calls }, {
+    get(target, method) {
+      if (method === 'calls') return calls;
+      return async (...args) => {
+        calls.push({ method, args });
+        if (!Object.hasOwn(presets, method)) throw new Error(`Unconfigured repository call: ${String(method)}`);
+        return structuredClone(presets[method]);
       };
     },
-
-    async replaceSnapshot(storageKey, data) {
-      snapshots.set(String(storageKey), {
-        cursor: Number(data.revision ?? 0),
-        workoutTypes: clone(data.workoutTypes ?? []),
-        logs: clone(data.logs ?? []),
-        workouts: clone(data.workouts ?? []),
-        profile: data.profile ? clone(data.profile) : undefined,
-      });
-    },
-
-    async sync(storageKey, requestPayload, authContext) {
-      const snapshot = ensureSnapshot(String(storageKey));
-      const conflicts = [];
-      const authoritative = {
-        workoutTypes: [],
-        logs: [],
-        workouts: [],
-        profile: null,
-      };
-
-      const applyCollection = (collectionName, incomingItems = []) => {
-        for (const incoming of incomingItems) {
-          const collection = snapshot[collectionName];
-          const existing = collection.find((entry) => entry.id === incoming.id);
-          if (existing && (incoming.version ?? 0) !== (existing.version ?? 0)) {
-            conflicts.push({
-              entityType: collectionName,
-              entityId: incoming.id,
-              reason: 'stale-version',
-              serverVersion: existing.version ?? 0,
-            });
-            authoritative[collectionName].push(clone(existing));
-            continue;
-          }
-
-          if (!existing && incoming.isDeleted) {
-            continue;
-          }
-
-          applyEntity(snapshot, collectionName, bumpEntity(snapshot, incoming));
-        }
-      };
-
-      applyCollection('workoutTypes', requestPayload.changes.workoutTypes ?? []);
-      applyCollection('logs', requestPayload.changes.logs ?? []);
-      applyCollection('workouts', requestPayload.changes.workouts ?? []);
-
-      if (requestPayload.changes.profile) {
-        const incoming = clone(requestPayload.changes.profile);
-        const existing = snapshot.profile;
-        if (existing && (incoming.version ?? 0) !== (existing.version ?? 0)) {
-          conflicts.push({
-            entityType: 'profile',
-            entityId: existing.id,
-            reason: 'stale-version',
-            serverVersion: existing.version ?? 0,
-          });
-          authoritative.profile = clone(existing);
-        } else {
-          snapshot.profile = bumpEntity(snapshot, {
-            ...incoming,
-            id: incoming.id || 'me',
-            isPublic: incoming.isPublic ?? false,
-            createdAt: incoming.createdAt ?? new Date().toISOString(),
-            updatedAt: incoming.updatedAt ?? new Date().toISOString(),
-            friends: incoming.friends ?? [],
-            username: authContext.authUser?.username ?? incoming.username,
-            telegramUsername: authContext.telegramUser?.username ?? incoming.telegramUsername,
-          });
-        }
-      }
-
-      const changes = {
-        workoutTypes: snapshot.workoutTypes.filter((entry) => (entry.version ?? 0) > requestPayload.cursor),
-        logs: snapshot.logs.filter((entry) => (entry.version ?? 0) > requestPayload.cursor),
-        workouts: snapshot.workouts.filter((entry) => (entry.version ?? 0) > requestPayload.cursor),
-        profile: snapshot.profile && (snapshot.profile.version ?? 0) > requestPayload.cursor ? clone(snapshot.profile) : null,
-      };
-
-      for (const entity of authoritative.workoutTypes) {
-        if (!changes.workoutTypes.some((entry) => entry.id === entity.id)) {
-          changes.workoutTypes.push(entity);
-        }
-      }
-      for (const entity of authoritative.logs) {
-        if (!changes.logs.some((entry) => entry.id === entity.id)) {
-          changes.logs.push(entity);
-        }
-      }
-      for (const entity of authoritative.workouts) {
-        if (!changes.workouts.some((entry) => entry.id === entity.id)) {
-          changes.workouts.push(entity);
-        }
-      }
-      if (authoritative.profile && !changes.profile) {
-        changes.profile = authoritative.profile;
-      }
-
-      return {
-        cursor: snapshot.cursor,
-        changes,
-        conflicts,
-        acknowledged: [
-          ...(requestPayload.changes.workoutTypes ?? []).map((entry) => ({ entityType: 'workoutTypes', entityId: entry.id })),
-          ...(requestPayload.changes.logs ?? []).map((entry) => ({ entityType: 'logs', entityId: entry.id })),
-          ...(requestPayload.changes.workouts ?? []).map((entry) => ({ entityType: 'workouts', entityId: entry.id })),
-          ...(requestPayload.changes.profile
-            ? [{ entityType: 'profile', entityId: requestPayload.changes.profile.id }]
-            : []),
-        ],
-        protocolVersion: 1,
-        hasMore: false,
-      };
-    },
-
-    async updateProfileFromAuth(storageKey, data) {
-      const snapshot = ensureSnapshot(String(storageKey));
-      snapshot.cursor += 1;
-      snapshot.profile = {
-        ...(snapshot.profile ?? {
-          id: 'me',
-          isPublic: false,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          friends: [],
-        }),
-        ...(data.username ? { username: data.username } : {}),
-        ...(!snapshot.profile?.displayName && data.name ? { displayName: data.name } : {}),
-        ...(data.image ? { photoUrl: data.image } : {}),
-        ...(data.telegramUser
-          ? {
-              telegramUserId: data.telegramUser.id,
-              telegramUsername: data.telegramUser.username,
-              photoUrl: data.telegramUser.photo_url ?? data.image ?? snapshot.profile?.photoUrl,
-            }
-          : {}),
-        updatedAt: new Date().toISOString(),
-        version: snapshot.cursor,
-        serverUpdatedAt: new Date().toISOString(),
-      };
-    },
-
-    async readAiContext(storageKey) {
-      const snapshot = ensureSnapshot(String(storageKey));
-      return {
-        profile: snapshot.profile ? clone(snapshot.profile) : undefined,
-        workoutTypes: clone(snapshot.workoutTypes.filter((entry) => !entry.isDeleted)),
-        workouts: clone(snapshot.workouts.filter((entry) => !entry.isDeleted)),
-        logs: clone(snapshot.logs.filter((entry) => !entry.isDeleted)),
-      };
-    },
-
-    async findPublicProfileByIdentifier(identifier) {
-      const normalized = normalizeAlias(identifier);
-      for (const [storageKey, snapshot] of snapshots.entries()) {
-        if (!listAliases(storageKey, snapshot).has(normalized)) {
-          continue;
-        }
-        return buildPublicProfile(snapshot, identifier);
-      }
-      return null;
-    },
-
-    async getPublicProfileByStorageKey(storageKey, fallbackIdentifier = `id_${storageKey}`) {
-      return buildPublicProfile(ensureSnapshot(String(storageKey)), fallbackIdentifier);
-    },
-  };
+  });
 }
 
 function createTestApp(overrides = {}) {
-  const storageRepository = overrides.storageRepository ?? createMemoryStorageRepository();
+  const storageRepository = overrides.storageRepository ?? createPresetRepository();
   return {
     app: createApp({
       rateLimitStore: createMemoryRateLimitStore(),
@@ -356,28 +92,6 @@ function createTestApp(overrides = {}) {
     }),
     storageRepository,
   };
-}
-
-function generateInitData(user) {
-  const data = {
-    user: JSON.stringify(user),
-    auth_date: Math.floor(Date.now() / 1000).toString(),
-  };
-
-  const dataCheckString = Object.entries(data)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}=${value}`)
-    .join('\n');
-
-  const secretKey = createHmac('sha256', 'WebAppData')
-    .update('test_token')
-    .digest();
-
-  const hash = createHmac('sha256', secretKey)
-    .update(dataCheckString)
-    .digest('hex');
-
-  return `${new URLSearchParams(data).toString()}&hash=${hash}`;
 }
 
 beforeEach(() => {
@@ -443,28 +157,8 @@ test('passkey challenges and password mutations share the strict budget, session
 });
 
 test('GET /api/profiles/:identifier returns a public profile from the read model', async () => {
-  const { app, storageRepository } = createTestApp();
-  await storageRepository.replaceSnapshot('12345', {
-    workoutTypes: [{ id: 'squat', name: 'Squat', category: 'time', updatedAt: '2026-03-20T10:00:00.000Z' }],
-    logs: [{
-      id: 'log-1',
-      workoutTypeId: 'squat',
-      duration: 15,
-      durationSeconds: 30,
-      date: '2026-03-20T10:00:00.000Z',
-      updatedAt: '2026-03-20T10:00:00.000Z',
-    }],
-    workouts: [],
-    profile: {
-      id: 'me',
-      isPublic: true,
-      showFullHistory: true,
-      createdAt: '2026-03-20T10:00:00.000Z',
-      updatedAt: '2026-03-20T10:00:00.000Z',
-      displayName: 'Demo User',
-      telegramUsername: 'demo_user',
-    },
-  });
+  const storageRepository = createPresetRepository({ findPublicProfileByIdentifier: fixtures.publicProfile });
+  const { app } = createTestApp({ storageRepository });
 
   const response = await request(app).get('/api/profiles/demo_user');
 
@@ -472,7 +166,8 @@ test('GET /api/profiles/:identifier returns a public profile from the read model
   assert.equal(response.body.displayName, 'Demo User');
   assert.equal(response.body.identifier, 'demo_user');
   assert.equal(response.body.stats.favoriteExercise, 'Squat');
-  assert.equal(response.body.logs[0].durationSeconds, 30);
+  assert.deepEqual(response.body, fixtures.publicProfile);
+  assert.equal(storageRepository.calls[0].args[0], 'demo_user');
 });
 
 test('GET and PUT snapshot endpoints are removed from runtime', async () => {
@@ -485,167 +180,40 @@ test('GET and PUT snapshot endpoints are removed from runtime', async () => {
   assert.equal(putResponse.status, 404);
 });
 
-test('POST /api/me/storage/sync writes delta records and returns cursor metadata', async () => {
-  const { app, storageRepository } = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram',
-      storageKey: 'sync-user',
-      telegramUser: { id: 321, first_name: 'Sync', username: 'sync_user' },
-    }),
+for (const fixture of fixtures.validRequests) {
+  test(`sync HTTP forwards shared request: ${fixture.name}`, async () => {
+    const dto = fixtures.validResponses[1].value;
+    const storageRepository = createPresetRepository({ sync: dto });
+    const { app } = createTestApp({ storageRepository });
+    const response = await request(app).post('/api/me/storage/sync')
+      .set('X-Expected-Storage-Key', 'test-user').send(fixture.value);
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, dto);
+    assert.equal(syncResponseSchema.safeParse(response.body).success, true);
+    assert.equal(storageRepository.calls.length, 1);
+    assert.equal(storageRepository.calls[0].args[0], 'test-user');
+    assert.deepEqual(storageRepository.calls[0].args[1], fixture.value);
+    assert.equal(storageRepository.calls[0].args[2].telegramUser.id, 123);
   });
-
-  const response = await request(app)
-    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'sync-user')
-    .send({
-      protocolVersion: 1, cursor: 0,
-      changes: {
-        workoutTypes: [
-          {
-            id: 'bench',
-            name: 'Bench Press',
-            updatedAt: '2026-03-01T12:00:00.000Z',
-          },
-        ],
-      },
-    });
-
-  assert.equal(response.status, 200);
-  assert.equal(response.body.cursor, 1);
-  assert.equal(response.body.changes.workoutTypes[0].version, 1);
-  assert.deepEqual(response.body.acknowledged, [{ entityType: 'workoutTypes', entityId: 'bench' }]);
-  assert.equal(response.body.protocolVersion, 1);
-
-  const stored = await storageRepository.readSnapshot('sync-user');
-  assert.equal(stored.revision, 1);
-  assert.equal(stored.workoutTypes[0].id, 'bench');
-});
-
-test('POST /api/me/storage/sync returns authoritative entities on stale updates', async () => {
-  const { app } = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram',
-      storageKey: 'conflict-user',
-      telegramUser: { id: 654, first_name: 'Conflict', username: 'conflict_user' },
-    }),
+}
+for (const fixture of fixtures.invalidRequests) {
+  test(`sync HTTP rejects shared request before repository: ${fixture.name}`, async () => {
+    const { app, storageRepository } = createTestApp();
+    const response = await request(app).post('/api/me/storage/sync')
+      .set('X-Expected-Storage-Key', 'test-user').send(fixture.value);
+    assert.equal(response.status, fixture.status);
+    assert.deepEqual(storageRepository.calls, []);
   });
-
-  const initial = await request(app)
-    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'conflict-user')
-    .send({
-      protocolVersion: 1, cursor: 0,
-      changes: {
-        workoutTypes: [{ id: 'bench', name: 'Bench Press', updatedAt: '2026-03-01T10:00:00.000Z' }],
-      },
-    });
-
-  const accepted = await request(app)
-    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'conflict-user')
-    .send({
-      protocolVersion: 1, cursor: initial.body.cursor,
-      changes: {
-        workoutTypes: [{
-          id: 'bench',
-          name: 'Bench Press Wide Grip',
-          updatedAt: '2026-03-01T11:00:00.000Z',
-          version: initial.body.changes.workoutTypes[0].version,
-        }],
-      },
-    });
-
-  const stale = await request(app)
-    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'conflict-user')
-    .send({
-      protocolVersion: 1, cursor: initial.body.cursor,
-      changes: {
-        workoutTypes: [{
-          id: 'bench',
-          name: 'Stale Name',
-          updatedAt: '2026-03-01T12:00:00.000Z',
-          version: initial.body.changes.workoutTypes[0].version,
-        }],
-      },
-    });
-
-  assert.equal(accepted.status, 200);
-  assert.equal(stale.status, 200);
-  assert.equal(stale.body.conflicts.length, 1);
-  assert.equal(stale.body.conflicts[0].reason, 'stale-version');
-  assert.equal(stale.body.changes.workoutTypes[0].name, 'Bench Press Wide Grip');
-});
-
-test('POST /api/me/storage/sync propagates soft deletions incrementally', async () => {
-  const { app } = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram',
-      storageKey: 'deletion-user',
-      telegramUser: { id: 777, first_name: 'Delete', username: 'delete_user' },
-    }),
+}
+for (const fixture of [...fixtures.validResponses, ...fixtures.invalidResponses]) {
+  test(`server response contract: ${fixture.name}`, () => {
+    assert.equal(syncResponseSchema.safeParse(fixture.value).success, fixtures.validResponses.includes(fixture));
   });
-
-  const created = await request(app)
-    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'deletion-user')
-    .send({
-      protocolVersion: 1, cursor: 0,
-      changes: {
-        logs: [{
-          id: 'log-1',
-          workoutTypeId: 'bench',
-          workoutId: 'workout-1',
-          reps: 5,
-          weight: 100,
-          date: '2026-03-05T12:00:00.000Z',
-          updatedAt: '2026-03-05T12:00:00.000Z',
-        }],
-      },
-    });
-
-  const deletion = await request(app)
-    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'deletion-user')
-    .send({
-      protocolVersion: 1, cursor: created.body.cursor,
-      changes: {
-        logs: [{
-          id: 'log-1',
-          workoutTypeId: 'bench',
-          workoutId: 'workout-1',
-          reps: 5,
-          weight: 100,
-          date: '2026-03-05T12:00:00.000Z',
-          updatedAt: '2026-03-05T12:30:00.000Z',
-          isDeleted: true,
-          version: created.body.changes.logs[0].version,
-        }],
-      },
-    });
-
-  const bootstrap = await request(app)
-    .post('/api/me/storage/sync').set('X-Expected-Storage-Key', 'deletion-user')
-    .send({
-      protocolVersion: 1, cursor: 0,
-      changes: {},
-    });
-
-  assert.equal(deletion.status, 200);
-  assert.equal(deletion.body.changes.logs[0].isDeleted, true);
-  assert.equal(bootstrap.body.changes.logs.length, 1);
-  assert.equal(bootstrap.body.changes.logs[0].isDeleted, true);
-});
+}
 
 test('POST /api/me/ai/recommendations reads AI context from the repository', async () => {
   let receivedPayload;
-  const { app, storageRepository } = createTestApp({
-    resolveRequestContext: async () => ({
-      kind: 'telegram',
-      storageKey: 'ai-user',
-      telegramUser: { id: 888, first_name: 'AI', username: 'ai_user' },
-    }),
-    generateRecommendation: async (payload) => {
-      receivedPayload = payload;
-      return '# Recommendation';
-    },
-  });
-
-  await storageRepository.replaceSnapshot('ai-user', {
+  const context = {
     workoutTypes: [{ id: 'bench', name: 'Bench Press', updatedAt: '2026-03-01T10:00:00.000Z' }],
     logs: [{
       id: 'log-1',
@@ -664,6 +232,20 @@ test('POST /api/me/ai/recommendations reads AI context from the repository', asy
       updatedAt: '2026-03-01T10:00:00.000Z',
       displayName: 'AI User',
     },
+  };
+
+  const storageRepository = createPresetRepository({ readAiContext: context });
+  const { app } = createTestApp({
+    storageRepository,
+    resolveRequestContext: async () => ({
+      kind: 'telegram',
+      storageKey: 'ai-user',
+      telegramUser: { id: 888, first_name: 'AI', username: 'ai_user' },
+    }),
+    generateRecommendation: async (payload) => {
+      receivedPayload = payload;
+      return '# Recommendation';
+    },
   });
 
   const response = await request(app)
@@ -675,6 +257,8 @@ test('POST /api/me/ai/recommendations reads AI context from the repository', asy
   assert.equal(response.status, 200);
   assert.equal(response.body.format, 'markdown');
   assert.equal(response.body.recommendation, '# Recommendation');
+  assert.deepEqual(storageRepository.calls, [{ method: 'readAiContext', args: ['ai-user', 0] }]);
+  assert.deepEqual(receivedPayload, { type: 'general', expectedRevision: 0, ...context });
   assert.equal(receivedPayload.logs.length, 1);
   assert.equal(receivedPayload.workoutTypes.length, 1);
 });
@@ -690,13 +274,11 @@ test('unauthorized requests to protected routes return 401', async () => {
 });
 
 test('Telegram Mini App auth headers can still be transformed into a request context by a custom resolver', async () => {
-  const initData = generateInitData({
-    id: 999,
-    first_name: 'Mini',
-    username: 'mini_user',
-  });
+  // Header forwarding only; cryptographic verification is covered by real auth tests.
+  const initData = 'synthetic-custom-resolver-header';
 
   const { app } = createTestApp({
+    storageRepository: createPresetRepository({ sync: fixtures.validResponses[0].value }),
     resolveRequestContext: async (headers) => {
       const header = headers.get('x-telegram-init-data');
       if (!header || header !== initData) {
@@ -726,7 +308,7 @@ test('AI timeout aborts transport but holds concurrency until the underlying pro
   let finish;
   let signal;
   let calls = 0;
-  const { app } = createTestApp({ generateRecommendation: async (_payload, value) => {
+  const { app } = createTestApp({ storageRepository: createPresetRepository({ readAiContext: { logs: [], workoutTypes: [], workouts: [] } }), generateRecommendation: async (_payload, value) => {
     signal = value;
     calls++;
     if (calls > 1) return 'retry succeeded';
@@ -755,7 +337,7 @@ test('AI disconnect aborts transport and retains busy slot for ignored cancellat
   const ready = new Promise(resolve => { started = resolve; });
   let finish;
   let signal;
-  const { app } = createTestApp({ generateRecommendation: async (_payload, value) => {
+  const { app } = createTestApp({ storageRepository: createPresetRepository({ readAiContext: { logs: [], workoutTypes: [], workouts: [] } }), generateRecommendation: async (_payload, value) => {
     signal = value;
     started();
     return new Promise(resolve => { finish = resolve; });

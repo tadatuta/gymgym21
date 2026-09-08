@@ -85,4 +85,3 @@ CREATE TABLE IF NOT EXISTS user_alias (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS user_alias_user_id_idx ON user_alias(user_id);
-
