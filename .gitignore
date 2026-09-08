@@ -11,3 +11,15 @@ apps/*/.env
 data/storage
 tmp
 secrets/google-application-credentials.json
+
+# Локальные пользовательские артефакты (сохраняются на диске)
+/old-data-storage/
+/trash/
+/s.svg
+/.vscode/
+
+# Локальные результаты проверок
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo

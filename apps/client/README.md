@@ -5,10 +5,10 @@
 ## ✨ Основные возможности
 
 ### 🏋️‍♂️ Дневник тренировок
-*   **Гибкие типы упражнений**: Поддержка силовых (вес/повторения) и кардио/временных упражнений (минуты).
+*   **Гибкие типы упражнений**: Поддержка силовых (вес/повторения) и кардио/временных упражнений (часы, минуты и секунды).
 *   **Группировка**: Упражнения группируются по сессиям и датам.
 *   **Таймер отдыха**: Встроенный таймер для контроля отдыха между подходами.
-*   **Быстрый ввод**: Дублирование последнего подхода одним нажатием.
+*   **Быстрый ввод**: Кнопка «Повторить: …» дублирует последний подход.
 *   **Редактирование**: Полное управление историей (изменение, удаление записей).
 *   **Drag-and-Drop**: Настройка порядка типов упражнений в настройках.
 
@@ -27,7 +27,7 @@
 ### ☁️ Синхронизация и Offline-first
 *   **PWA**: Приложение можно установить на телефон как нативное.
 *   **Offline-first**: Работает без интернета. Данные сохраняются в IndexedDB и синхронизируются при появлении сети.
-*   **Dual Auth**: Единый аккаунт для Telegram Mini App и Web-версии (через Telegram Widget).
+*   **Авторизация**: Email/password, Passkey, Telegram Widget и Telegram Mini App используют общую cookie-сессию.
 *   **Экспорт/Импорт**: Возможность выгрузить все свои данные в JSON/Markdown или восстановить из резервной копии.
 
 ## 🛠 Технический стек
@@ -39,41 +39,48 @@
 *   **PWA**: `vite-plugin-pwa` (Service Worker, Manifest)
 *   **База данных (Client)**: `Dexie.js` (IndexedDB wrapper) для надежного локального хранения.
 *   **Backend**: Express API в монорепозитории `gym21`, разворачиваемый рядом с Postgres и reverse proxy.
-*   **Auth**: Better Auth + Telegram Auth (InitData для TMA, Login Widget для Web). В браузере источник истины для сессии — secure cookies; bearer token не сохраняется в `localStorage`.
+*   **Auth**: Better Auth: email/password, Passkey и Telegram (initData для TMA, Login Widget для Web). В браузере источник истины для сессии — secure cookies; bearer token не сохраняется в `localStorage`.
 
 ## 🚀 Установка и запуск
 
-1.  **Установка зависимостей**:
-    ```bash
-    npm install
-    ```
+Все команды выполняются **из корня монорепозитория**, не из `apps/client`. Нужны Node.js 22.23.2, npm 10+, настроенный корневой `.env` и запущенная PostgreSQL: [полный runbook](../../docs/runbook.md).
 
-2.  **Запуск локального окружения**:
-    ```bash
-    npm install
-    npm run dev:server
-    npm run dev:client
-    ```
-    Клиент будет доступен по адресу `http://localhost:5173`, backend — на `http://localhost:8788`.
-    Mini App асинхронно загружает официальный `telegram-web-app.js` (таймаут 4 секунды), вызывает `ready()` и отправляет исходную `WebApp.initData` в `/api/auth/telegram/sign-in`. Сервер проверяет подпись/срок и создаёт обычную Better Auth cookie-сессию; затем открывается завершение миграции, если оно необходимо. `initDataUnsafe` не используется для идентичности.
+```bash
+npm ci
+npm run dev
+```
 
-    Автовход выполняется один раз за запуск только без восстановленного аккаунта. После явного выхода автовход отключён (в том числе после reload); кнопка «Войти в Telegram Mini App / повторить» запускает новый вход вручную. При истёкших данных закройте и заново откройте Mini App. Недоступность SDK не блокирует email, Passkey или Telegram Widget в Web/PWA.
+Клиент доступен на `http://localhost:5173`, backend — на `http://localhost:8788`. Только клиент: `npm run dev --workspace @gym21/client`.
 
-    Официальный контракт SDK: https://core.telegram.org/bots/webapps. Браузерный сценарий `audit/telegram-mini-app-browser.mjs` (запуск из корня репозитория с `PLAYWRIGHT_MODULE_PATH` и `PLAYWRIGHT_CHROMIUM_EXECUTABLE`) проверяет HttpOnly cookie и выход в новом браузерном контексте.
+### Telegram Mini App
 
-    Изолированные тесты `src/telegram-mini-app.test.ts` используют синтетический объект SDK и HTTP transport; поддельные данные не принимаются production-сервером. Для живой проверки настройте HTTPS URL Mini App у бота и `TELEGRAM_BOT_TOKEN` сервера, откройте приложение из Telegram и проверьте cookie-вход/миграцию. Не копируйте реальные initData в тесты или логи.
+Mini App асинхронно загружает официальный `telegram-web-app.js` (таймаут 4 секунды), вызывает `ready()` и отправляет исходную `WebApp.initData` в `/api/auth/telegram/sign-in`. Сервер проверяет подпись/срок и создаёт обычную Better Auth cookie-сессию; затем открывается завершение миграции, если оно необходимо. `initDataUnsafe` не используется для идентичности.
 
-3.  **Сборка для продакшена**:
-    ```bash
-    npm run build
-    ```
+Автовход выполняется один раз за запуск только без восстановленного аккаунта. После явного выхода автовход отключён (в том числе после reload); кнопка «Войти в Telegram Mini App / повторить» запускает новый вход вручную. При истёкших данных закройте и заново откройте Mini App. Недоступность SDK не блокирует email, Passkey или Telegram Widget в Web/PWA.
+
+Официальный контракт SDK: [Telegram Web Apps](https://core.telegram.org/bots/webapps). Браузерный сценарий `audit/telegram-mini-app-browser.mjs` (запуск из корня репозитория с `PLAYWRIGHT_MODULE_PATH` и `PLAYWRIGHT_CHROMIUM_EXECUTABLE`) проверяет HttpOnly cookie и выход в новом браузерном контексте.
+
+Изолированные тесты `src/telegram-mini-app.test.ts` используют синтетический объект SDK и HTTP transport; поддельные данные не принимаются production-сервером. Для живой проверки настройте HTTPS URL Mini App у бота и `TELEGRAM_BOT_TOKEN` сервера, откройте приложение из Telegram и проверьте cookie-вход/миграцию. Не копируйте реальные initData в тесты или логи.
+
+### Проверки и сборка клиента
+
+```bash
+npm run test --workspace @gym21/client
+npm run typecheck --workspace @gym21/client
+npm run lint --workspace @gym21/client
+npm run build --workspace @gym21/client
+```
+
+[Ручные сценарии](test-cases.md) проверяются на тестовом аккаунте. Полная сборка монорепозитория — `npm run build` из корня.
 
 ## 📂 Структура проекта
 
-*   `src/main.ts` — Точка входа, инициализация приложения и роутинг.
+*   `src/main.ts` — Подключение стилей, service worker и lifecycle приложения.
+*   `src/ui/application.ts`, `src/ui/pages/` — Сборка приложения и страницы с освобождением ресурсов.
+*   `src/router/` — Роутинг.
 *   `src/db.ts` — Конфигурация базы данных Dexie.js (схемы таблиц).
 *   `src/storage/` — Логика синхронизации и управления данными (Repository pattern).
-*   `src/services/` — Вспомогательные сервисы (Sync, Telegram API).
+*   `src/services/` — Sync transport, reconnect и официальный Telegram SDK.
 *   `src/components/` — UI компоненты (рендеринг HTML).
 *   `src/styles/` — CSS файлы (модульная структура).
 *   `src/types/` — TypeScript интерфейсы и типы.
@@ -84,3 +91,5 @@
 *   **Optimistic UI**: Интерфейс обновляется мгновенно, синхронизация происходит в фоне.
 *   **Адаптивность**: Полная поддержка мобильных устройств и десктопов.
 *   **Темизация**: Использование CSS Variables для поддержки темной/светлой темы Telegram.
+
+Базовая работа офлайн доступна после подтверждённого входа на устройстве. Первый вход, проверка cookie, Telegram/Passkey и новые AI-рекомендации требуют сеть. Длительности хранят минуты и остаток секунд, а расчёты приводятся к секундам; дни используют часовую зону владельца. JSON backup merge доступен офлайн, replace — только онлайн. Подробнее: [архитектура](../../docs/architecture.md).
