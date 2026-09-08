@@ -33,4 +33,4 @@ npm run dev
 - [Текущий прогресс исправлений](AUDIT_PROGRESS.md), [исторический аудит](PROJECT_AUDIT.md), [каталог доказательств и проверок](audit/README.md).
 - [Миграция данных](DATA_MIGRATION.md), [архив исходного плана](docs/archive/DATA_MIGRATION.md).
 
-`npm run check` запускает typecheck, lint, тесты и сборку всех трёх пакетов с остановкой при ошибке. `npm test` запускает тесты контрактов, клиента и сервера. Обязательный PostgreSQL-прогон: `GYM21_TEST_DATABASE_URL=<disposable-postgres-url> npm run test:integration`; условия и отдельная TLS-проверка перечислены в runbook. T02–T06 остаются следующими пунктами аудита.
+`npm run check` запускает typecheck, lint, тесты и сборку всех трёх пакетов с остановкой при ошибке. `npm test` запускает тесты контрактов, клиента и сервера. Обязательный PostgreSQL-прогон: `GYM21_TEST_DATABASE_URL=<disposable-postgres-url> npm run test:integration`; условия и отдельная TLS-проверка перечислены в runbook. [GitHub Actions CI](.github/workflows/ci.yml) выполняет чистую установку, общие проверки и обязательную интеграцию с отдельной PostgreSQL 16 на Node 22 при push и pull request. T03–T06 остаются следующими пунктами аудита.

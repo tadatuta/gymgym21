@@ -1,6 +1,6 @@
 # Runbook Gym21
 
-Проверено по исходникам 8 сентября 2026 (T01). Все команды ниже выполняются из корня репозитория, если явно не сказано иначе. [Краткая архитектура](architecture.md), [ход аудита](../AUDIT_PROGRESS.md).
+Проверено по исходникам 8 сентября 2026 (T02). Все команды ниже выполняются из корня репозитория, если явно не сказано иначе. [Краткая архитектура](architecture.md), [ход аудита](../AUDIT_PROGRESS.md).
 
 `gym21` объединяет клиент и сервер в одном npm-workspaces репозитории.
 
@@ -79,7 +79,9 @@ GYM21_TEST_DATABASE_URL=<disposable-postgres-url> npm run test:integration
 
 Команда до сборки и импорта тестов отклоняет отсутствующий или некорректный PostgreSQL URL без вывода его содержимого и никогда не использует `DATABASE_URL` как запасное значение. Используйте только отдельную тестовую БД: тесты создают собственные UUID-схемы и удаляют их после прогона. Полный `check` также запускает PostgreSQL-тесты, если передать ему эту переменную. TLS fixture требует отдельного `GYM21_TLS_TEST_URL`, поэтому один TLS-тест может оставаться skipped даже при обычном PostgreSQL-прогоне; отдельная воспроизводимая проверка — `node audit/postgres-tls.mjs`, условия в [TLS runbook](../audit/postgres-tls.md).
 
-CI и дальнейшее усиление покрытия T02–T06 ещё не завершены. Дополнительные audit-сценарии описаны в [каталоге проверок](../audit/README.md).
+[GitHub Actions CI](../.github/workflows/ci.yml) запускается на каждый push и pull request: Ubuntu 24.04, Node из `.nvmrc` (22.23.2), npm cache по корневому `package-lock.json`, затем `npm ci`, `npm run check` и `npm run test:integration`. Интеграционный этап получает только URL отдельного PostgreSQL 16 service с синтетическими реквизитами; readiness проверяет `pg_isready`. Обычный `check` выполняется без URL БД, поэтому PostgreSQL-покрытие подтверждает следующий обязательный этап. TLS fixture и audit/browser-скрипты в этот workflow не входят. Тесты сами задают синтетическое auth-окружение; секреты репозитория и `.env` не требуются. Job ограничен 20 минутами, предыдущий запуск того же события/ref отменяется новым; токен имеет только `contents: read`, checkout не сохраняет credentials. Service удаляется GitHub после job, даже при ошибке или отмене.
+
+Workflow добавлен в T02; первый запуск на GitHub проверяется после push (локальные проверки не подтверждают работу hosted runner). Дальнейшее усиление покрытия T03–T06 ещё не завершено. Дополнительные audit-сценарии описаны в [каталоге проверок](../audit/README.md). Конфигурация сверена с [официальным setup-node](https://github.com/actions/setup-node), [checkout](https://github.com/actions/checkout) и [документацией PostgreSQL services](https://docs.github.com/en/actions/tutorials/use-containerized-services/create-postgresql-service-containers).
 
 ## Client HTML Safety
 

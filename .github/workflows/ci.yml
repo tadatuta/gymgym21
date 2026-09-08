@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Node 22 checks and PostgreSQL integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gym21_test
+          POSTGRES_PASSWORD: gym21_test_only
+          POSTGRES_DB: gym21_ci_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gym21_test -d gym21_ci_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck, lint, test and build all packages
+        run: npm run check
+      - name: Run required PostgreSQL integration tests
+        run: npm run test:integration
+        env:
+          # Disposable job service only; each fixture creates and drops its UUID schema.
+          GYM21_TEST_DATABASE_URL: postgres://gym21_test:gym21_test_only@127.0.0.1:5432/gym21_ci_test
