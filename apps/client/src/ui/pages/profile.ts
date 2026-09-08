@@ -101,17 +101,17 @@ export function createProfilePage(context: PageContext) {
             <span class="toggle-label-hint">Другие смогут видеть вашу статистику</span>
           </div>
           <label class="toggle-switch">
-            <input type="checkbox" id="profile-public-toggle" ${isPublic ? 'checked' : ''}>
+            <input type="checkbox" id="profile-public-toggle" aria-label="Публичный профиль" ${isPublic ? 'checked' : ''}>
             <span class="toggle-slider"></span>
           </label>
         </div>
-        <div class="toggle-row" style="margin-top: 12px;">
+        <div class="form-followup toggle-row">
           <div class="toggle-label">
             <span class="toggle-label-text">Показывать все упражнения</span>
             <span class="toggle-label-hint">Подробный список упражнений в публичном профиле</span>
           </div>
           <label class="toggle-switch">
-            <input type="checkbox" id="profile-history-toggle" ${profile?.showFullHistory ? 'checked' : ''}>
+            <input type="checkbox" id="profile-history-toggle" aria-label="Показывать все упражнения" ${profile?.showFullHistory ? 'checked' : ''}>
             <span class="toggle-slider"></span>
           </label>
         </div>
@@ -121,7 +121,7 @@ export function createProfilePage(context: PageContext) {
         <label class="label" for="profile-time-zone">Часовой пояс тренировок</label>
         <input class="input" id="profile-time-zone" value="${escapeAttribute(storage.getTimeZone())}" placeholder="Europe/Paris">
         <p class="hint">История и публичная статистика используют этот часовой пояс.</p>
-        <div class="settings-section-title">Имя</div>
+        <label class="settings-section-title" for="profile-display-name">Имя</label>
         <input class="input" type="text" id="profile-display-name" value="${safeDisplayName}" placeholder="Ваше имя">
       </div>
 
@@ -177,7 +177,7 @@ export function createProfilePage(context: PageContext) {
         })()}
       </div>
 
-      <button class="button" id="save-profile-btn" style="margin-top: 12px;">Сохранить</button>
+      <button class="form-followup button" id="save-profile-btn">Сохранить</button>
     `;
     }
 
@@ -187,7 +187,7 @@ export function createProfilePage(context: PageContext) {
             <div class="settings-section-title">AI Рекомендации</div>
             ${onlineAccountVerified ? '' : '<p class="hint" style="margin-bottom:12px;">Оффлайн: сохранённые рекомендации доступны, генерация новых — после подключения.</p>'}
 
-            <div class="ai-controls" style="display: flex; flex-direction: column; gap: 12px;">
+            <div class="form-stack ai-controls">
                 <button class="button" id="ai-general-btn" ${state.aiLoadingState !== 'idle' || !onlineAccountVerified ? 'disabled' : ''}>
                     ${state.aiLoadingState === 'general' ? 'Анализ...' : '✨ Общий анализ'}
                 </button>
@@ -199,18 +199,19 @@ export function createProfilePage(context: PageContext) {
                 <div class="ai-plan-section">
                     <h3 class="workout-subheader" style="margin-bottom: 8px;">План тренировок</h3>
                     <div class="form-group">
+                        <label class="label" for="ai-plan-period">Период плана</label>
                         <select class="select" id="ai-plan-period">
                             <option value="day">На сегодня</option>
                             <option value="week">На неделю</option>
                         </select>
                     </div>
 
-                    <div class="toggle-row toggle-row--clean" style="margin-top: 12px;">
+                    <div class="form-followup toggle-row toggle-row--clean">
                       <div class="toggle-label">
                           <span class="toggle-label-text">Рекомендовать новые упражнения</span>
                       </div>
                       <label class="toggle-switch">
-                          <input type="checkbox" id="ai-allow-new">
+                          <input type="checkbox" id="ai-allow-new" aria-label="Разрешить новые упражнения">
                           <span class="toggle-slider"></span>
                       </label>
                     </div>
@@ -231,7 +232,7 @@ export function createProfilePage(context: PageContext) {
 
             <div class="form-row">
               <div class="form-group">
-                  <label class="label">Пол</label>
+                  <label class="label" for="profile-gender">Пол</label>
                   <select class="select" id="profile-gender">
                       <option value="" ${!profile?.gender ? 'selected' : ''}>Не указано</option>
                       <option value="male" ${profile?.gender === 'male' ? 'selected' : ''}>Мужской</option>
@@ -239,27 +240,27 @@ export function createProfilePage(context: PageContext) {
                   </select>
               </div>
               <div class="form-group">
-                  <label class="label">Дата рождения</label>
+                  <label class="label" for="profile-birthdate">Дата рождения</label>
                   <input class="input" type="date" id="profile-birthdate" value="${safeBirthDate}">
               </div>
             </div>
 
             <div class="form-row">
               <div class="form-group">
-                  <label class="label">Рост (см)</label>
+                  <label class="label" for="profile-height">Рост (см)</label>
                   <input class="input" type="number" id="profile-height" placeholder="180" value="${safeHeight}">
               </div>
               <div class="form-group">
-                  <label class="label">Вес (кг)</label>
+                  <label class="label" for="profile-weight">Вес (кг)</label>
                   <input class="input" type="number" id="profile-weight" placeholder="75" value="${safeWeight}">
               </div>
             </div>
 
             <div class="form-group">
-               <label class="label">Дополнительная информация</label>
+               <label class="label" for="profile-additional-info">Дополнительная информация</label>
                <textarea class="input" id="profile-additional-info" rows="3" placeholder="Укажите травмы, ограничения, цели или любую другую информацию, которая поможет AI давать более точные советы...">${safeAdditionalInfo}</textarea>
             </div>
-            <button class="button" id="save-profile-btn" style="margin-top: 12px;">Сохранить</button>
+            <button class="form-followup button" id="save-profile-btn">Сохранить</button>
         </div>
     `;
     }
@@ -296,11 +297,11 @@ export function createProfilePage(context: PageContext) {
                 <div style="font-weight:600; margin-bottom:8px;">
                   ${escapeHtml(conflict.entityType)} · ${escapeHtml(conflict.entityId)}
                 </div>
-                <div style="display:flex; gap:8px;">
-                  <button class="button conflict-restore-btn" data-conflict-key="${escapeAttribute(conflict.key)}" style="flex:1;">
+                <div class="form-actions">
+                  <button class="form-actions__button button conflict-restore-btn" data-conflict-key="${escapeAttribute(conflict.key)}">
                     Вернуть локальное
                   </button>
-                  <button class="button button_secondary conflict-dismiss-btn" data-conflict-key="${escapeAttribute(conflict.key)}" style="flex:1;">
+                  <button class="form-actions__button button button_secondary conflict-dismiss-btn" data-conflict-key="${escapeAttribute(conflict.key)}">
                     Оставить серверное
                   </button>
                 </div>
@@ -312,7 +313,7 @@ export function createProfilePage(context: PageContext) {
 
       <div class="settings-section">
         <div class="settings-section-title">Управление данными</div>
-        <div style="display: flex; flex-direction: column; gap: 12px;">
+        <div class="form-stack">
           <button class="button button_secondary" id="export-json-btn">Экспорт JSON (Backup)</button>
           <button class="button button_secondary" id="export-md-btn">Экспорт Markdown</button>
           <button class="button button_secondary" id="import-json-btn">Импорт JSON</button>

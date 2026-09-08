@@ -15,16 +15,17 @@ export function createSettingsPage(context: PageContext) {
     <div class="page-content">
       <div class="settings-section">
         <h2 class="subtitle">${state.editingTypeId ? 'Редактирование типа' : 'Добавить тип тренировки'}</h2>
-        <form class="add-type-form" id="add-type-form" style="margin-bottom: 24px;">
-          <div style="display: flex; gap: 8px; flex-direction: column;">
+        <form class="form-section add-type-form" id="add-type-form">
+          <div class="exercise-form__fields">
+            <label class="label" for="new-type-name">Название упражнения</label>
             <input class="input" type="text" id="new-type-name" placeholder="Название (напр. Жим гантелей)" required value="${escapeAttribute(editingType ? editingType.name : '')}">
 
-            <div class="category-switch" style="display: flex; gap: 12px; margin-bottom: 8px;">
-                <label style="display: flex; align-items: center; gap: 4px;">
+            <div class="exercise-form__categories category-switch">
+                <label class="exercise-form__category">
                     <input type="radio" name="new-type-category" value="strength" ${!editingType || editingType.category !== 'time' ? 'checked' : ''}>
                     Силовая
                 </label>
-                <label style="display: flex; align-items: center; gap: 4px;">
+                <label class="exercise-form__category">
                     <input type="radio" name="new-type-category" value="time" ${editingType && editingType.category === 'time' ? 'checked' : ''}>
                     На время
                 </label>
@@ -32,7 +33,7 @@ export function createSettingsPage(context: PageContext) {
 
             <button class="button" type="submit">${state.editingTypeId ? 'Сохранить' : 'Добавить'}</button>
           </div>
-          ${state.editingTypeId ? `<button class="button button_secondary" type="button" id="cancel-edit-type-btn" style="margin-top: 8px; width: 100%;">Отмена</button>` : ''}
+          ${state.editingTypeId ? `<button class="exercise-form__cancel button button_secondary" type="button" id="cancel-edit-type-btn">Отмена</button>` : ''}
         </form>
 
         <h2 class="subtitle">Типы тренировок</h2>
@@ -41,9 +42,9 @@ export function createSettingsPage(context: PageContext) {
             <div class="type-item" data-id="${escapeAttribute(t.id)}">
               <span class="drag-handle" style="cursor: grab; margin-right: 12px; opacity: 0.5;">⋮⋮</span>
               <span style="flex-grow: 1;">${escapeHtml(t.name)}</span>
-              <div style="display: flex; gap: 8px;">
-                <button class="type-item__edit icon-btn" data-id="${escapeAttribute(t.id)}" title="Редактировать">✏️</button>
-                <button class="type-item__delete icon-btn" data-id="${escapeAttribute(t.id)}" title="Удалить">×</button>
+              <div class="form-actions">
+                <button class="type-item__edit icon-btn" data-id="${escapeAttribute(t.id)}" title="Редактировать" aria-label="Редактировать упражнение">✏️</button>
+                <button class="type-item__delete icon-btn" data-id="${escapeAttribute(t.id)}" title="Удалить" aria-label="Удалить упражнение">×</button>
               </div>
             </div>
           `).join('')}

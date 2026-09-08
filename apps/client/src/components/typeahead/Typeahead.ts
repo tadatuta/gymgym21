@@ -63,11 +63,14 @@ function highlightMatches(text: string, indices: number[]): string {
     return result;
 }
 
-/**
- * Renders the typeahead HTML string.
- */
+let nextTypeaheadId = 0;
+
+/** Renders the typeahead HTML string; inputId belongs to the focusable combobox. */
+
 export function renderTypeahead(options: TypeaheadOptions): string {
     const { items, selectedId, name, placeholder, inputId } = options;
+    const visibleId = inputId || `typeahead-${++nextTypeaheadId}`;
+    const listId = `${visibleId}-listbox`;
     const selected = items.find(i => i.id === selectedId);
     const hiddenValue = selected ? selected.id : (items[0]?.id || '');
     const displayInitial = selected ? selected.name : (items[0]?.name || '');
@@ -77,6 +80,9 @@ export function renderTypeahead(options: TypeaheadOptions): string {
       <input
         type="text"
         class="typeahead__input"
+        id="${escapeAttribute(visibleId)}"
+        role="combobox" aria-autocomplete="list" aria-expanded="false"
+        aria-controls="${escapeAttribute(listId)}"
         autocomplete="off"
         value="${escapeAttribute(displayInitial)}"
         placeholder="${escapeAttribute(placeholder || 'Поиск...')}"
@@ -85,12 +91,11 @@ export function renderTypeahead(options: TypeaheadOptions): string {
       <input
         type="hidden"
         name="${escapeAttribute(name)}"
-        ${inputId ? `id="${escapeAttribute(inputId)}"` : ''}
         value="${escapeAttribute(hiddenValue)}"
         data-typeahead-value
         required
       >
-      <div class="typeahead__dropdown" data-typeahead-dropdown></div>
+      <div class="typeahead__dropdown" id="${escapeAttribute(listId)}" role="listbox" data-typeahead-dropdown></div>
     </div>
   `;
 }
@@ -139,6 +144,7 @@ export function bindTypeahead(container: Element | Document = document): () => v
     let isOpen = false;
 
     function renderDropdown(query: string) {
+        input.removeAttribute('aria-activedescendant');
         if (query.trim() === '') {
             // Show all items
             filteredItems = items.map(item => ({ item, indices: [] }));
@@ -159,7 +165,7 @@ export function bindTypeahead(container: Element | Document = document): () => v
                 const label = f.indices.length > 0
                     ? highlightMatches(f.item.name, f.indices)
                     : escapeHtml(f.item.name);
-                return `<div class="typeahead__option ${i === activeIndex ? 'typeahead__option_active' : ''}" data-typeahead-option-index="${i}" data-id="${escapeAttribute(f.item.id)}">${label}</div>`;
+                return `<div class="typeahead__option ${i === activeIndex ? 'typeahead__option_active' : ''}" id="${escapeAttribute(dropdown.id)}-option-${i}" role="option" aria-selected="${i === activeIndex}" data-typeahead-option-index="${i}" data-id="${escapeAttribute(f.item.id)}">${label}</div>`;
             }).join('');
         }
     }
@@ -167,6 +173,7 @@ export function bindTypeahead(container: Element | Document = document): () => v
     function openDropdown() {
         if (isOpen) return;
         isOpen = true;
+        input.setAttribute('aria-expanded', 'true');
         activeIndex = -1;
         renderDropdown(input.value);
         dropdown.classList.add('typeahead__dropdown_open');
@@ -175,6 +182,8 @@ export function bindTypeahead(container: Element | Document = document): () => v
     function closeDropdown() {
         if (!isOpen) return;
         isOpen = false;
+        input.setAttribute('aria-expanded', 'false');
+        input.removeAttribute('aria-activedescendant');
         dropdown.classList.remove('typeahead__dropdown_open');
         activeIndex = -1;
     }
@@ -190,11 +199,13 @@ export function bindTypeahead(container: Element | Document = document): () => v
     function updateActiveOption() {
         dropdown.querySelectorAll('.typeahead__option').forEach((el, i) => {
             el.classList.toggle('typeahead__option_active', i === activeIndex);
+            el.setAttribute('aria-selected', String(i === activeIndex));
         });
 
         // Scroll active option into view
         const activeEl = dropdown.querySelector('.typeahead__option_active') as HTMLElement;
         if (activeEl) {
+            input.setAttribute('aria-activedescendant', activeEl.id);
             activeEl.scrollIntoView({ block: 'nearest' });
         }
     }
@@ -215,7 +226,10 @@ export function bindTypeahead(container: Element | Document = document): () => v
         const e = event as KeyboardEvent;
         if (!isOpen) {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
                 openDropdown();
+                activeIndex = e.key === 'ArrowDown' ? 0 : filteredItems.length - 1;
+                updateActiveOption();
                 return;
             }
             return;
@@ -246,7 +260,8 @@ export function bindTypeahead(container: Element | Document = document): () => v
                 break;
             case 'Escape':
                 closeDropdown();
-                input.blur();
+                e.preventDefault();
+                input.value = items.find(item => item.id === hidden.value)?.name || '';
                 break;
         }
     });

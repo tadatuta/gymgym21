@@ -250,12 +250,6 @@
     color: var(--color-link);
 }
 
-.chart-container {
-    background-color: var(--color-secondary-bg);
-    border-radius: var(--border-radius);
-    padding: var(--spacing-m);
-    margin-bottom: var(--spacing-m);
-}
 
 .chart {
     width: 100%;
@@ -473,4 +467,228 @@
 .filter-toggle input[type="checkbox"]:checked+.filter-toggle__icon {
     opacity: 1;
     transform: scale(1.1);
+}
+/* Shared form layouts and authentication shell. */
+.form-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.auth__content {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.form-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.form-actions__button {
+    flex: 1;
+}
+
+.auth {
+    display: flex;
+    min-height: 100vh;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+
+.auth__card {
+    width: min(100%, 420px);
+    background: rgba(255,255,255,0.98);
+    border: 1px solid rgba(0,0,0,0.08);
+    border-radius: 24px;
+    padding: 28px;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.12);
+}
+
+.auth__header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 20px;
+}
+
+.auth__logo {
+    width: 52px;
+    height: 52px;
+    border-radius: 18px;
+    background: linear-gradient(135deg, #151515, #4b4b4b);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    flex-shrink: 0;
+}
+
+.auth__title {
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1.1;
+}
+
+.auth__subtitle {
+    color: #666;
+    margin-top: 4px;
+}
+
+.auth__note {
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: #f5f5f5;
+    color: #333;
+}
+
+.auth__status {
+    padding: 18px;
+    border-radius: 18px;
+    background: #f5f5f5;
+    text-align: center;
+}
+
+.auth__status-text {
+    font-size: 15px;
+    color: #444;
+}
+
+.auth__error {
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: #fff1f1;
+    color: #9d1c1c;
+}
+
+.auth__separator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #888;
+}
+
+.auth__separator-line {
+    flex: 1;
+    height: 1px;
+    background: #e5e5e5;
+}
+
+.auth__separator-label {
+    font-size: 13px;
+}
+
+.auth__telegram {
+    padding: 16px;
+    border-radius: 18px;
+    background: linear-gradient(180deg, #f8fbff, #eef6ff);
+    border: 1px solid rgba(0, 98, 255, 0.12);
+}
+
+.auth__telegram-title {
+    font-weight: 600;
+    margin-bottom: 10px;
+}
+
+.auth__telegram-description {
+    font-size: 14px;
+    color: #555;
+    margin-bottom: 12px;
+}
+
+.auth__migration-title {
+    font-size: 22px;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+.auth__migration-description {
+    color: #666;
+    line-height: 1.5;
+}
+
+.form-followup {
+    margin-top: 12px;
+}
+
+.form-section {
+    margin-bottom: 24px;
+}
+
+.exercise-form__fields {
+    display: flex;
+    gap: 8px;
+    flex-direction: column;
+}
+
+.exercise-form__categories {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.exercise-form__category {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.exercise-form__cancel {
+    margin-top: 8px;
+    width: 100%;
+}
+
+.form-followup_separated {
+    margin-top: 24px;
+}
+
+.auth__error_spaced {
+    margin-bottom: 14px;
+}
+
+.form-actions_spaced {
+    margin-top: 8px;
+}
+
+.form-actions > * {
+    min-width: 0;
+}
+
+.form-stack .label,
+.auth__content .label {
+    margin-bottom: -6px;
+}
+
+.icon-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+}
+@media (max-width: 420px) {
+    .auth {
+        padding: 12px;
+    }
+
+    .auth__card {
+        padding: 20px;
+    }
+}
+
+.public-profile__notice {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--surface-color-alt);
+}
+
+.public-profile__friend-action {
+    margin-top: 12px;
+    height: 36px;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }

@@ -93,7 +93,7 @@ export function createStatsPage(context: PageContext) {
 
         <div class="charts-section">
             <h2 class="subtitle">Длительность тренировок</h2>
-            <div class="chart-container">
+            <div class="stats-chart">
                 ${renderDurationChart(workouts, logs, storage.getTimeZone())}
             </div>
         </div>
@@ -102,7 +102,7 @@ export function createStatsPage(context: PageContext) {
       // Progress Tab
       html += `
         <div class="form-group">
-            <label class="label">Упражнение</label>
+            <label class="label" for="stat-type-select">Упражнение</label>
             <select class="select" id="stat-type-select">
                 <option value="all">Все упражнения (Объем)</option>
                 ${types.map(t => renderOption(t.id, t.name, state.selectedStatType === t.id)).join('')}
@@ -114,7 +114,7 @@ export function createStatsPage(context: PageContext) {
         html += `
             <div class="charts-section">
                 <h2 class="subtitle">Общий объем по дням</h2>
-                <div class="chart-container">
+                <div class="stats-chart">
                     ${renderVolumeChart(logs, storage.getTimeZone())}
                 </div>
             </div>
@@ -126,14 +126,14 @@ export function createStatsPage(context: PageContext) {
         html += `
              <div class="charts-section">
                 <h2 class="subtitle">Прогресс силовых (1RM)</h2>
-                <div class="chart-container">
+                <div class="stats-chart">
                     ${render1RMChart(oneRepMaxData)}
                 </div>
             </div>
 
-            <div class="charts-section" style="margin-top: 24px;">
+            <div class="form-followup form-followup_separated charts-section">
                 <h2 class="subtitle">Объем нагрузки</h2>
-                 <div class="chart-container">
+                 <div class="stats-chart">
                     ${renderVolumeChart(typeLogs, storage.getTimeZone())}
                 </div>
             </div>

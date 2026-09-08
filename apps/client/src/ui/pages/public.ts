@@ -143,7 +143,7 @@ export function createPublicPage(context: PageContext) {
     return `
     <div class="page-content profile-page">
       ${profile.cacheMetadata?.cached ? `
-        <div class="hint" style="margin-bottom:12px; padding:10px 12px; border-radius:12px; background:var(--surface-color-alt);">
+        <div class="public-profile__notice hint">
           Оффлайн-копия от ${escapeHtml(new Date(profile.cacheMetadata.cachedAt).toLocaleString())}
         </div>
       ` : ''}
@@ -165,7 +165,7 @@ export function createPublicPage(context: PageContext) {
 
         const isFriend = storage.isFriend(profile.identifier);
         return `
-                <button class="button ${isFriend ? 'button_secondary' : ''}" id="friend-action-btn" data-id="${safeFriendIdentifier}" data-name="${safeFriendName}" data-photo="${safeFriendPhoto}" style="margin-top: 12px; height: 36px; font-size: 14px; display: flex; align-items: center; justify-content: center;">
+                <button class="public-profile__friend-action button ${isFriend ? 'button_secondary' : ''}" id="friend-action-btn" data-id="${safeFriendIdentifier}" data-name="${safeFriendName}" data-photo="${safeFriendPhoto}" >
                     ${isFriend ? 'Удалить из друзей' : 'Добавить в друзья'}
                 </button>
             `;

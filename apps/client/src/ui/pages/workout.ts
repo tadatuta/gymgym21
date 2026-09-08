@@ -43,9 +43,10 @@ export function createWorkoutPage(context: PageContext) {
       return `
       <div class="workout-controls card">
         <h3 class="subtitle" style="margin-top: 0">Начало тренировки</h3>
-        <form id="start-workout-form" style="display: flex; flex-direction: column; gap: 12px;">
-          <input class="input" type="text" name="workoutName" placeholder="Название (опционально)">
-          <div style="display: flex; gap: 8px;">
+        <form id="start-workout-form" class="form-stack">
+          <label class="label" for="workout-workoutName">Название (опционально)</label>
+          <input class="input" type="text" name="workoutName" id="workout-workoutName" placeholder="Название (опционально)">
+          <div class="form-actions">
             <button class="button" type="submit">Начать</button>
             <button class="button button_secondary" type="button" id="cancel-start-workout-btn">Отмена</button>
           </div>
@@ -55,7 +56,7 @@ export function createWorkoutPage(context: PageContext) {
     }
 
     return `
-    <button class="button" id="start-workout-btn" style="margin-bottom: 24px;">▶️ Начать тренировку</button>
+    <button class="form-section button" id="start-workout-btn">▶️ Начать тренировку</button>
   `;
   }
 
@@ -135,7 +136,7 @@ export function createWorkoutPage(context: PageContext) {
       <h1 class="title">${state.editingLogId ? 'Редактирование подхода' : 'Новый подход'}</h1>
       <form class="workout-form" id="log-form">
         <div class="form-group">
-          <label class="label">Тип тренировки</label>
+          <label class="label" for="workout-type-select">Тип тренировки</label>
           ${types.length > 10
         ? renderTypeahead({
           items: types.map(t => ({ id: t.id, name: t.name })),
@@ -157,13 +158,13 @@ export function createWorkoutPage(context: PageContext) {
         <div id="strength-inputs" style="display: none;">
             <div class="form-row">
               <div class="form-group">
-                <label class="label">Вес (кг)</label>
-                <input class="input" type="number" name="weight" step="0.5" placeholder="0" value="${escapeAttribute(state.editingLogId && editingLog ? (editingLog.weight ?? '') : '')}">
+                <label class="label" for="workout-weight">Вес (кг)</label>
+                <input class="input" type="number" name="weight" id="workout-weight" step="0.5" placeholder="0" value="${escapeAttribute(state.editingLogId && editingLog ? (editingLog.weight ?? '') : '')}">
 
               </div>
               <div class="form-group">
-                <label class="label">Повторений</label>
-                <input class="input" type="number" name="reps" placeholder="0" value="${escapeAttribute(state.editingLogId && editingLog ? (editingLog.reps ?? '') : '')}">
+                <label class="label" for="workout-reps">Повторений</label>
+                <input class="input" type="number" name="reps" id="workout-reps" placeholder="0" value="${escapeAttribute(state.editingLogId && editingLog ? (editingLog.reps ?? '') : '')}">
 
               </div>
             </div>
@@ -172,47 +173,47 @@ export function createWorkoutPage(context: PageContext) {
         <div id="time-inputs" style="display: none;">
             <div class="form-row">
                 <div class="form-group">
-                    <label class="label">Часы</label>
-                    <input class="input" type="number" name="duration_hours" placeholder="0" value="${escapeAttribute(state.editingLogId && editingLog && editingLog.duration !== undefined ? Math.floor(editingLog.duration / 60) : '')}">
+                    <label class="label" for="workout-duration_hours">Часы</label>
+                    <input class="input" type="number" name="duration_hours" id="workout-duration_hours" placeholder="0" value="${escapeAttribute(state.editingLogId && editingLog && editingLog.duration !== undefined ? Math.floor(editingLog.duration / 60) : '')}">
                 </div>
                 <div class="form-group">
-                    <label class="label">Минуты</label>
-                    <input class="input" type="number" name="duration_minutes" placeholder="0" value="${escapeAttribute(state.editingLogId && editingLog && editingLog.duration !== undefined ? (editingLog.duration % 60) : '')}">
+                    <label class="label" for="workout-duration_minutes">Минуты</label>
+                    <input class="input" type="number" name="duration_minutes" id="workout-duration_minutes" placeholder="0" value="${escapeAttribute(state.editingLogId && editingLog && editingLog.duration !== undefined ? (editingLog.duration % 60) : '')}">
                 </div>
                 <div class="form-group">
-                    <label class="label">Секунды</label>
-                    <input class="input" type="number" name="duration_seconds" placeholder="0" value="${escapeAttribute(state.editingLogId && editingLog && editingLog.durationSeconds !== undefined ? editingLog.durationSeconds : '')}">
+                    <label class="label" for="workout-duration_seconds">Секунды</label>
+                    <input class="input" type="number" name="duration_seconds" id="workout-duration_seconds" placeholder="0" value="${escapeAttribute(state.editingLogId && editingLog && editingLog.durationSeconds !== undefined ? editingLog.durationSeconds : '')}">
                 </div>
             </div>
         </div>
 
         ${state.editingLogId && editingLog ? `
         <div class="form-group">
-          <label class="label">Дата и время</label>
-          <input class="input" type="datetime-local" name="date" required value="${escapeAttribute(toLocalDatetimeValue(editingLog.date))}">
+          <label class="label" for="workout-date">Дата и время</label>
+          <input class="input" type="datetime-local" name="date" id="workout-date" required value="${escapeAttribute(toLocalDatetimeValue(editingLog.date))}">
         </div>
         ` : ''}
 
         <button class="button" type="submit">${state.editingLogId ? 'Сохранить изменения' : 'Зафиксировать'}</button>
-        ${state.editingLogId ? `<button class="button button_secondary" type="button" id="cancel-edit-btn" style="margin-top: 12px;">Отмена</button>` : ''}
-        ${!state.editingLogId && lastLog && lastTypeId ? `<button class="button button_secondary" type="button" id="duplicate-last-btn" style="margin-top: 12px;">Повторить: ${duplicateWorkoutTypeName} ${lastLog.weight !== undefined ? `${escapeHtml(lastLog.weight)}кг × ${escapeHtml(lastLog.reps)}` : `${escapeHtml(lastLog.duration || 0)} мин${lastLog.durationSeconds ? ` ${escapeHtml(lastLog.durationSeconds)} сек` : ''}`}</button>` : ''}
+        ${state.editingLogId ? `<button class="form-followup button button_secondary" type="button" id="cancel-edit-btn">Отмена</button>` : ''}
+        ${!state.editingLogId && lastLog && lastTypeId ? `<button class="form-followup button button_secondary" type="button" id="duplicate-last-btn">Повторить: ${duplicateWorkoutTypeName} ${lastLog.weight !== undefined ? `${escapeHtml(lastLog.weight)}кг × ${escapeHtml(lastLog.reps)}` : `${escapeHtml(lastLog.duration || 0)} мин${lastLog.durationSeconds ? ` ${escapeHtml(lastLog.durationSeconds)} сек` : ''}`}</button>` : ''}
 
       </form>
       <div class="recent-logs">
         <div class="recent-logs__header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-           <button class="icon-btn" id="prev-week-btn">◀️</button>
+           <button class="icon-btn" id="prev-week-btn" aria-label="Предыдущая неделя">◀️</button>
            <div id="week-label-container" style="display: flex; align-items: center; gap: 8px; position: relative;">
              <span style="font-size: 18px; position: relative; display: inline-block;">
                📅
-               <input type="date" id="calendar-input" value="${escapeAttribute(state.lastCalendarValue)}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer;">
+               <input type="date" id="calendar-input" aria-label="Выбрать дату" value="${escapeAttribute(state.lastCalendarValue)}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer;">
              </span>
              <h2 class="subtitle" style="margin: 0;">${escapeHtml(state.currentWeekOffset === 0 ? 'Последние 7 дней' : label)}</h2>
              <label class="filter-toggle" title="Фильтр по типу упражнения">
-               <input type="checkbox" id="filter-toggle-input" ${state.isFilterEnabled ? 'checked' : ''}>
+               <input type="checkbox" id="filter-toggle-input" aria-label="Фильтр по типу упражнения" ${state.isFilterEnabled ? 'checked' : ''}>
                <span class="filter-toggle__icon">🔍</span>
              </label>
            </div>
-           <button class="icon-btn" id="next-week-btn" ${state.currentWeekOffset === 0 ? 'disabled' : ''} style="${state.currentWeekOffset === 0 ? 'opacity: 0.3; cursor: default;' : ''}">▶️</button>
+           <button class="icon-btn" id="next-week-btn" aria-label="Следующая неделя" ${state.currentWeekOffset === 0 ? 'disabled' : ''}>▶️</button>
         </div>
         <div id="logs-list">
           ${renderLogsList()}
@@ -396,7 +397,7 @@ export function createWorkoutPage(context: PageContext) {
     const type = types.find(t => t.id === typeId);
     if (!type) return;
 
-    const selectOrHidden = document.getElementById('workout-type-select') as HTMLInputElement | HTMLSelectElement;
+    const selectOrHidden = document.querySelector('[data-typeahead-value][name="typeId"], select#workout-type-select') as HTMLInputElement | HTMLSelectElement;
     if (selectOrHidden) {
       selectOrHidden.value = typeId;
       if (selectOrHidden.tagName === 'INPUT' && selectOrHidden.type === 'hidden') {
@@ -422,20 +423,20 @@ export function createWorkoutPage(context: PageContext) {
     <div class="workout-edit-form card">
       <form id="workout-edit-form">
         <div class="form-group">
-          <label class="label">Название</label>
-          <input class="input" type="text" name="workoutName" placeholder="Название (опционально)" value="${escapeAttribute(workout.name || '')}">
+          <label class="label" for="workout-edit-name">Название</label>
+          <input class="input" type="text" name="workoutName" id="workout-edit-name" placeholder="Название (опционально)" value="${escapeAttribute(workout.name || '')}">
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label class="label">Начало</label>
-            <input class="input" type="datetime-local" name="startTime" value="${escapeAttribute(startVal)}" required>
+            <label class="label" for="workout-startTime">Начало</label>
+            <input class="input" type="datetime-local" name="startTime" id="workout-startTime" value="${escapeAttribute(startVal)}" required>
           </div>
           <div class="form-group">
-            <label class="label">Конец</label>
-            <input class="input" type="datetime-local" name="endTime" value="${escapeAttribute(endVal)}">
+            <label class="label" for="workout-endTime">Конец</label>
+            <input class="input" type="datetime-local" name="endTime" id="workout-endTime" value="${escapeAttribute(endVal)}">
           </div>
         </div>
-        <div style="display: flex; gap: 8px; margin-top: 8px;">
+        <div class="form-actions form-actions_spaced">
           <button class="button" type="submit">Сохранить</button>
           <button class="button button_secondary" type="button" id="cancel-edit-workout-btn">Отмена</button>
         </div>
@@ -494,8 +495,8 @@ export function createWorkoutPage(context: PageContext) {
       html += `<div class="log-day__header">
       <span>${escapeHtml(dateLabel)}${showNameInHeader ? ` • ${escapeHtml(singleWorkout.name || '')}` : ''}${singleWorkout ? ` • ${escapeHtml(singleWorkoutDuration)}` : ''}</span>
       <div class="log-day__header-actions">
-        ${isEditable && singleWorkout ? `<button class="workout-header__edit" data-workout-id="${escapeAttribute(singleWorkout.id)}" title="Редактировать тренировку">✏️</button>` : ''}
-        ${isEditable ? `<button class="share-btn" data-date="${escapeAttribute(dayDateStr)}" title="Поделиться">📤</button>` : ''}
+        ${isEditable && singleWorkout ? `<button class="workout-header__edit" aria-label="Редактировать тренировку" data-workout-id="${escapeAttribute(singleWorkout.id)}" title="Редактировать тренировку">✏️</button>` : ''}
+        ${isEditable ? `<button class="share-btn" aria-label="Поделиться тренировкой" data-date="${escapeAttribute(dayDateStr)}" title="Поделиться">📤</button>` : ''}
       </div>
     </div>`;
 
@@ -518,7 +519,7 @@ export function createWorkoutPage(context: PageContext) {
                 <span>${escapeHtml(workout?.name || 'Тренировка')}</span>
                 <div class="workout-subheader__actions">
                   <span class="workout-subheader__time">${escapeHtml(duration)}</span>
-                  ${isEditable && workout ? `<button class="workout-header__edit" data-workout-id="${escapeAttribute(workout.id)}" title="Редактировать тренировку">✏️</button>` : ''}
+                  ${isEditable && workout ? `<button class="workout-header__edit" aria-label="Редактировать тренировку" data-workout-id="${escapeAttribute(workout.id)}" title="Редактировать тренировку">✏️</button>` : ''}
                 </div>
             </h3>`;
 
@@ -556,8 +557,8 @@ export function createWorkoutPage(context: PageContext) {
                     </div>
                     ${isEditable ? `
                     <div class="log-set__actions">
-                      <button class="log-set__edit" data-id="${escapeAttribute(set.id)}">✏️</button>
-                      <button class="log-set__delete" data-id="${escapeAttribute(set.id)}">×</button>
+                      <button class="log-set__edit" aria-label="Редактировать подход" data-id="${escapeAttribute(set.id)}">✏️</button>
+                      <button class="log-set__delete" aria-label="Удалить подход" data-id="${escapeAttribute(set.id)}">×</button>
                     </div>
                     ` : ''}
                   </div>
@@ -598,8 +599,8 @@ export function createWorkoutPage(context: PageContext) {
                     </div>
                     ${isEditable ? `
                     <div class="log-set__actions">
-                      <button class="log-set__edit" data-id="${escapeAttribute(set.id)}">✏️</button>
-                      <button class="log-set__delete" data-id="${escapeAttribute(set.id)}">×</button>
+                      <button class="log-set__edit" aria-label="Редактировать подход" data-id="${escapeAttribute(set.id)}">✏️</button>
+                      <button class="log-set__delete" aria-label="Удалить подход" data-id="${escapeAttribute(set.id)}">×</button>
                     </div>
                     ` : ''}
                   </div>
@@ -779,7 +780,7 @@ export function createWorkoutPage(context: PageContext) {
       registerTypeaheadItems(form, storage.getWorkoutTypes().map(t => ({ id: t.id, name: t.name })));
       lifecycle.own(typeaheadEl, bindTypeahead(form));
     }
-    const typeSelect = document.getElementById('workout-type-select');
+    const typeSelect = document.querySelector('[data-typeahead-value][name="typeId"], select#workout-type-select');
     lifecycle.listen(typeSelect, 'change', updateFormVisibility);
     lifecycle.listen(form, 'draftrestore', updateFormVisibility);
     lifecycle.listen(form, 'submit', e => { void submitLog(form, e); });

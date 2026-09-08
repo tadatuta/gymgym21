@@ -37,16 +37,16 @@ type LoginMode = 'sign-in' | 'sign-up' | 'complete';
 
 function renderShell(container: HTMLElement, content: string, note?: string) {
   container.innerHTML = `
-    <div class="page-content" style="display:flex; min-height:100vh; align-items:center; justify-content:center; padding:24px;">
-      <div style="width:min(100%, 420px); background:rgba(255,255,255,0.98); border:1px solid rgba(0,0,0,0.08); border-radius:24px; padding:28px; box-shadow:0 24px 80px rgba(0,0,0,0.12);">
-        <div style="display:flex; align-items:center; gap:14px; margin-bottom:20px;">
-          <div style="width:52px; height:52px; border-radius:18px; background:linear-gradient(135deg, #151515, #4b4b4b); color:#fff; display:flex; align-items:center; justify-content:center; font-size:24px;">21</div>
+    <div class="auth page-content">
+      <div class="auth__card">
+        <div class="auth__header">
+          <div class="auth__logo">21</div>
           <div>
-            <div style="font-size:28px; font-weight:700; line-height:1.1;">Жим-жим 21</div>
-            <div style="color:#666; margin-top:4px;">Авторизация через Better Auth</div>
+            <div class="auth__title">Жим-жим 21</div>
+            <div class="auth__subtitle">Авторизация через Better Auth</div>
           </div>
         </div>
-        ${note ? `<div style="margin-bottom:16px; padding:12px 14px; border-radius:14px; background:#f5f5f5; color:#333;">${escapeHtml(note)}</div>` : ''}
+        ${note ? `<div class="auth__note">${escapeHtml(note)}</div>` : ''}
         ${content}
       </div>
     </div>
@@ -55,8 +55,8 @@ function renderShell(container: HTMLElement, content: string, note?: string) {
 
 function renderStatus(message: string) {
   return `
-    <div style="padding:18px; border-radius:18px; background:#f5f5f5; text-align:center;">
-      <div style="font-size:15px; color:#444;">${escapeHtml(message)}</div>
+    <div class="auth__status">
+      <div class="auth__status-text">${escapeHtml(message)}</div>
     </div>
   `;
 }
@@ -65,33 +65,33 @@ function renderAuthForm(mode: Exclude<LoginMode, 'complete'>, error?: string) {
   const isSignUp = mode === 'sign-up';
 
   return `
-    <div style="display:flex; flex-direction:column; gap:16px;">
-      <div style="display:flex; gap:8px;">
-        <button id="auth-mode-sign-in" class="button ${!isSignUp ? '' : 'button_secondary'}" style="flex:1;">Вход</button>
-        <button id="auth-mode-sign-up" class="button ${isSignUp ? '' : 'button_secondary'}" style="flex:1;">Регистрация</button>
+    <div class="auth__content">
+      <div class="form-actions">
+        <button id="auth-mode-sign-in" class="form-actions__button button ${!isSignUp ? '' : 'button_secondary'}">Вход</button>
+        <button id="auth-mode-sign-up" class="form-actions__button button ${isSignUp ? '' : 'button_secondary'}">Регистрация</button>
       </div>
 
-      ${error ? `<div style="padding:12px 14px; border-radius:14px; background:#fff1f1; color:#9d1c1c;">${escapeHtml(error)}</div>` : ''}
+      ${error ? `<div class="auth__error">${escapeHtml(error)}</div>` : ''}
 
-      <form id="email-auth-form" style="display:flex; flex-direction:column; gap:12px;">
-        <input class="input" type="email" name="email" placeholder="Email" required>
-        ${isSignUp ? '<input class="input" type="text" name="name" placeholder="Имя (опционально)">' : ''}
-        ${isSignUp ? '<input class="input" type="text" name="username" placeholder="Username" required pattern="[A-Za-z0-9_]{5,32}">' : ''}
-        <input class="input" type="password" name="password" placeholder="Пароль" required minlength="8">
+      <form id="email-auth-form" class="form-stack">
+        <label class="label" for="auth-email">Email</label><input class="input" type="email" name="email" id="auth-email" autocomplete="email" placeholder="Email" required>
+        ${isSignUp ? '<label class="label" for="auth-name">Имя</label><input class="input" type="text" name="name" id="auth-name" autocomplete="name" placeholder="Имя (опционально)">' : ''}
+        ${isSignUp ? '<label class="label" for="auth-username">Username</label><input class="input" type="text" name="username" id="auth-username" autocomplete="username" placeholder="Username" required pattern="[A-Za-z0-9_]{5,32}">' : ''}
+        <label class="label" for="auth-password">Пароль</label><input class="input" type="password" name="password" id="auth-password" autocomplete="${isSignUp ? 'new-password' : 'current-password'}" placeholder="Пароль" required minlength="8">
         <button class="button" type="submit">${isSignUp ? 'Создать аккаунт' : 'Войти по email'}</button>
       </form>
 
-      <div style="display:flex; align-items:center; gap:10px; color:#888;">
-        <div style="flex:1; height:1px; background:#e5e5e5;"></div>
-        <span style="font-size:13px;">или</span>
-        <div style="flex:1; height:1px; background:#e5e5e5;"></div>
+      <div class="auth__separator">
+        <div class="auth__separator-line"></div>
+        <span class="auth__separator-label">или</span>
+        <div class="auth__separator-line"></div>
       </div>
 
       <button id="passkey-sign-in-btn" class="button button_secondary" type="button">Войти через Passkey</button>
 
-      <div style="padding:16px; border-radius:18px; background:linear-gradient(180deg, #f8fbff, #eef6ff); border:1px solid rgba(0, 98, 255, 0.12);">
-        <div style="font-weight:600; margin-bottom:10px;">Telegram</div>
-        <div style="font-size:14px; color:#555; margin-bottom:12px;">Можно войти текущим Telegram-аккаунтом и привязать существующие данные.</div>
+      <div class="auth__telegram">
+        <div class="auth__telegram-title">Telegram</div>
+        <div class="auth__telegram-description">Можно войти текущим Telegram-аккаунтом и привязать существующие данные.</div>
         <button id="telegram-mini-app-sign-in" class="button button_secondary" type="button">Войти в Telegram Mini App / повторить</button>
         <div id="telegram-login-container"></div>
       </div>
@@ -101,17 +101,17 @@ function renderAuthForm(mode: Exclude<LoginMode, 'complete'>, error?: string) {
 
 function renderCompletionForm(prefill: { email?: string; username?: string | null; name?: string }) {
   return `
-    <div style="display:flex; flex-direction:column; gap:16px;">
+    <div class="auth__content">
       <div>
-        <div style="font-size:22px; font-weight:700; margin-bottom:8px;">Завершите миграцию</div>
-        <div style="color:#666; line-height:1.5;">Нужно добавить email, пароль и app username, чтобы вход по паролю и Passkey работал вместе с вашим Telegram-аккаунтом.</div>
+        <div class="auth__migration-title">Завершите миграцию</div>
+        <div class="auth__migration-description">Нужно добавить email, пароль и app username, чтобы вход по паролю и Passkey работал вместе с вашим Telegram-аккаунтом.</div>
       </div>
 
-      <form id="migration-complete-form" style="display:flex; flex-direction:column; gap:12px;">
-        <input class="input" type="email" name="email" placeholder="Email" required value="${escapeAttribute(prefill.email || '')}">
-        <input class="input" type="text" name="name" placeholder="Имя" value="${escapeAttribute(prefill.name || '')}">
-        <input class="input" type="text" name="username" placeholder="Username" required pattern="[A-Za-z0-9_]{5,32}" value="${escapeAttribute(prefill.username || '')}">
-        <input class="input" type="password" name="password" placeholder="Новый пароль" required minlength="8">
+      <form id="migration-complete-form" class="form-stack">
+        <label class="label" for="auth-email">Email</label><input class="input" type="email" name="email" id="auth-email" autocomplete="email" placeholder="Email" required value="${escapeAttribute(prefill.email || '')}">
+        <label class="label" for="auth-name">Имя</label><input class="input" type="text" name="name" id="auth-name" autocomplete="name" placeholder="Имя" value="${escapeAttribute(prefill.name || '')}">
+        <label class="label" for="auth-username">Username</label><input class="input" type="text" name="username" id="auth-username" autocomplete="username" placeholder="Username" required pattern="[A-Za-z0-9_]{5,32}" value="${escapeAttribute(prefill.username || '')}">
+        <label class="label" for="auth-password">Пароль</label><input class="input" type="password" name="password" id="auth-password" autocomplete="new-password" placeholder="Новый пароль" required minlength="8">
         <button class="button" type="submit">Завершить миграцию</button>
       </form>
     </div>
@@ -124,7 +124,7 @@ async function showCompletionForm(container: HTMLElement, onLoginSuccess: () => 
   if (!isCurrent() || session !== getCurrentSession()) return;
   renderShell(
     container,
-    `${error ? `<div style="margin-bottom:14px; padding:12px 14px; border-radius:14px; background:#fff1f1; color:#9d1c1c;">${escapeHtml(error)}</div>` : ''}
+    `${error ? `<div class="auth__error auth__error_spaced">${escapeHtml(error)}</div>` : ''}
      ${renderCompletionForm({
        email: status.emailIsPlaceholder ? '' : status.user.email,
        username: status.user.username || status.suggestedUsername || '',

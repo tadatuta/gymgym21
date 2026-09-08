@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { contentSecurityPolicy } from './config/csp';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
@@ -26,6 +27,7 @@ export default defineConfig({
         port: 4173
     },
     plugins: [
+        contentSecurityPolicy(),
         VitePWA({
             registerType: 'autoUpdate',
             includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
