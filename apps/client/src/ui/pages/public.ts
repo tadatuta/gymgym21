@@ -3,9 +3,9 @@ import {
   type AppRoute
 } from '../../router';
 import { PublicProfileUnavailableError } from '../../storage/storage';
+import { PublicHistoryStaleError } from '../../storage/remote-reads';
 import { PublicProfileData } from '../../types';
 import { escapeAttribute, escapeHtml, renderSafeAvatarMarkup, sanitizeUrl } from '../../utils/safe-html';
-import { getTrainingActivity } from '../../utils/training-activity';
 import { accountTimeZone, dayLabel } from '../../utils/training-time';
 import type { PageContext } from '../context';
 import { createLifecycle } from '../lifecycle';
@@ -14,6 +14,9 @@ export function createPublicPage(context: PageContext) {
   const { storage, getCurrentUser } = dependencies;
   const { render, showToast, generateLogsListHtml } = context.actions;
   const lifecycle = createLifecycle();
+  let loadingHistory = false;
+  let historyError: string | null = null;
+  let historyStale = false;
   function clearPublicProfileState() {
     state.loadedPublicProfile = null;
     state.loadedPublicProfileIdentifier = null;
@@ -37,6 +40,9 @@ export function createPublicPage(context: PageContext) {
     state.loadedPublicProfileIdentifier = identifier;
     state.profileLoadFailed = false;
     state.publicProfileLoadError = null;
+    loadingHistory = false;
+    historyError = null;
+    historyStale = false;
     render();
 
     let profile: PublicProfileData | null;
@@ -61,6 +67,39 @@ export function createPublicPage(context: PageContext) {
     state.loadedPublicProfile = profile;
     state.profileLoadFailed = !profile;
     render();
+  }
+
+  async function loadMoreHistory() {
+    const profile = state.loadedPublicProfile;
+    const cursor = profile?.history?.nextCursor;
+    if (!profile || !cursor || loadingHistory || historyStale || state.currentRoute.name !== 'public-profile') return;
+    const identifier = state.currentRoute.identifier;
+    const requestId = state.publicProfileRequestId;
+    loadingHistory = true;
+    historyError = null;
+    render();
+    const isCurrent = () => requestId === state.publicProfileRequestId && state.loadedPublicProfile === profile &&
+      state.currentRoute.name === 'public-profile' && state.currentRoute.identifier === identifier;
+    try {
+      const page = await storage.getPublicProfile(identifier, cursor);
+      if (!isCurrent()) return;
+      if (!page) {
+        clearPublicProfileState();
+        state.profileLoadFailed = true;
+      } else {
+        // Only the individual wire page is cached and validated; accumulated UI history is not a wire response.
+        state.loadedPublicProfile = { ...page,
+          logs: [...new Map([...(profile.logs ?? []), ...(page.logs ?? [])].map(log => [log.id, log])).values()],
+          workoutTypes: [...new Map([...(profile.workoutTypes ?? []), ...(page.workoutTypes ?? [])].map(type => [type.id, type])).values()],
+        };
+      }
+    } catch (error) {
+      if (!isCurrent()) return;
+      historyStale = error instanceof PublicHistoryStaleError;
+      historyError = error instanceof Error ? error.message : 'Не удалось загрузить историю';
+    } finally {
+      if (requestId === state.publicProfileRequestId) { loadingHistory = false; render(); }
+    }
   }
 
   function renderPublicProfilePage() {
@@ -134,7 +173,7 @@ export function createPublicPage(context: PageContext) {
       </div>
 
       ${(function() {
-        const logDates = profile.logs ? new Set(getTrainingActivity(profile.logs, accountTimeZone(profile.timeZone)).keys()) : new Set<string>();
+        const logDates = new Set(profile.activityDays ?? []);
         return renderProfileStats(profile.stats, logDates, accountTimeZone(profile.timeZone));
       })()}
 
@@ -156,12 +195,16 @@ export function createPublicPage(context: PageContext) {
           <div id="logs-list">
             ${generateLogsListHtml(profile.logs, profile.workoutTypes, false, accountTimeZone(profile.timeZone))}
           </div>
+          ${historyError ? `<p role="alert">${escapeHtml(historyError)}</p>` : ''}
+          ${historyStale ? '<button class="button button_secondary" id="public-profile-retry">Обновить профиль</button>' :
+            profile.history?.nextCursor ? `<button class="button button_secondary" id="public-history-more" ${loadingHistory ? 'disabled' : ''}>${loadingHistory ? 'Загрузка…' : 'Загрузить ещё'}</button>` : ''}
         </div>
       ` : ''}
     </div>
   `;
   }
   function bindEvents() {
+    lifecycle.listen(document.getElementById('public-history-more'), 'click', () => { void loadMoreHistory(); });
     lifecycle.listen(document.getElementById('public-profile-retry'), 'click', () => {
       if (state.currentRoute.name === 'public-profile') void loadPublicProfile(state.currentRoute.identifier);
     });

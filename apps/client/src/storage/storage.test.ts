@@ -418,7 +418,7 @@ it('loads guest public profiles without opening IndexedDB, including after auth 
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { finish = resolve; })));
     const pending = service.getPublicProfile('guest');
     invalidateAccountOperations();
-    finish(new Response(JSON.stringify({ identifier: 'guest', displayName: 'Guest' })));
+    finish(new Response(JSON.stringify({ identifier: 'guest', displayName: 'Guest', stats: { totalWorkouts: 0, totalVolume: 0 }, recentActivity: [] })));
     expect((await pending)?.displayName).toBe('Guest');
     expect(put).not.toHaveBeenCalled();
     expect(db.isOpen()).toBe(false);
@@ -427,6 +427,28 @@ it('loads guest public profiles without opening IndexedDB, including after auth 
     service.dispose();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+});
+
+it('keeps only the first public page in cache and never substitutes it for a failed history page', async () => {
+    const service = new StorageService({ enableBroadcast: false });
+    await service.activate(`paged-cache-${Math.random()}`);
+    const first = { identifier: 'paged', displayName: 'Paged', stats: { totalWorkouts: 1, totalVolume: 0 }, recentActivity: [],
+        logs: [{ id: 'A', workoutTypeId: 'T', date: '2026-09-01T00:00:00Z' }], workoutTypes: [], history: { nextCursor: 'next' } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(first))));
+    await service.getPublicProfile('paged');
+    const page = { ...first, logs: [{ ...first.logs[0], id: 'B' }], history: { nextCursor: null } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(page))));
+    expect((await service.getPublicProfile('paged', 'next'))?.logs?.[0].id).toBe('B');
+    expect((await db.publicProfileCache.get('paged'))?.payload.logs?.[0].id).toBe('A');
+    expect(vi.mocked(fetch).mock.calls[0][0]).toContain('?cursor=next');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 503 })));
+    await expect(service.getPublicProfile('paged', 'next')).rejects.toThrow('Не удалось загрузить профиль');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 409 })));
+    await expect(service.getPublicProfile('paged', 'next')).rejects.toThrow('История изменилась');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 404 })));
+    expect(await service.getPublicProfile('paged', 'next')).toBeNull();
+    expect(await db.publicProfileCache.get('paged')).toBeUndefined();
+    service.dispose();
 });
 
 describe('AI fresh synchronized context', () => {

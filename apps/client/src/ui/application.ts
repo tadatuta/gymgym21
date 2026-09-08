@@ -187,9 +187,7 @@ export function createApplication(dependencyOverrides: Partial<UiDependencies> =
       disposeMainLogin(app);
       app.innerHTML = `<main class="content">${pages.public.render()}
       <button class="button" id="guest-sign-in">Войти в свой аккаунт</button></main>`;
-      lifecycle.listen(app.querySelector('#public-profile-retry'), 'click', () => {
-        if (state.currentRoute.name === 'public-profile') void loadPublicProfile(state.currentRoute.identifier);
-      });
+      pages.public.mount();
       lifecycle.listen(app.querySelector('#guest-sign-in'), 'click', () => {
         state.guestLoginRequested = true;
         window.history.pushState(null, '', window.location.href);

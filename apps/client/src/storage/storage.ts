@@ -143,7 +143,7 @@ export class StorageService {
     getTimeZone() { return this.activeReads()?.getTimeZone() ?? accountTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone); }
     getWorkoutDuration(workout: WorkoutSession) { return this.activeReads()?.getWorkoutDuration(workout) ?? sessionDurationSeconds(workout) / 60; }
     isFriend(identifier: string) { return this.activeReads()?.isFriend(identifier) ?? false; }
-    getPublicProfile(identifier: string) { return getPublicProfile(identifier, this.account?.repository); }
+    getPublicProfile(identifier: string, cursor?: string) { return getPublicProfile(identifier, this.account?.repository, cursor); }
     async readCachedAIResults() { return this.requireAccount().remote.readCachedAIResults(); }
     async getAIRecommendation(type: 'general' | 'plan', options?: { period?: 'day' | 'week'; allowNewExercises?: boolean }) {
         return this.requireAccount().remote.getAIRecommendation(type, options);

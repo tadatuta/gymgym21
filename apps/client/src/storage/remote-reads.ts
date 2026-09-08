@@ -1,3 +1,4 @@
+import { publicProfileSchema } from '@gym21/contracts';
 import type { PublicProfileData } from '../types';
 import { authorizedApiFetch, hasVerifiedOnlineAccount, resolveApiUrl } from '../auth';
 import type { AccountRepository } from './account-repository';
@@ -14,11 +15,15 @@ type PublicProfileWithCacheMetadata = PublicProfileData & {
     };
 };
 
+export class PublicHistoryStaleError extends Error {
+    constructor() { super('История изменилась. Обновите профиль, чтобы продолжить.'); }
+}
+
 export class PublicProfileUnavailableError extends Error {
     constructor() { super('Не удалось загрузить профиль. Проверьте подключение и попробуйте ещё раз.'); }
 }
 
-export async function getPublicProfile(identifier: string, repository?: AccountRepository): Promise<PublicProfileWithCacheMetadata | null> {
+export async function getPublicProfile(identifier: string, repository?: AccountRepository, cursor?: string): Promise<PublicProfileWithCacheMetadata | null> {
     const context = repository?.context;
     context?.assertCurrent();
     const db = repository?.database;
@@ -30,13 +35,13 @@ export async function getPublicProfile(identifier: string, repository?: AccountR
     if (context) context.signal.addEventListener('abort', cancel, { once: true });
     const timeout = setTimeout(cancel, 10000);
     try {
-        const response = await fetch(resolveApiUrl(`/profiles/${encodeURIComponent(identifier)}`), { signal: controller.signal });
+        const response = await fetch(resolveApiUrl(`/profiles/${encodeURIComponent(identifier)}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`), { signal: controller.signal });
         if (context) context.assertCurrent();
         if (response.ok) {
-            const payload = await response.json() as PublicProfileData;
+            const payload = publicProfileSchema.parse(await response.json());
             if (context) context.assertCurrent();
             const cachedAt = new Date().toISOString();
-            if (repository && db) await repository.transaction([db.publicProfileCache], () => db.publicProfileCache.put({
+            if (!cursor && repository && db) await repository.transaction([db.publicProfileCache], () => db.publicProfileCache.put({
                 identifier: normalizedIdentifier,
                 payload,
                 cachedAt,
@@ -52,8 +57,11 @@ export async function getPublicProfile(identifier: string, repository?: AccountR
             if (context) context.assertCurrent();
             return null;
         }
+        if (response.status === 409) throw new PublicHistoryStaleError();
         throw new Error('Public profile request failed');
-    } catch {
+    } catch (error) {
+        if (error instanceof PublicHistoryStaleError) throw error;
+        if (cursor) throw new PublicProfileUnavailableError();
         // Fall through to the account-scoped IndexedDB cache.
     } finally {
         clearTimeout(timeout);

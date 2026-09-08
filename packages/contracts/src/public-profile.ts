@@ -14,7 +14,9 @@ export const publicProfileSchema = z.object({
   timeZone: profile.shape.timeZone, displayName: z.string(), identifier: id,
   photoUrl: z.string().optional(), stats: profileStatsSchema,
   recentActivity: z.array(z.object({ date: z.iso.date(), exerciseCount: z.number() })),
-  logs: z.array(publicLogSchema).optional(), workoutTypes: z.array(publicWorkoutTypeSchema).optional(),
+  logs: z.array(publicLogSchema).max(100).optional(), workoutTypes: z.array(publicWorkoutTypeSchema).max(100).optional(),
+  history: z.object({ nextCursor: z.string().max(2048).nullable() }).optional(),
+  activityDays: z.array(z.iso.date()).max(200).optional(),
 });
 export type PublicLog = z.infer<typeof publicLogSchema>;
 export type PublicWorkoutType = z.infer<typeof publicWorkoutTypeSchema>;

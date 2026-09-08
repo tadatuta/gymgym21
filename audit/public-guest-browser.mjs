@@ -32,6 +32,8 @@ try {
   let releaseActivation;
   const user = { id: 'synthetic', name: 'Synthetic', email: 'synthetic@example.invalid' };
   let releaseSlow;
+  let historyRootReads = 0;
+  let historyPageReads = 0;
   const profile = name => ({ identifier: name, displayName: name, stats: { totalWorkouts: 0, totalVolume: 0 }, recentActivity: [], logs: [], workoutTypes: [] });
   await page.route('**/*', async route => {
     const url = new URL(route.request().url());
@@ -59,6 +61,17 @@ try {
     }
     if (url.pathname.includes('/api/profiles/')) {
       const name = url.pathname.split('/').at(-1);
+      if (name === 'paged') {
+        const cursor = url.searchParams.get('cursor');
+        if (cursor === 'last') return route.fulfill({ status: 409, json: { code: 'PUBLIC_HISTORY_STALE' } });
+        if (cursor) { assert.equal(cursor, 'next'); historyPageReads++; } else historyRootReads++;
+        const restarted = historyRootReads > 1;
+        return route.fulfill({ json: { ...profile(name),
+          timeZone: 'UTC', activityDays: [new Date(Date.now() - 86400000 * 2).toISOString().slice(0, 10)],
+          logs: Array.from({ length: cursor || restarted ? 1 : 100 }, (_, i) => ({ id: cursor ? 'next-log' : restarted ? 'fresh-log' : `log-${i}`, workoutTypeId: 'T', reps: 2, date: '2026-09-01T00:00:00Z' })),
+          workoutTypes: [{ id: 'T', name: 'Paged exercise' }], history: { nextCursor: restarted ? null : cursor ? 'last' : 'next' },
+        } });
+      }
       if (name === 'activation' && ++activationCalls === 1) await new Promise(resolve => { releaseActivation = resolve; });
       if (name === 'slow') await new Promise(resolve => { releaseSlow = resolve; });
       const status = name === 'private' ? 403 : name === 'missing' ? 404 : name === 'error' ? 503 : 200;
@@ -67,6 +80,20 @@ try {
     return route.continue();
   });
   const base = server.resolvedUrls.local[0];
+  await page.goto(`${base}profile/paged`);
+  await page.locator('#public-history-more').waitFor();
+  assert.equal(await page.locator('.heatmap-grid .heatmap-cell.level-4').count(), 1);
+  await page.locator('#public-history-more').click();
+  await page.waitForFunction(() => document.querySelector('#logs-list')?.textContent.includes('Paged exercise') && !document.querySelector('#public-history-more')?.disabled);
+  assert.equal(historyPageReads, 1);
+  assert.equal(await page.locator('#logs-list .log-set').count(), 101);
+  await page.locator('#public-history-more').click();
+  await page.getByText('История изменилась. Обновите профиль, чтобы продолжить.').waitFor();
+  await page.locator('#public-profile-retry').click();
+  await page.waitForFunction(() => document.querySelector('#logs-list') && !document.querySelector('#public-history-more'));
+  assert.equal(historyRootReads, 2);
+  assert.equal(await page.locator('#logs-list .log-set').count(), 1);
+  assert.equal(await page.locator('.heatmap-grid .heatmap-cell.level-4').count(), 1);
   await page.goto(`${base}profile/public`);
   await page.getByText('public', { exact: true }).waitFor();
   assert.equal(await page.locator('#friend-action-btn, .navigation').count(), 0);
@@ -128,7 +155,7 @@ try {
   await page.getByText('activation', { exact: true }).waitFor();
   assert.ok(page.url().endsWith('/profile/activation'));
   assert.deepEqual(errors, []);
-  console.log('A18 Chromium: actual main guest public/403/404/503, no IndexedDB/mutations, signin/back/reload, auth unavailable/deeplink and stale route response passed.');
+  console.log('A18/O02 Chromium: public history100→101/409refresh→1/full heatmap; actual main guest public/403/404/503, no IndexedDB/mutations, signin/back/reload, auth unavailable/deeplink and stale route response passed.');
 } finally {
   await browser?.close();
   await server.close();

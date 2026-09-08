@@ -180,10 +180,10 @@ export class AuthMetaService {
         return withIdentityTransaction(client => ensureStorageBindingTx(client, userId, storageKeyFactory ? storageKeyFactory() : `u_${userId}`));
     }
 
-    static async getAlias(alias: string): Promise<AliasRecord | null> {
-        await ensureAuthDatabaseSchema();
+    static async getAlias(alias: string, client?: PoolClient): Promise<AliasRecord | null> {
+        if (!client) await ensureAuthDatabaseSchema();
         const aliasLower = normalizeIdentifier(alias);
-        const result = await getAuthPool().query<{
+        const result = await (client ?? getAuthPool()).query<{
             alias: string;
             type: AliasType;
             user_id: string;

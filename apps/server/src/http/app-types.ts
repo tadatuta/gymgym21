@@ -9,6 +9,6 @@ export interface AppDependencies {
   authHandler: NodeRequestHandler;
   resolveRequestContext: (headers: Headers) => Promise<AuthenticatedRequestContext | null>;
   generateRecommendation: (request: AIRequest, signal?: AbortSignal) => Promise<string>;
-  findPublicProfile: (identifier: string) => Promise<PublicProfileData | null>;
+  findPublicProfile: (identifier: string, cursor?: string) => Promise<PublicProfileData | null>;
   storageRepository: StorageRepository;
 }

@@ -17,7 +17,6 @@ export interface AIRequest {
   type: AIRecommendationType;
   profile: StorageData['profile'];
   logs: StorageData['logs'];
-  workouts: StorageData['workouts'];
   workoutTypes: StorageData['workoutTypes'];
   options?: {
     period?: 'day' | 'week';

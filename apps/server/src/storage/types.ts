@@ -30,7 +30,6 @@ export type StorageSyncResponse = CompleteSyncResponse;
 export interface AIStorageContext {
   profile?: StorageProfile;
   logs: StorageLogEntry[];
-  workouts: StorageWorkout[];
   workoutTypes: StorageWorkoutType[];
 }
 
@@ -45,6 +44,6 @@ export interface StorageRepository {
     telegramUser?: AuthenticatedRequestContext['telegramUser'];
   }): Promise<void>;
   readAiContext(storageKey: string | number, expectedRevision?: number): Promise<AIStorageContext>;
-  findPublicProfileByIdentifier(identifier: string): Promise<PublicProfileData | null>;
-  getPublicProfileByStorageKey(storageKey: string | number, fallbackIdentifier?: string): Promise<PublicProfileData | null>;
+  findPublicProfileByIdentifier(identifier: string, cursor?: string): Promise<PublicProfileData | null>;
+  getPublicProfileByStorageKey(storageKey: string | number, fallbackIdentifier?: string, cursor?: string): Promise<PublicProfileData | null>;
 }

@@ -22,6 +22,8 @@ const { config } = await import('../dist/config.js');
 const defaultGuardrailConfig = {
   RATE_LIMITS_ENABLED: config.RATE_LIMITS_ENABLED,
   RATE_LIMIT_AUTH_WINDOW_MS: config.RATE_LIMIT_AUTH_WINDOW_MS,
+  RATE_LIMIT_PUBLIC_MAX: config.RATE_LIMIT_PUBLIC_MAX,
+  RATE_LIMIT_PUBLIC_MAX_CONCURRENT: config.RATE_LIMIT_PUBLIC_MAX_CONCURRENT,
   RATE_LIMIT_AUTH_MAX: config.RATE_LIMIT_AUTH_MAX,
   RATE_LIMIT_AUTH_USERNAME_CHECK_WINDOW_MS: config.RATE_LIMIT_AUTH_USERNAME_CHECK_WINDOW_MS,
   RATE_LIMIT_AUTH_USERNAME_CHECK_MAX: config.RATE_LIMIT_AUTH_USERNAME_CHECK_MAX,
@@ -763,4 +765,16 @@ test('AI disconnect aborts transport and retains busy slot for ignored cancellat
     const blocked = await request(server).post('/api/me/ai/recommendations').set('X-Expected-Storage-Key', 'test-user').send({ type: 'general', expectedRevision: 0 });
     assert.equal(blocked.body.code, 'ROUTE_BUSY');
   } finally { finish?.('cleanup'); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
+
+test('public profile requests are IP bounded and validate cursor query shape', async () => {
+  config.RATE_LIMIT_PUBLIC_MAX = 2;
+  const { app } = createTestApp();
+  assert.equal((await request(app).get('/api/profiles/missing?cursor=a&cursor=b')).status, 400);
+  assert.equal((await request(app).get('/api/profiles/missing?cursor=')).status, 400);
+  const limited = await request(app).get('/api/profiles/missing');
+  assert.equal(limited.status, 429);
+  assert.equal(limited.body.code, 'RATE_LIMIT_EXCEEDED');
+  assert.ok(Number(limited.headers['retry-after']) > 0);
 });

@@ -153,10 +153,7 @@ export async function readAiContext(storageKeyInput: string | number, expectedRe
 
     const profileResult = await client.query<StorageProfileRow>('SELECT * FROM storage_profiles WHERE storage_key = $1 LIMIT 1', [storageKey]);
     const workoutTypeResult = await client.query<StorageWorkoutTypeRow>(
-      'SELECT * FROM storage_workout_types WHERE storage_key = $1 AND is_deleted = FALSE ORDER BY updated_at DESC, id ASC', [storageKey],
-    );
-    const workoutResult = await client.query<StorageWorkoutRow>(
-      'SELECT * FROM storage_workouts WHERE storage_key = $1 AND is_deleted = FALSE ORDER BY start_time DESC, id ASC LIMIT 20', [storageKey],
+      'SELECT * FROM storage_workout_types WHERE storage_key = $1 AND is_deleted = FALSE ORDER BY updated_at DESC, id ASC LIMIT $2', [storageKey, config.AI_MAX_EXERCISE_COUNT],
     );
     const logResult = await client.query<StorageLogRow>(
       'SELECT * FROM storage_logs WHERE storage_key = $1 AND is_deleted = FALSE ORDER BY logged_at DESC, id ASC LIMIT $2', [storageKey, config.AI_MAX_RECENT_LOGS],
@@ -166,7 +163,6 @@ export async function readAiContext(storageKeyInput: string | number, expectedRe
     return {
       profile: mapProfileRow(profileResult.rows[0]),
       workoutTypes: workoutTypeResult.rows.map(mapWorkoutTypeRow),
-      workouts: workoutResult.rows.map(mapWorkoutRow),
       logs: logResult.rows.map(mapLogRow).reverse(),
     };
   } catch (error) {

@@ -3,6 +3,8 @@ import { createApplication } from './application';
 import type { UiDependencies } from './dependencies';
 import type { SyncStatus } from '../storage/storage';
 import { createLifecycle } from './lifecycle';
+import { PublicHistoryStaleError } from '../storage/remote-reads';
+import type { PublicProfileData } from '../types';
 
 const apps: Array<ReturnType<typeof createApplication>> = [];
 afterEach(() => {
@@ -37,6 +39,45 @@ function fixture(overrides: Partial<UiDependencies> = {}) {
 }
 
 describe('application mount and dispose', () => {
+  it('loads public history pages, preserves the full heatmap, and visibly restarts stale history', async () => {
+    const makePage = (id: string, nextCursor: string | null): PublicProfileData => ({
+      displayName: 'Public', identifier: 'public', stats: { totalWorkouts: 12, totalVolume: 120 }, recentActivity: [],
+      activityDays: ['2026-08-01'], logs: [{ id, workoutTypeId: 'T', date: '2026-09-01T00:00:00Z', reps: 2 }],
+      workoutTypes: [{ id: 'T', name: 'Test' }], history: { nextCursor },
+    });
+    const read = vi.fn().mockResolvedValueOnce(makePage('A', 'next')).mockResolvedValueOnce(makePage('B', 'last'))
+      .mockRejectedValueOnce(new PublicHistoryStaleError()).mockResolvedValueOnce(makePage('C', null));
+    const { app } = fixture({ getCurrentUser: () => null, storage: { getPublicProfile: read } as unknown as UiDependencies['storage'] });
+    app.navigate({ name: 'public-profile', identifier: 'public' });
+    await vi.waitFor(() => expect(document.querySelector('#public-history-more')).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('#public-history-more')!.click();
+    await vi.waitFor(() => expect(app.state.loadedPublicProfile?.logs?.length).toBe(2));
+    expect(read).toHaveBeenLastCalledWith('public', 'next');
+    expect(app.state.loadedPublicProfile?.activityDays).toEqual(['2026-08-01']);
+    document.querySelector<HTMLButtonElement>('#public-history-more')!.click();
+    await vi.waitFor(() => expect(document.querySelector('[role=alert]')?.textContent).toContain('История изменилась'));
+    expect(document.querySelector('#public-history-more')).toBeNull();
+    document.querySelector<HTMLButtonElement>('#public-profile-retry')!.click();
+    await vi.waitFor(() => expect(app.state.loadedPublicProfile?.logs?.map(log => log.id)).toEqual(['C']));
+    expect(read).toHaveBeenLastCalledWith('public');
+  });
+
+  it('does not merge a late history page after navigating away', async () => {
+    let resolvePage!: (page: PublicProfileData) => void;
+    const first: PublicProfileData = { displayName: 'Public', identifier: 'public', stats: { totalWorkouts: 1, totalVolume: 1 }, recentActivity: [],
+      logs: [{ id: 'A', workoutTypeId: 'T', date: '2026-09-01T00:00:00Z' }], workoutTypes: [], history: { nextCursor: 'next' } };
+    const read = vi.fn().mockResolvedValueOnce(first).mockImplementationOnce(() => new Promise(resolve => { resolvePage = resolve; }));
+    const { app } = fixture({ getCurrentUser: () => null, storage: { getPublicProfile: read } as unknown as UiDependencies['storage'] });
+    app.navigate({ name: 'public-profile', identifier: 'public' });
+    await vi.waitFor(() => expect(document.querySelector('#public-history-more')).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('#public-history-more')!.click();
+    app.dispose();
+    resolvePage({ ...first, logs: [{ ...first.logs![0], id: 'late' }] });
+    await Promise.resolve();
+    expect(document.querySelector('#app')?.childElementCount).toBe(0);
+    expect(app.state.loadedPublicProfile?.logs?.some(log => log.id === 'late')).not.toBe(true);
+  });
+
   it('owns subscriptions once, stops the workout timer on navigation, and releases detached controls', async () => {
     vi.useFakeTimers();
     const { app, storage, unsubscribes, refresh } = fixture();
