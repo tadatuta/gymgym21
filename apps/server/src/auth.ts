@@ -549,6 +549,17 @@ function telegramPlugin() {
           await client.query('COMMIT');
         } catch (error) {
           await client.query('ROLLBACK');
+          // The availability reads above are advisory: a concurrent registration
+          // can commit before this transaction reaches the unique constraints.
+          if (error instanceof Error && 'code' in error && error.code === '23505'
+            && 'table' in error && error.table === 'user' && 'constraint' in error) {
+            if (error.constraint === 'user_email_key') {
+              throw APIError.fromStatus('BAD_REQUEST', { message: 'Пользователь с таким email уже существует' });
+            }
+            if (error.constraint === 'user_username_key') {
+              throw APIError.fromStatus('BAD_REQUEST', { message: 'Username already taken' });
+            }
+          }
           throw error;
         } finally {
           client.release();
