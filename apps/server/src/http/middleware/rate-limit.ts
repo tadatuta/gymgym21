@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import type { Request, RequestHandler, Response } from 'express';
 import { config } from '../../config.js';
+import { defaultRateLimitStore, type LimitResult, type RateLimitStore } from './rate-limit-store.js';
 
 // Response completion and the actual operation are separate lifetimes.
 const operationHolds = new WeakMap<Response, Set<Promise<unknown>>>();
@@ -8,12 +9,6 @@ export function holdRateLimitUntil(res: Response, operation: Promise<unknown>): 
   let holds = operationHolds.get(res);
   if (!holds) { holds = new Set(); operationHolds.set(res, holds); }
   holds.add(operation);
-}
-
-interface RateLimitEntry {
-  windowStartedAt: number;
-  requestCount: number;
-  inFlight: number;
 }
 
 export interface RateLimitPolicy {
@@ -32,24 +27,20 @@ function anonymizeKey(key: string): string {
   return createHash('sha256').update(key).digest('hex').slice(0, 12);
 }
 
-function logRateLimitEvent(kind: 'window' | 'concurrency', policy: RateLimitPolicy, req: Request, key: string, details: Record<string, unknown>) {
+function logRateLimitEvent(kind: 'window' | 'concurrency' | 'store' | 'lease', policy: RateLimitPolicy, req: Request, key: string, details: Record<string, unknown>) {
   console.warn('[rate-limit]', {
     kind,
     policy: policy.name,
     method: req.method,
-    path: req.path,
     client: anonymizeKey(key),
     ...details,
   });
 }
 
-function setRateLimitHeaders(res: Response, policy: RateLimitPolicy, entry: RateLimitEntry) {
-  const resetAt = entry.windowStartedAt + policy.windowMs;
-  const remaining = Math.max(policy.maxRequests - entry.requestCount, 0);
-
+function setRateLimitHeaders(res: Response, policy: RateLimitPolicy, result: LimitResult) {
   res.setHeader('X-RateLimit-Limit', String(policy.maxRequests));
-  res.setHeader('X-RateLimit-Remaining', String(remaining));
-  res.setHeader('X-RateLimit-Reset', String(Math.ceil(resetAt / 1000)));
+  res.setHeader('X-RateLimit-Remaining', String(Math.max(policy.maxRequests - result.count, 0)));
+  res.setHeader('X-RateLimit-Reset', String(Math.ceil(result.resetAt / 1000)));
 }
 
 export function createIpRateLimitKey(scope: string) {
@@ -67,111 +58,87 @@ export function createStorageRateLimitKey(scope: string) {
   };
 }
 
-export function createRateLimitMiddleware(policy: RateLimitPolicy): RequestHandler {
-  if (!config.RATE_LIMITS_ENABLED) {
-    return (_req, _res, next) => next();
-  }
+// Any uncertain lease blocks new admissions through this store on this process.
+// An expired lease cannot be resurrected: fail closed until its operation settles.
+const uncertainLeases = new WeakMap<RateLimitStore, Set<string>>();
+export function rateLimitStoreReady(store: RateLimitStore = defaultRateLimitStore): boolean {
+  return !uncertainLeases.get(store)?.size;
+}
 
-  const entries = new Map<string, RateLimitEntry>();
-  let requestsSinceCleanup = 0;
+export function createRateLimitMiddleware(policy: RateLimitPolicy, store: RateLimitStore = defaultRateLimitStore): RequestHandler {
+  if (!config.RATE_LIMITS_ENABLED) return (_req, _res, next) => next();
+  let uncertain = uncertainLeases.get(store);
+  if (!uncertain) { uncertain = new Set(); uncertainLeases.set(store, uncertain); }
+  const blocked = uncertain;
 
-  function cleanup(now: number) {
-    for (const [key, entry] of entries) {
-      const expired = now - entry.windowStartedAt >= policy.windowMs;
-      if (expired && entry.inFlight === 0) {
-        entries.delete(key);
-      }
+  return async (req, res, next) => {
+    const key = `${policy.name}:${policy.keyGenerator(req)}`;
+    let result: LimitResult;
+    try {
+      if (blocked.size) throw new Error('Lease ownership uncertain');
+      result = await store.acquire({ key, windowMs: policy.windowMs, maxRequests: policy.maxRequests, maxConcurrent: policy.maxConcurrent });
+    } catch {
+      logRateLimitEvent('store', policy, req, key, {});
+      if (!res.destroyed) res.set('Retry-After', '1').status(503).json({ error: 'Rate limit store unavailable', code: 'RATE_LIMIT_UNAVAILABLE' });
+      return;
     }
-  }
-
-  return (req: Request, res: Response, next: NextFunction) => {
-    const key = policy.keyGenerator(req);
-    const now = Date.now();
-
-    if ((requestsSinceCleanup += 1) % 200 === 0) {
-      cleanup(now);
-    }
-
-    let entry = entries.get(key);
-    if (!entry) {
-      entry = {
-        windowStartedAt: now,
-        requestCount: 0,
-        inFlight: 0,
-      };
-      entries.set(key, entry);
-    } else if (now - entry.windowStartedAt >= policy.windowMs) {
-      entry.windowStartedAt = now;
-      entry.requestCount = 0;
-    }
-
-    const retryAfterSeconds = Math.max(1, Math.ceil((entry.windowStartedAt + policy.windowMs - now) / 1000));
-
-    if (policy.maxConcurrent && entry.inFlight >= policy.maxConcurrent) {
-      logRateLimitEvent('concurrency', policy, req, key, {
-        inFlight: entry.inFlight,
-        maxConcurrent: policy.maxConcurrent,
-      });
-      res.setHeader('Retry-After', '1');
-      res.status(503).json({
-        error: 'Route is temporarily busy',
-        code: 'ROUTE_BUSY',
-        details: {
-          policy: policy.name,
-        },
+    if (!res.destroyed) setRateLimitHeaders(res, policy, result);
+    if (result.kind !== 'allowed') {
+      logRateLimitEvent(result.kind, policy, req, key, {});
+      const retryAfterSeconds = result.kind === 'window' ? Math.max(1, Math.ceil((result.resetAt - Date.now()) / 1000)) : 1;
+      if (!res.destroyed) res.set('Retry-After', String(retryAfterSeconds)).status(result.kind === 'window' ? 429 : 503).json({
+        error: result.kind === 'window' ? 'Too many requests' : 'Route is temporarily busy',
+        code: result.kind === 'window' ? 'RATE_LIMIT_EXCEEDED' : 'ROUTE_BUSY',
+        details: { policy: policy.name, retryAfterSeconds },
       });
       return;
     }
-
-    if (entry.requestCount >= policy.maxRequests) {
-      logRateLimitEvent('window', policy, req, key, {
-        limit: policy.maxRequests,
-        windowMs: policy.windowMs,
-      });
-      setRateLimitHeaders(res, policy, entry);
-      res.setHeader('Retry-After', String(retryAfterSeconds));
-      res.status(429).json({
-        error: 'Too many requests',
-        code: 'RATE_LIMIT_EXCEEDED',
-        details: {
-          policy: policy.name,
-          retryAfterSeconds,
-        },
-      });
-      return;
-    }
-
-    entry.requestCount += 1;
-    entry.inFlight += 1;
-    setRateLimitHeaders(res, policy, entry);
-
+    if (!result.lease) { if (!res.destroyed && !req.aborted) next(); return; }
+    const lease = result.lease;
     let released = false;
-    const release = () => {
+    let lost = false;
+    let renewing: Promise<void> | undefined;
+    const renew = async () => {
+      if (released || renewing || lost) return;
+      renewing = (async () => {
+        try {
+          if (!await store.renew(lease)) { lost = true; throw new Error('Lease expired'); }
+          blocked.delete(lease);
+        } catch {
+          const wasUncertain = blocked.has(lease);
+          blocked.add(lease);
+          if (!wasUncertain || lost) logRateLimitEvent('lease', policy, req, key, { lost });
+          // Triggers the AI disconnect abort; ignored aborts remain held locally.
+          res.destroy();
+        }
+      })();
+      await renewing;
+      renewing = undefined;
+    };
+    const timer = setInterval(() => { void renew(); }, Math.max(10, Math.floor(config.RATE_LIMIT_LEASE_MS / 4)));
+    timer.unref();
+    const release = async () => {
       if (released) return;
       released = true;
-
-      const currentEntry = entries.get(key);
-      if (!currentEntry) return;
-
-      currentEntry.inFlight = Math.max(0, currentEntry.inFlight - 1);
-
-      const expired = Date.now() - currentEntry.windowStartedAt >= policy.windowMs;
-      if (expired && currentEntry.inFlight === 0) {
-        entries.delete(key);
-      }
+      clearInterval(timer);
+      await renewing;
+      try { await store.release(lease); }
+      catch { logRateLimitEvent('store', policy, req, key, { action: 'release' }); }
+      finally { blocked.delete(lease); }
     };
-
     let responseEnded = false;
     const onEnd = () => {
       if (responseEnded) return;
       responseEnded = true;
+      res.removeListener('finish', onEnd);
+      res.removeListener('close', onEnd);
       const holds = operationHolds.get(res);
       if (holds?.size) void Promise.allSettled([...holds]).then(release);
-      else release();
+      else void release();
     };
     res.on('finish', onEnd);
     res.on('close', onEnd);
-
+    if (res.destroyed || req.aborted) { onEnd(); return; }
     next();
   };
 }

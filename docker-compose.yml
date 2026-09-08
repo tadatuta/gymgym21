@@ -5,7 +5,7 @@ services:
       client:
         condition: service_started
       server:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "${APP_PORT:-8080}:80"
     volumes:
@@ -24,10 +24,30 @@ services:
       postgres:
         condition: service_healthy
     command: ["node", "docker-start.mjs"]
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8788/ready',{signal:AbortSignal.timeout(3000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 3
+      start_period: 620s
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-gym21}
       POSTGRES_USER: ${POSTGRES_USER:-gym21}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD}
+      DB_CONNECT_TIMEOUT_MS: ${DB_CONNECT_TIMEOUT_MS:-5000}
+      DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-120000}
+      DB_QUERY_TIMEOUT_MS: ${DB_QUERY_TIMEOUT_MS:-125000}
+      DB_MIGRATION_TIMEOUT_MS: ${DB_MIGRATION_TIMEOUT_MS:-600000}
+      READINESS_TIMEOUT_MS: ${READINESS_TIMEOUT_MS:-2000}
+      STARTUP_TIMEOUT_MS: ${STARTUP_TIMEOUT_MS:-610000}
+      SHUTDOWN_TIMEOUT_MS: ${SHUTDOWN_TIMEOUT_MS:-15000}
+      HTTP_REQUEST_TIMEOUT_MS: ${HTTP_REQUEST_TIMEOUT_MS:-30000}
+      HTTP_HEADERS_TIMEOUT_MS: ${HTTP_HEADERS_TIMEOUT_MS:-15000}
+      HTTP_IDLE_TIMEOUT_MS: ${HTTP_IDLE_TIMEOUT_MS:-130000}
+      HTTP_KEEP_ALIVE_TIMEOUT_MS: ${HTTP_KEEP_ALIVE_TIMEOUT_MS:-5000}
+      RATE_LIMIT_STORE_TIMEOUT_MS: ${RATE_LIMIT_STORE_TIMEOUT_MS:-2000}
+      RATE_LIMIT_LEASE_MS: ${RATE_LIMIT_LEASE_MS:-60000}
       DATABASE_SSL: ${DATABASE_SSL:-false}
       APP_BASE_URL: ${APP_BASE_URL}
       AUTH_BASE_URL: ${AUTH_BASE_URL}

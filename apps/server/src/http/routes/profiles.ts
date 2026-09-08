@@ -8,7 +8,7 @@ export function createProfilesRouter(dependencies: AppDependencies): Router {
   const router = Router();
 
   router.use(createRateLimitMiddleware({ name: 'public-profile', windowMs: config.RATE_LIMIT_PUBLIC_WINDOW_MS,
-    maxRequests: config.RATE_LIMIT_PUBLIC_MAX, maxConcurrent: config.RATE_LIMIT_PUBLIC_MAX_CONCURRENT, keyGenerator: createIpRateLimitKey('public-profile') }));
+    maxRequests: config.RATE_LIMIT_PUBLIC_MAX, maxConcurrent: config.RATE_LIMIT_PUBLIC_MAX_CONCURRENT, keyGenerator: createIpRateLimitKey('public-profile') }, dependencies.rateLimitStore));
   router.get('/:identifier', async (req, res) => {
     if (req.query.cursor !== undefined && (typeof req.query.cursor !== 'string' || !req.query.cursor || req.query.cursor.length > 2048)) {
       throw new HttpError(400, 'Invalid history cursor', { code: 'INVALID_HISTORY_CURSOR' });

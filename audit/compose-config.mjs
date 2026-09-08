@@ -35,6 +35,10 @@ try {
   }
   assert.equal(services.server.environment.PORT, '8788');
   assert.equal(services.server.environment.HOST, '0.0.0.0');
+  assert.equal(services.proxy.depends_on.server.condition, 'service_healthy');
+  assert.match(services.server.healthcheck.test.join(' '), /127\.0\.0\.1:8788\/ready/);
+  assert.equal(services.server.healthcheck.timeout, '4s');
+  assert.equal(services.server.stop_grace_period, '20s');
   assert.ok(!services.postgres.ports?.length);
   const dev = compose(fixture, true);
   assert.equal(dev.status, 0, dev.stderr);

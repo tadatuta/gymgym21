@@ -17,6 +17,7 @@ const [{ createApp }, { HttpError }] = await Promise.all([
   import('../dist/app.js'),
   import('../dist/http/errors.js'),
 ]);
+const { createMemoryRateLimitStore } = await import('../dist/http/middleware/rate-limit-store.js');
 const { config } = await import('../dist/config.js');
 
 const defaultGuardrailConfig = {
@@ -342,6 +343,7 @@ function createTestApp(overrides = {}) {
   const storageRepository = overrides.storageRepository ?? createMemoryStorageRepository();
   return {
     app: createApp({
+      rateLimitStore: createMemoryRateLimitStore(),
       authHandler: overrides.authHandler ?? createStubAuthHandler(),
       resolveRequestContext: overrides.resolveRequestContext ?? (async () => ({
         kind: 'telegram',
@@ -429,6 +431,15 @@ test('POST /api/auth/register/email is rate limited after repeated attempts', as
   assert.equal(second.status, 200);
   assert.equal(third.status, 429);
   assert.equal(third.body.code, 'RATE_LIMIT_EXCEEDED');
+});
+
+test('passkey challenges and password mutations share the strict budget, session reads stay available', async () => {
+  config.RATE_LIMIT_AUTH_MAX = 1;
+  const { app } = createTestApp({ authHandler: async (_req, res) => { res.end('{}'); } });
+  await request(app).get('/api/auth/passkey/generate-authenticate-options').expect(200);
+  await request(app).post('/api/auth/sign-in/email').send({}).expect(429);
+  await request(app).get('/api/auth/passkey/generate-register-options').expect(429);
+  await request(app).get('/api/auth/get-session').expect(200);
 });
 
 test('GET /api/profiles/:identifier returns a public profile from the read model', async () => {

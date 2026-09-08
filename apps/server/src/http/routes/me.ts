@@ -25,29 +25,33 @@ export function createMeRouter(dependencies: AppDependencies): Router {
     maxRequests: config.RATE_LIMIT_SYNC_MAX,
     maxConcurrent: config.RATE_LIMIT_SYNC_MAX_CONCURRENT,
     keyGenerator: createStorageRateLimitKey('storage-sync'),
-  });
+  }, dependencies.rateLimitStore);
   const aiRateLimit = createRateLimitMiddleware({
     name: 'ai-recommendations',
     windowMs: config.RATE_LIMIT_AI_WINDOW_MS,
     maxRequests: config.RATE_LIMIT_AI_MAX,
     maxConcurrent: config.RATE_LIMIT_AI_MAX_CONCURRENT,
     keyGenerator: createStorageRateLimitKey('ai-recommendations'),
-  });
+  }, dependencies.rateLimitStore);
 
   router.post('/storage/sync', syncRateLimit, async (req, res) => {
     if (req.body && req.body.protocolVersion !== undefined && req.body.protocolVersion !== 1) {
       throw new HttpError(409, 'Unsupported sync protocol version', { code: 'UNSUPPORTED_PROTOCOL' });
     }
     const payload = syncRequestSchema.parse(req.body);
-    res.json(await dependencies.storageRepository.sync(req.authContext!.storageKey, payload, req.authContext!));
+    const operation = dependencies.storageRepository.sync(req.authContext!.storageKey, payload, req.authContext!);
+    holdRateLimitUntil(res, operation);
+    res.json(await operation);
   });
 
   router.post('/storage/backup', syncRateLimit, async (req, res) => {
     const payload = backupImportSchema.parse(req.body);
     // backupDataSchema strips all client-supplied trusted identity fields.
-    const result = await dependencies.storageRepository.sync(req.authContext!.storageKey, {
+    const operation = dependencies.storageRepository.sync(req.authContext!.storageKey, {
       protocolVersion: 1, cursor: payload.expectedRevision, changes: payload.data,
     }, req.authContext!, payload);
+    holdRateLimitUntil(res, operation);
+    const result = await operation;
     console.info('Backup import completed', { mode: payload.mode, revision: result.cursor });
     res.json(result);
   });

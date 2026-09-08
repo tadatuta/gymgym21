@@ -20,7 +20,7 @@ if (url) {
 const database = await import('../dist/database.js');
 const meta = await import('../dist/auth-meta.js');
 const auth = await import('../dist/auth.js');
-const migrationNames = ['001_storage_runtime.sql', '002_sync_receipts.sql', '003_training_days_cache.sql', '004_training_time_zone.sql', '005_bounded_reads.sql', '006_auth_schema.sql'];
+const migrationNames = ['001_storage_runtime.sql', '002_sync_receipts.sql', '003_training_days_cache.sql', '004_training_time_zone.sql', '005_bounded_reads.sql', '006_auth_schema.sql', '007_shared_rate_limits.sql'];
 
 function startProcess() {
   return new Promise((resolve, reject) => {
@@ -49,7 +49,7 @@ test('unified migrations serialize processes, preserve legacy auth, rollback/ret
   try {
     await reset();
     const outputs = await Promise.all([startProcess(), startProcess(), startProcess()]);
-    assert.equal(outputs.join('').match(/migration complete/g)?.length, 6);
+    assert.equal(outputs.join('').match(/migration complete/g)?.length, migrationNames.length);
     assert.deepEqual((await scoped.query('SELECT name FROM app_migrations ORDER BY name')).rows.map(row => row.name), migrationNames);
     assert.equal((await scoped.query("SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = $1 AND tablename IN ('user','session','account','verification','passkey','user_storage_binding','user_alias')", [schema])).rows[0].n, 7);
 

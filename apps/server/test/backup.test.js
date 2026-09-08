@@ -27,10 +27,11 @@ function client(storageKey) {
   return (batchId, cursor = 0, changes = {}, limit) => repository.sync(storageKey, { protocolVersion: 1, batchId, cursor, changes, limit }, context);
 }
 
+const { createMemoryRateLimitStore } = await import('../dist/http/middleware/rate-limit-store.js');
 const { createApp } = await import('../dist/app.js');
 function api(storageKey) {
   const context = { kind: 'better-auth', storageKey, authUser: { id: storageKey, username: 'trusted' } };
-  const app = createApp({ storageRepository: repository, resolveRequestContext: async () => context,
+  const app = createApp({ rateLimitStore: createMemoryRateLimitStore(), storageRepository: repository, resolveRequestContext: async () => context,
     authHandler: async () => {}, generateRecommendation: async () => '', findPublicProfile: async () => null });
   return (mode, expectedRevision, data, expectedKey = storageKey) => request(app).post('/api/me/storage/backup')
     .set('X-Expected-Storage-Key', expectedKey).send({ mode, expectedRevision, data });
@@ -41,7 +42,7 @@ test('PostgreSQL backup import is atomic and revision guarded', { skip: !testUrl
     await t.test('HTTP sync validates atomically and normalizes cleared birth date before PostgreSQL', async () => {
       const storageKey = 'sync-contract';
       const context = { kind: 'better-auth', storageKey, authUser: { id: storageKey, username: 'trusted' } };
-      const app = createApp({ storageRepository: repository, resolveRequestContext: async () => context,
+      const app = createApp({ rateLimitStore: createMemoryRateLimitStore(), storageRepository: repository, resolveRequestContext: async () => context,
         authHandler: async () => {}, generateRecommendation: async () => '', findPublicProfile: async () => null });
       const send = body => request(app).post('/api/me/storage/sync').set('X-Expected-Storage-Key', storageKey).send(body);
       const now = '2026-09-01T00:00:00Z';
