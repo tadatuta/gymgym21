@@ -28,6 +28,65 @@ function client(storageKey) {
 
 test('PostgreSQL: push receipts do not cache pull freshness', { skip: !testUrl }, async (t) => {
   try {
+    await t.test('identical entity and batch IDs stay isolated across storage keys, including deletion, aliases and caches', async () => {
+      const a = client('isolation-a');
+      const b = client('isolation-b');
+      const date = '2026-09-01T00:00:00.000Z';
+      const changes = (owner) => ({
+        workoutTypes: [entity('shared-type', owner)],
+        workouts: [{ id: 'shared-workout', name: owner, startTime: date, status: 'completed', isManual: false }],
+        logs: [{ id: 'shared-log', workoutTypeId: 'shared-type', workoutId: 'shared-workout', date, reps: owner === 'A' ? 2 : 7 }],
+        profile: { id: 'me', displayName: owner, isPublic: true, createdAt: date, updatedAt: date },
+      });
+      await b('b-prior-history', 0, { workoutTypes: [entity('only-b')] });
+      const firstA = await a('shared-batch', 0, changes('A'));
+      const firstB = await b('shared-batch', 1, changes('B'));
+      assert.equal(firstA.cursor, 4);
+      assert.equal(firstB.cursor, 5);
+      for (const key of ['workoutTypes', 'workouts', 'logs']) {
+        assert.equal(firstB.changes[key][0].version, firstA.changes[key][0].version + 1);
+      }
+      assert.equal(firstB.changes.profile.version, 5);
+      assert.equal(firstA.changes.profile.version, 4);
+      const beforeB = await repository.readSnapshot('isolation-b');
+      const publicA = await repository.findPublicProfileByIdentifier('id_isolation-a');
+      const publicB = await repository.findPublicProfileByIdentifier('id_isolation-b');
+      assert.equal(publicA.displayName, 'A');
+      assert.equal(publicB.displayName, 'B');
+      const pool = getDatabasePool();
+      const rowsFor = async (table, key) => (await pool.query(`SELECT row_to_json(t) AS data FROM ${table} t WHERE storage_key = $1 ORDER BY row_to_json(t)::text`, [key])).rows;
+      const cacheB = await rowsFor('public_profile_cache', 'isolation-b');
+      const aliasesB = await rowsFor('public_profile_aliases', 'isolation-b');
+      assert.equal(cacheB.length, 1);
+      assert.equal(aliasesB.length, 1);
+      assert.equal((await pool.query('SELECT * FROM storage_sync_receipts WHERE batch_id = $1', ['shared-batch'])).rowCount, 2);
+
+      const deletions = Object.fromEntries(['workoutTypes', 'workouts', 'logs'].map(key => [key, firstA.changes[key].map(row => ({ ...row, isDeleted: true }))]));
+      deletions.profile = { ...firstA.changes.profile, isDeleted: true };
+      const deleted = await a('delete-a', firstA.cursor, deletions);
+      assert.equal(deleted.cursor, 8);
+      assert.equal((await rowsFor('public_profile_cache', 'isolation-a')).length, 0);
+      assert.deepEqual(await rowsFor('public_profile_cache', 'isolation-b'), cacheB);
+      assert.deepEqual(await rowsFor('public_profile_aliases', 'isolation-b'), aliasesB);
+      assert.equal(await repository.findPublicProfileByIdentifier('id_isolation-a'), null);
+      // Cache JSON omits optional undefined fields; compare the public wire payload.
+      assert.equal(JSON.stringify(await repository.findPublicProfileByIdentifier('id_isolation-b')), JSON.stringify(publicB));
+
+      const retryA = await a('shared-batch', 0, changes('A'));
+      const retryB = await b('shared-batch', 1, changes('B'));
+      assert.deepEqual(retryA.acknowledged, firstA.acknowledged);
+      assert.deepEqual(retryA.conflicts, []);
+      assert.equal(retryA.cursor, 8);
+      for (const key of ['workoutTypes', 'workouts', 'logs']) assert.equal(retryA.changes[key][0].isDeleted, true);
+      assert.equal(retryA.changes.profile.isDeleted, true);
+      assert.deepEqual(retryB, firstB);
+      assert.deepEqual(await repository.readSnapshot('isolation-b'), beforeB);
+      const pullB = await b('empty-after-a-delete', firstB.cursor);
+      assert.equal(pullB.cursor, 5);
+      for (const key of ['workoutTypes', 'workouts', 'logs']) assert.deepEqual(pullB.changes[key], []);
+      assert.ok(!pullB.changes.profile);
+      assert.equal((await repository.readSnapshot('isolation-a')).revision, 8);
+    });
     await t.test('mixed entities preserve revision order, type normalization, tombstones, conflicts and retry', async () => {
       const sync = client('mixed');
       const date = '2026-09-01T00:00:00.000Z';
