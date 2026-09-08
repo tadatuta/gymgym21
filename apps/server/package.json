@@ -10,7 +10,9 @@
     "dev": "tsx watch --clear-screen=false --conditions=gym21-source --env-file-if-exists=../../.env src/server.ts",
     "test": "npm run build && node --test test/*.test.js",
     "import:storage-json": "node scripts/import-storage-json.mjs",
-    "prebuild": "npm run build --workspace @gym21/contracts"
+    "prebuild": "npm run build --workspace @gym21/contracts",
+    "lint": "eslint src --max-warnings 0",
+    "test:integration": "node scripts/require-test-database.mjs && npm test"
   },
   "keywords": [],
   "author": "",
@@ -21,7 +23,11 @@
     "@types/pg": "^8.20.0",
     "supertest": "^7.2.2",
     "tsx": "^4.23.13",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@eslint/js": "^9.39.2",
+    "eslint": "^9.39.2",
+    "typescript-eslint": "^8.54.0",
+    "globals": "^17.3.0"
   },
   "dependencies": {
     "@better-auth/passkey": "1.6.30",

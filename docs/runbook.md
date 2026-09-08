@@ -1,6 +1,6 @@
 # Runbook Gym21
 
-Проверено по исходникам 8 сентября 2026 (O08). Все команды ниже выполняются из корня репозитория, если явно не сказано иначе. [Краткая архитектура](architecture.md), [ход аудита](../AUDIT_PROGRESS.md).
+Проверено по исходникам 8 сентября 2026 (T01). Все команды ниже выполняются из корня репозитория, если явно не сказано иначе. [Краткая архитектура](architecture.md), [ход аудита](../AUDIT_PROGRESS.md).
 
 `gym21` объединяет клиент и сервер в одном npm-workspaces репозитории.
 
@@ -66,15 +66,20 @@ Production `start` ожидает окружение от оболочки/ко�
 ## Проверки
 
 ```bash
-npm run typecheck
-npm test
-npm run test --workspace @gym21/client
-npm run test --workspace @gym21/contracts
-npm run lint --workspace @gym21/client
-npm run build
+npm run check
 ```
 
-Сейчас корневой `npm test` запускает только серверные тесты. PostgreSQL-интеграции пропускаются без `GYM21_TEST_DATABASE_URL`; успешный запуск без него не подтверждает интеграцию с БД. Используйте только отдельную тестовую БД. Объединение команд и усиление покрытия запланированы в T01–T06, не считаются завершёнными. Дополнительные audit-сценарии описаны в [каталоге проверок](../audit/README.md).
+Команда последовательно выполняет `typecheck`, `lint`, `test` и `build` для контрактов, клиента и сервера. Ошибка любого пакета останавливает следующие пакеты и этапы с ненулевым exit code. Каждый этап доступен отдельно: `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`; отдельный пакет — через `--workspace @gym21/client` (также `contracts` и `server`). ESLint проверяет TypeScript-исходники всех пакетов; сервер использует Node globals, клиент сохраняет свою конфигурацию. TypeScript запрещает unused locals/parameters во всех трёх пакетах. Audit-скрипты и серверные JS fixtures в это lint-покрытие не входят.
+
+Обычный `npm test` явно отмечает PostgreSQL-тесты как skipped без `GYM21_TEST_DATABASE_URL`; такой результат не подтверждает интеграцию с БД. Обязательный прогон всей серверной suite с PostgreSQL:
+
+```bash
+GYM21_TEST_DATABASE_URL=<disposable-postgres-url> npm run test:integration
+```
+
+Команда до сборки и импорта тестов отклоняет отсутствующий или некорректный PostgreSQL URL без вывода его содержимого и никогда не использует `DATABASE_URL` как запасное значение. Используйте только отдельную тестовую БД: тесты создают собственные UUID-схемы и удаляют их после прогона. Полный `check` также запускает PostgreSQL-тесты, если передать ему эту переменную. TLS fixture требует отдельного `GYM21_TLS_TEST_URL`, поэтому один TLS-тест может оставаться skipped даже при обычном PostgreSQL-прогоне; отдельная воспроизводимая проверка — `node audit/postgres-tls.mjs`, условия в [TLS runbook](../audit/postgres-tls.md).
+
+CI и дальнейшее усиление покрытия T02–T06 ещё не завершены. Дополнительные audit-сценарии описаны в [каталоге проверок](../audit/README.md).
 
 ## Client HTML Safety
 
