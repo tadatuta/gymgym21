@@ -1,4 +1,5 @@
 import { readSyncReceipt, writeSyncReceipt } from './receipt-repository.js';
+import { syncEntityContentEqual } from '@gym21/contracts';
 import type { PoolClient } from 'pg';
 import { ensureDatabaseReady, getDatabasePool } from '../database.js';
 import type { AuthenticatedRequestContext } from '../auth.js';
@@ -74,14 +75,20 @@ async function applyArrayChanges<T extends StorageWorkoutType | StorageWorkout |
   mapRow: (row: R) => T,
   upsert: (client: PoolClient, storageKey: string, item: T) => Promise<void>,
   normalize: (incoming: T) => T,
-): Promise<{ revision: number; changed: boolean; conflicts: SyncConflict[]; authoritative: T[] }> {
+): Promise<{ revision: number; changed: boolean; conflicts: SyncConflict[]; authoritative: T[]; equivalent: number }> {
   const conflicts: SyncConflict[] = [];
   let authoritative: T[] = [];
   let changed = false;
+  let equivalent = 0;
   for (const incoming of incomingItems) {
     const existing = existingItems.get(incoming.id);
     const existingVersion = existing ? toNumber(existing.version) : 0;
     if (existing && (incoming.version ?? 0) !== existingVersion) {
+      if (syncEntityContentEqual(entityType, normalize(incoming), mapRow(existing))) {
+        equivalent += 1;
+        authoritative = mergeConflictEntity(authoritative, mapRow(existing));
+        continue;
+      }
       conflicts.push({ entityType, entityId: incoming.id, reason: 'stale-version', serverVersion: existingVersion });
       authoritative = mergeConflictEntity(authoritative, mapRow(existing));
       continue;
@@ -96,7 +103,7 @@ async function applyArrayChanges<T extends StorageWorkoutType | StorageWorkout |
     });
     changed = true;
   }
-  return { revision, changed, conflicts, authoritative };
+  return { revision, changed, conflicts, authoritative, equivalent };
 }
 
 export async function sync(
@@ -145,6 +152,7 @@ export async function sync(
     }
 
     const conflicts: SyncConflict[] = receipt?.conflicts.map((conflict) => ({ ...conflict })) ?? [];
+    let equivalent = 0;
     let profileChanged = false;
     let workoutTypesChanged = false;
     let logsChanged = false;
@@ -187,6 +195,7 @@ export async function sync(
       revision = logsResult.revision;
       logsChanged = logsResult.changed;
       conflicts.push(...typesResult.conflicts, ...workoutsResult.conflicts, ...logsResult.conflicts);
+      equivalent = typesResult.equivalent + workoutsResult.equivalent + logsResult.equivalent;
       authoritativeWorkoutTypes = typesResult.authoritative;
       authoritativeWorkouts = workoutsResult.authoritative;
       authoritativeLogs = logsResult.authoritative;
@@ -199,7 +208,8 @@ export async function sync(
         const existingVersion = existingProfile?.version ?? 0;
 
         if (existingProfile && (request.changes.profile.version ?? 0) !== existingVersion) {
-          conflicts.push({
+          if (syncEntityContentEqual('profile', incoming, existingProfile)) equivalent += 1;
+          if (!syncEntityContentEqual('profile', incoming, existingProfile)) conflicts.push({
             entityType: 'profile',
             entityId: existingProfile.id,
             reason: 'stale-version',
@@ -286,6 +296,7 @@ export async function sync(
     }
 
     await client.query('COMMIT');
+    if (equivalent) console.info('[sync] acknowledged equivalent stale records', { count: equivalent });
     return response;
   } catch (error) {
     await client.query('ROLLBACK');

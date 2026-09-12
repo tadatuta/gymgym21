@@ -107,11 +107,19 @@ test('PostgreSQL: push receipts do not cache pull freshness', { skip: !testUrl }
         assert.equal(initial.changes[key][0].isDeleted, false);
       }
       assert.deepEqual(initial.changes.workouts[0].pauseIntervals, changes.workouts[0].pauseIntervals);
-      const conflict = await sync('mixed-stale', 3, changes);
+      const equivalent = await sync('mixed-equivalent', 3, changes);
+      assert.deepEqual(equivalent.conflicts, []);
+      assert.equal(equivalent.cursor, 3);
+      const different = {
+        workoutTypes: changes.workoutTypes.map(x => x.id === 'type' ? { ...x, name: 'Edited type' } : x),
+        workouts: changes.workouts.map(x => x.id === 'workout' ? { ...x, name: 'Edited workout' } : x),
+        logs: changes.logs.map(x => x.id === 'log' ? { ...x, reps: 8 } : x),
+      };
+      const conflict = await sync('mixed-stale', 3, different);
       assert.deepEqual(conflict.conflicts.map(x => [x.entityType, x.serverVersion]), [['workoutTypes', 1], ['workouts', 2], ['logs', 3]]);
       const edits = Object.fromEntries(['workoutTypes', 'workouts', 'logs'].map(key => [key, initial.changes[key].map(x => ({ ...x, isDeleted: true }))]));
       await sync('mixed-delete', 3, edits);
-      const retry = await sync('mixed-stale', 6, changes);
+      const retry = await sync('mixed-stale', 6, different);
       assert.equal(retry.cursor, 6);
       assert.deepEqual(retry.acknowledged, conflict.acknowledged);
       assert.deepEqual(retry.conflicts.map(x => [x.entityType, x.serverVersion]), [['workoutTypes', 4], ['workouts', 5], ['logs', 6]]);

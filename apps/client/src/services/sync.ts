@@ -1,4 +1,5 @@
 import { CacheChangeJournal, type CacheChanges } from '../storage/cache-changes';
+import { syncEntityContentEqual } from '@gym21/contracts';
 import { parseSyncResponse, syncEntitySchemas } from './sync-validation';
 import { SyncError, syncResponseError } from './sync-error';
 import { authorizedApiFetch } from '../auth';
@@ -38,6 +39,8 @@ type SyncEntityMap = {
 type ArrayEntityType = 'workoutTypes' | 'logs' | 'workouts';
 
 interface SyncRequestSnapshot {
+  // Explicit backup replacement establishes a new baseline for edits made in flight.
+  rebaseUnsent?: boolean;
   missingEntries: Map<string, DirtyEntityRecord>;
   blocked?: SyncError;
   request: SyncRequest;
@@ -155,14 +158,14 @@ export class SyncService {
     const pushedEntities = countDeltaEntities(snapshot.request.changes);
 
     this.context.assertCurrent();
-    await this.applySyncResponse(result, snapshot);
+    const conflicts = await this.applySyncResponse(result, snapshot);
     this.context.assertCurrent();
 
     if (snapshot.blocked && !pushedEntities && !result.hasMore) throw snapshot.blocked;
 
     return {
       cursor: result.cursor,
-      conflicts: result.conflicts.length,
+      conflicts,
       pushedEntities,
       pulledEntities,
       hasMore: Boolean(result.hasMore) || await this.db.dirtyEntities.count() > 0,
@@ -190,7 +193,7 @@ export class SyncService {
     if (!response.ok) throw new Error('Не удалось подтвердить импорт на сервере. Синхронизируйте данные перед повторной попыткой');
     const imported = parseSyncResponse(await response.json());
     this.context.assertCurrent();
-    await this.applySyncResponse(imported, snapshot);
+    await this.applySyncResponse(imported, { ...snapshot, rebaseUnsent: true });
     this.context.assertCurrent();
   }
 
@@ -225,6 +228,8 @@ export class SyncService {
 
   async bootstrapDirtyState() {
     this.context.assertCurrent();
+    const resolved = await this.db.transaction('rw', this.db.syncConflicts, () => this.removeEquivalentConflicts());
+    this.notifyResolvedConflicts(resolved);
     await this.db.transaction(
       'rw',
       [this.db.workouts, this.db.logs, this.db.workoutTypes, this.db.profile, this.db.dirtyEntities, this.db.syncState],
@@ -378,6 +383,7 @@ export class SyncService {
   private async applySyncResponse(response: SyncResponse, snapshot: SyncRequestSnapshot) {
     const acknowledged = acknowledgementKeys(response.acknowledged);
     const conflicts = conflictKeys(response);
+    let resolved: string[] = [];
 
     await this.db.transaction(
       'rw',
@@ -393,6 +399,7 @@ export class SyncService {
 
         await this.recordConflicts(response, snapshot.request);
         await this.acknowledgeUnchangedOutboxEntries(snapshot, acknowledged, conflicts);
+        resolved = await this.removeEquivalentConflicts();
         const missingKeys = [...snapshot.missingEntries.keys()];
         const currentMissing = await this.db.dirtyEntities.bulkGet(missingKeys);
         await this.db.dirtyEntities.bulkDelete(missingKeys.filter((key, index) =>
@@ -417,6 +424,30 @@ export class SyncService {
       ],
       conflicts: [...acknowledged, ...conflicts],
     });
+    this.notifyResolvedConflicts(resolved);
+    const resolvedKeys = new Set(resolved);
+    return [...conflicts].filter(key => !resolvedKeys.has(key)).length;
+  }
+
+  private async removeEquivalentConflicts(): Promise<string[]> {
+    this.context.assertCurrent();
+    const records = await this.db.syncConflicts.toArray();
+    const keys = records.filter(record => record.reason === 'stale-version'
+      && record.key === dirtyKey(record.entityType, record.entityId)
+      && record.localPayload && 'id' in record.localPayload && record.localPayload.id === record.entityId
+      && record.serverPayload && 'id' in record.serverPayload && record.serverPayload.id === record.entityId
+      && syncEntityContentEqual(record.entityType, record.localPayload, record.serverPayload))
+      .map(record => record.key);
+    // Remove only the redundant review record. Never touch current edits or their outbox.
+    await this.db.syncConflicts.bulkDelete(keys);
+    this.context.assertCurrent();
+    return keys;
+  }
+
+  private notifyResolvedConflicts(keys: string[]) {
+    if (!keys.length) return;
+    this.recordCacheChanges({ entities: [], conflicts: keys });
+    console.info('Sync resolved equivalent conflict records', { count: keys.length });
   }
 
   private async applyArrayDelta<K extends ArrayEntityType>(
@@ -436,6 +467,9 @@ export class SyncService {
       const sent = snapshot.dirtyEntries.get(keys[index]);
       const current = dirty[index];
       if (current && (!sent || current.generation !== sent.generation) && local) {
+        // A later batch has not attempted its write yet. Preserve its old version
+        // when content differs, so the subsequent push can detect a real conflict.
+        if (!snapshot.rebaseUnsent && !sent && !syncEntityContentEqual(entityType, local, item)) return;
         writes.push({ ...local, version: item.version, serverUpdatedAt: item.serverUpdatedAt });
       } else if (!local || this.shouldReplaceLocal(local, item)) {
         writes.push(item);
@@ -460,6 +494,7 @@ export class SyncService {
     const dirtyState = await this.getDirtyState(key, snapshot);
 
     if (dirtyState.changedAfterSnapshot && local) {
+      if (!snapshot.rebaseUnsent && !snapshot.dirtyEntries.has(key) && !syncEntityContentEqual('profile', local, incoming)) return;
       await this.db.profile.put({
         ...local,
         id: PROFILE_ID,
