@@ -27,6 +27,26 @@ async function seed() {
     await service.reloadCache();
 }
 describe('transactional training dates and actual form measurement updates', () => {
+    it.each([60, 100, 3600])('normalizes %i seconds on form creation and editing before persistence', async seconds => {
+        await db.workoutTypes.put({ id: 'time', name: 'Time', category: 'time', updatedAt: stamp });
+        await service.reloadCache();
+        document.body.innerHTML = `<form><input name="typeId" value="time"><input name="duration_hours" value="1"><input name="duration_minutes" value="2"><input name="duration_seconds" value="${seconds}"></form>`;
+        const form = document.querySelector('form')!;
+        const state = createUiState();
+        const page = createWorkoutPage({ state, dependencies: { storage: service }, actions: { showToast: vi.fn(), render: () => {} } } as unknown as PageContext);
+        await page.submitLog(form, new Event('submit', { cancelable: true }));
+        const created = (await db.logs.toArray())[0];
+        expect(created).toMatchObject({ duration: 62 + Math.floor(seconds / 60) });
+        expect(created.durationSeconds).toBe(seconds % 60 || undefined);
+        state.editingLogId = created.id;
+        (form.elements.namedItem('duration_seconds') as HTMLInputElement).value = String(seconds + 60);
+        await page.submitLog(form, new Event('submit', { cancelable: true }));
+        const edited = await db.logs.get(created.id);
+        expect(edited).toMatchObject({ duration: 63 + Math.floor(seconds / 60) });
+        expect(edited?.durationSeconds).toBe(seconds % 60 || undefined);
+        expect((await db.dirtyEntities.toArray()).some(x => x.key === `logs:${created.id}`)).toBe(true);
+        page.dispose();
+    });
     it('persists browser fallback once after bootstrap and preserves a newer explicit choice', async () => {
         await db.profile.update('me', { timeZone: undefined });
         await service.reloadCache();

@@ -861,11 +861,12 @@ export function createWorkoutPage(context: PageContext) {
       const hours = parseInt(formData.get('duration_hours') as string, 10) || 0;
       const minutes = parseInt(formData.get('duration_minutes') as string, 10) || 0;
       const seconds = parseInt(formData.get('duration_seconds') as string, 10) || 0;
-      logData.duration = (hours * 60) + minutes;
+      logData.duration = (hours * 60) + minutes + Math.floor(seconds / 60);
+      const remainingSeconds = seconds % 60;
 
       // Only set durationSeconds if it's > 0, to keep data clean if they only typed minutes
-      if (seconds > 0) {
-        logData.durationSeconds = seconds;
+      if (remainingSeconds > 0) {
+        logData.durationSeconds = remainingSeconds;
       } else {
         delete logData.durationSeconds;
       }

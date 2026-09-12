@@ -5,6 +5,7 @@
 **/.vscode
 **/.idea
 **/.DS_Store
+**/._*
 **/.cache
 **/coverage
 **/test-results
@@ -35,3 +36,4 @@ s.svg
 !apps/server/tsconfig.json
 !packages/contracts/package.json
 !packages/contracts/tsconfig.json
+!test/fixtures/contracts.json

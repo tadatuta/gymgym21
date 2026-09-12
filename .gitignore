@@ -23,3 +23,6 @@ coverage/
 playwright-report/
 test-results/
 *.tsbuildinfo
+
+# Локальная инструкция по production-деплою
+/DEPLOY.local.md

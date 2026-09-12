@@ -12,6 +12,7 @@ RUN npm ci
 
 COPY packages/contracts packages/contracts
 COPY apps/client apps/client
+COPY test/fixtures/contracts.json test/fixtures/contracts.json
 
 RUN npm run build --workspace @gym21/client
 
