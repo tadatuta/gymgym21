@@ -47,6 +47,44 @@ describe('transactional training dates and actual form measurement updates', () 
         expect((await db.dirtyEntities.toArray()).some(x => x.key === `logs:${created.id}`)).toBe(true);
         page.dispose();
     });
+    it.each([86400000, -86400000, 90 * 60000])('shifts related sets by the start delta %i and queues them for sync', async delta => {
+        await seed();
+        await db.logs.put({ ...log('deleted', 'old'), isDeleted: true });
+        const before = await db.logs.toArray();
+        const startTime = new Date(Date.parse(stamp) + delta).toISOString();
+        await service.updateWorkout('old', { startTime, endTime: startTime });
+        expect((await db.workouts.get('old'))?.startTime).toBe(startTime);
+        for (const previous of before) {
+            const current = await db.logs.get(previous.id);
+            if (previous.workoutId === 'old' && !previous.isDeleted) {
+                expect(current).toEqual({ ...previous,
+                    date: new Date(Date.parse(previous.date) + delta).toISOString(),
+                    updatedAt: (await db.workouts.get('old'))!.updatedAt });
+                expect(service.getLogs().find(item => item.id === previous.id)?.date).toBe(current?.date);
+            } else {
+                expect(current).toEqual(previous);
+            }
+        }
+        expect((await db.dirtyEntities.toArray()).map(x => x.key).sort()).toEqual(['logs:a', 'logs:b', 'workouts:old']);
+    });
+    it.each([{ name: 'Renamed' }, { endTime: '2026-02-01T12:00:00Z' }, { startTime: '2026-01-02T00:30:00+03:00' }])(
+        'preserves set dates when the start instant is unchanged: %j', async updates => {
+            await seed();
+            const before = await db.logs.toArray();
+            await service.updateWorkout('old', updates);
+            expect(await db.logs.toArray()).toEqual(before);
+            expect((await db.dirtyEntities.toArray()).map(x => x.key)).toEqual(['workouts:old']);
+        });
+    it('rolls back workout date edits and shifted sets when the outbox write fails', async () => {
+        await seed();
+        const before = { logs: await db.logs.toArray(), workouts: await db.workouts.toArray() };
+        vi.spyOn(SyncService.prototype, 'markDirtyMany').mockRejectedValue(new Error('outbox failure'));
+        await expect(service.updateWorkout('old', { startTime: '2026-03-01T12:00:00Z' })).rejects.toThrow('outbox failure');
+        expect(await db.logs.toArray()).toEqual(before.logs);
+        expect(await db.workouts.toArray()).toEqual(before.workouts);
+        expect(await db.dirtyEntities.count()).toBe(0);
+    });
+
     it('persists browser fallback once after bootstrap and preserves a newer explicit choice', async () => {
         await db.profile.update('me', { timeZone: undefined });
         await service.reloadCache();

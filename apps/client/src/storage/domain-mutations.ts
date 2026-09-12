@@ -160,19 +160,32 @@ export class DomainMutations {
     }
 
     async updateWorkout(id: string, updates: { name?: string; startTime?: string; endTime?: string }): Promise<void> {
-        await this.commitMutation([this.repository.database.workouts], async () => {
-            const workout = await this.repository.database.workouts.get(id);
+        const { workouts, logs } = this.repository.database;
+        await this.commitMutation([workouts, logs], async () => {
+            const workout = await workouts.get(id);
             if (!workout) return { value: undefined, dirty: [] };
             const next = cloneWorkout(workout);
             if (updates.name !== undefined) next.name = updates.name || undefined;
             if (updates.startTime) next.startTime = updates.startTime;
             if (updates.endTime) next.endTime = updates.endTime;
-            next.updatedAt = new Date().toISOString();
-            await this.repository.database.workouts.put(next);
-            return {
-                value: undefined,
-                dirty: [{ entityType: 'workouts', entityId: id }],
-            };
+            const now = new Date().toISOString();
+            next.updatedAt = now;
+            const dirty: MutationResult<void>['dirty'] = [{ entityType: 'workouts', entityId: id }];
+            const startDelta = Date.parse(next.startTime) - Date.parse(workout.startTime);
+            if (startDelta !== 0) {
+                const relatedLogs = await logs.where('workoutId').equals(id).toArray();
+                for (const log of relatedLogs) {
+                    if (log.isDeleted) continue;
+                    await logs.put({
+                        ...log,
+                        date: new Date(Date.parse(log.date) + startDelta).toISOString(),
+                        updatedAt: now,
+                    });
+                    dirty.push({ entityType: 'logs', entityId: log.id });
+                }
+            }
+            await workouts.put(next);
+            return { value: undefined, dirty };
         });
     }
 
